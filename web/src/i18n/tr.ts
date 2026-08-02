@@ -489,6 +489,32 @@ export const tr: Translations = {
       external: "Harici CLI",
     },
     expiresIn: "{time} sonra sona erer",
+    proxy: {
+      label: "Proxy",
+      configure: "proxy",
+      modeInherit: "Follow environment variables",
+      modeDirect: "Force direct connection",
+      modeUrl: "Custom proxy",
+      urlPlaceholder: "http://127.0.0.1:7890",
+      badgeDirect: "direct",
+      badgeProxy: "proxy {host}",
+      badgeInvalid: "proxy: invalid",
+      invalidHint:
+        "The saved proxy value could not be read. Enter the address again to replace it.",
+      test: "Test",
+      testing: "Testing…",
+      save: "Save",
+      saving: "Saving…",
+      saved:
+        "{provider} proxy saved. New requests pick it up without a restart. Saving rewrites config.yaml, which drops any comments in it.",
+      urlRequired: "Enter a proxy address, or choose one of the other modes.",
+      redactedUrl:
+        "That address is the masked form shown for display. Enter the full proxy URL, including any credentials.",
+      resultReachable: "Reachable — answered {status}.",
+      resultHttp:
+        "Answered {status}. It connected, but check whether that status is expected.",
+      resultTransportError: "Could not connect: {detail}",
+    },
   },
 
   language: {
