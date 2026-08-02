@@ -305,7 +305,24 @@ class TestProbeTarget:
     def test_target_comes_from_the_registry(self):
         from hermes_cli.provider_proxy_admin import provider_probe_url
 
-        assert provider_probe_url("anthropic") == "https://api.anthropic.com/models"
+        # chatgpt.com/backend-api/codex/models is the real Codex endpoint, so
+        # the plain join is right for every provider whose registry base_url
+        # already carries its API path.
+        assert (
+            provider_probe_url("openai-codex")
+            == "https://chatgpt.com/backend-api/codex/models"
+        )
+        assert provider_probe_url("openai-api") == "https://api.openai.com/v1/models"
+
+    def test_anthropic_probes_the_versioned_models_endpoint(self):
+        from hermes_cli.provider_proxy_admin import provider_probe_url
+
+        # api.anthropic.com is registered as a bare host because the SDK adds
+        # /v1 itself. Joining "/models" onto it dials a path Anthropic does not
+        # serve: verified against the live API, /models answers 404 while
+        # /v1/models answers 401. A 404 lands in the "answered, judge it
+        # yourself" bucket, so a perfectly working proxy would report amber.
+        assert provider_probe_url("anthropic") == "https://api.anthropic.com/v1/models"
 
     def test_provider_without_an_inference_host_is_rejected(self):
         from hermes_cli.provider_proxy_admin import provider_probe_url
@@ -422,7 +439,7 @@ class TestProbeProviderProxy:
 
         captured = self._patch_httpx(monkeypatch, response=httpx.Response(200))
         probe_provider_proxy("anthropic", "url", "http://127.0.0.1:7890")
-        assert captured["url"] == "https://api.anthropic.com/models"
+        assert captured["url"] == "https://api.anthropic.com/v1/models"
         assert captured["proxy"] == "http://127.0.0.1:7890"
 
     def test_direct_mode_probe_sets_trust_env_false(self, monkeypatch):
@@ -593,7 +610,7 @@ class TestProxyRoutes:
         assert response.json()["kind"] == "reachable"
         assert response.json()["ok"] is True
         # The target is the registry's host, never anything from the request.
-        assert captured["url"] == "https://api.anthropic.com/models"
+        assert captured["url"] == "https://api.anthropic.com/v1/models"
         assert captured["proxy"] == "http://127.0.0.1:7890"
 
     def test_test_route_does_not_save(self, monkeypatch):

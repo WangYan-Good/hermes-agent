@@ -187,6 +187,19 @@ def apply_provider_proxy(
     return state if state is not None else {"mode": "inherit", "url": None}
 
 
+# Registry base URLs are what the client SDK is handed, and some SDKs append
+# the API version segment themselves -- ``anthropic`` is registered as a bare
+# ``https://api.anthropic.com`` for exactly that reason. Joining ``/models``
+# onto those dials a path the API does not serve (404), which the classifier
+# below reports as "answered, judge it yourself" even when the proxy is working
+# perfectly. Spell the endpoint out for those providers instead of inferring it
+# from the absence of a path: ``bedrock`` and ``copilot`` are bare hosts too,
+# but neither is probed through an OpenAI-style ``/models`` route.
+_PROBE_PATH_OVERRIDES: Dict[str, str] = {
+    "anthropic": "/v1/models",
+}
+
+
 def provider_probe_url(provider_id: str) -> str:
     """The URL the reachability probe dials for *provider_id*.
 
@@ -205,7 +218,7 @@ def provider_probe_url(provider_id: str) -> str:
             f"No known inference host for {provider_id!r}, so there is nothing "
             "to test a proxy against."
         )
-    return base.rstrip("/") + "/models"
+    return base.rstrip("/") + _PROBE_PATH_OVERRIDES.get(key, "/models")
 
 
 def proxy_httpx_kwargs_for_mode(
