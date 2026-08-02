@@ -228,3 +228,63 @@ visible in the browser.
   remove a key — so "go back to following the environment variables" would be
   inexpressible. That is one of the three states, so the approach fails on its
   own terms.
+
+## As built (2026-08-01)
+
+Implemented as designed, with three additions the design did not anticipate.
+
+**Where the code lives.** The read/write/probe rules went into a new module,
+`hermes_cli/provider_proxy_admin.py`, rather than into `web_server.py`
+(~16k lines). The routes there are thin: `_require_token`, `_profile_scope`,
+`load_config` / `save_config`, and mapping `ValueError` → 400. Everything with a
+rule in it is a pure function over a config dict, so the test file exercises it
+without a `TestClient`.
+
+Public surface: `PROXY_MODES`, `provider_proxy_editable`,
+`is_redacted_proxy_url`, `read_provider_proxy_state`, `apply_provider_proxy`,
+`provider_probe_url`, `proxy_httpx_kwargs_for_mode`, `probe_provider_proxy`.
+
+**Addition 1 — `proxy: null` means "no editor".** The OAuth catalog carries 8
+ids; `PROVIDER_REGISTRY` carries 34; every catalog id is in the registry
+*except* `claude-code`, the synthetic read-only subscription row. It owns no
+config key and has no `inference_base_url`, so there is nothing to write and
+nothing to probe. `read_provider_proxy_state` returns `None` for any id that
+fails the allowlist, and `ProviderProxyEditor` renders nothing when the field is
+`null` — instead of offering a control whose Save would 400. This makes the read
+contract agree with the write guard the design already specified.
+
+**Addition 2 — a malformed stored value renders instead of raising.**
+`_coerce_provider_proxy` raises on a hand-edited `proxy: true`. Left uncaught
+inside the list route, one bad value would 500 the entire Accounts tab. The read
+path catches it and returns `{"mode": "url", "url": null, "invalid": true}`; the
+row shows a destructive badge and a hint to retype the address.
+
+**Addition 3 — an empty box does not mean "cleared".** The editor never
+prefills a redacted address (leaving `***@host` in the box invites saving it
+back), so `isProxyDirty` treats *redacted saved value + empty box* as unchanged.
+Without that, Save would light up the instant a credential-carrying proxy's
+editor was opened.
+
+**Smaller notes.**
+
+- `GET /api/providers/oauth` now loads the config once per request. A config
+  that fails to load degrades to "every row reports no proxy" rather than
+  failing the request.
+- The probe response also carries `target`, so an operator can see which host
+  was dialled.
+- A direct sentinel typed into the URL box (`direct` / `none`) is accepted and
+  stored as `false`, because `_coerce_provider_proxy` already maps it that way —
+  the dashboard accepts exactly what the agent accepts. An *empty* box in `url`
+  mode is still rejected.
+- The user guide gained a "Setting it from the dashboard" subsection under
+  `website/docs/user-guide/configuration.md`'s per-provider-proxy section: where
+  the control lives, how to read the three probe outcomes, that saving needs no
+  restart but drops YAML comments, and why API-key providers have no control.
+  The design did not call for docs, but the whole premise of this feature is
+  that an operator should not have to find the YAML key.
+
+**Tests.** `tests/hermes_cli/test_provider_proxy_api.py` — 54 tests (40 against
+the pure module, 14 against the routes). `web/src/lib/provider-proxy.test.ts` —
+22 tests. Three cases added to `web/src/lib/api.test.ts`. No component test: this
+repo has none, and inventing a component-testing setup for one card stays out of
+scope.

@@ -563,6 +563,29 @@ export interface Translations {
       external: string;
     };
     expiresIn: string;
+    /** Per-provider proxy editor on each provider row. */
+    proxy: {
+      label: string;
+      configure: string;
+      modeInherit: string;
+      modeDirect: string;
+      modeUrl: string;
+      urlPlaceholder: string;
+      badgeDirect: string;
+      badgeProxy: string;
+      badgeInvalid: string;
+      invalidHint: string;
+      test: string;
+      testing: string;
+      save: string;
+      saving: string;
+      saved: string;
+      urlRequired: string;
+      redactedUrl: string;
+      resultReachable: string;
+      resultHttp: string;
+      resultTransportError: string;
+    };
   };
 
   // ── Language switcher ──

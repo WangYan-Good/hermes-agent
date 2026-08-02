@@ -81,6 +81,12 @@ from hermes_cli.config import (
     write_platform_config_field,
     _deep_merge,
 )
+from hermes_cli.provider_proxy_admin import (
+    apply_provider_proxy,
+    probe_provider_proxy,
+    provider_proxy_editable,
+    read_provider_proxy_state,
+)
 from plugins.memory.config_schema import (
     ProviderConfigSchema,
     ProviderField,
@@ -9954,6 +9960,14 @@ async def list_oauth_providers(profile: Optional[str] = None):
     flow/status/cli metadata.
     """
     with _profile_scope(profile):
+        # Read once for the whole list. A broken config must not take down the
+        # Accounts tab, so a failure here just means every row reports its
+        # proxy as unconfigured.
+        try:
+            proxy_cfg = load_config()
+        except Exception:
+            _log.warning("oauth list: config unreadable, reporting no proxies", exc_info=True)
+            proxy_cfg = {}
         providers = []
         for p in _build_oauth_catalog():
             status = _resolve_provider_status(p["id"], p.get("status_fn"))
@@ -9968,6 +9982,10 @@ async def list_oauth_providers(profile: Optional[str] = None):
                 "disconnect_command": _oauth_provider_disconnect_command(p),
                 "disconnectable": disconnect_hint is None,
                 "status": status,
+                # null for rows with no editable config key (the synthetic
+                # claude-code subscription row), which is how the UI knows to
+                # render no proxy editor.
+                "proxy": read_provider_proxy_state(proxy_cfg, p["id"]),
             })
         return {"providers": providers}
 
@@ -10038,6 +10056,85 @@ async def disconnect_oauth_provider(
         except Exception as e:
             _log.exception("disconnect %s failed", provider_id)
             raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Per-provider proxy
+# ---------------------------------------------------------------------------
+#
+# Named provider-agnostically rather than nested under /oauth: only the *read*
+# piggybacks on the OAuth payload (the card already fetches it), so an API-key
+# provider UI can reuse these two routes later without a backend change.
+#
+# Both are token-protected. The target host is fixed by the registry, but the
+# proxy the server is told to dial is user input, and the value it persists can
+# embed credentials.
+
+
+class ProviderProxyUpdate(BaseModel):
+    mode: str
+    url: Optional[str] = None
+
+
+@app.put("/api/providers/{provider_id}/proxy")
+async def set_provider_proxy(
+    provider_id: str,
+    body: ProviderProxyUpdate,
+    request: Request,
+    profile: Optional[str] = None,
+):
+    """Set ``providers.<id>.proxy``. Token-protected (this is a config write)."""
+    _require_token(request)
+
+    with _profile_scope(profile):
+        cfg = load_config()
+        if not provider_proxy_editable(cfg, provider_id):
+            raise HTTPException(
+                status_code=400, detail=f"Unknown provider: {provider_id}"
+            )
+        try:
+            state = apply_provider_proxy(cfg, provider_id, body.mode, body.url)
+        except ValueError as exc:
+            # Already credential-safe: the coercion layer redacts before it
+            # builds a message.
+            raise HTTPException(status_code=400, detail=str(exc))
+        save_config(cfg)
+        _log.info("provider-proxy/set: %s mode=%s", provider_id, body.mode)
+        return {"ok": True, "provider": provider_id, "proxy": state}
+
+
+@app.post("/api/providers/{provider_id}/proxy/test")
+async def test_provider_proxy(
+    provider_id: str,
+    body: ProviderProxyUpdate,
+    request: Request,
+    profile: Optional[str] = None,
+):
+    """Probe the provider's inference host with a *pending* proxy setting.
+
+    Tests the submitted value, not the saved one — testing after saving
+    inverts the point. No credentials are sent: this measures reachability.
+    """
+    _require_token(request)
+
+    with _profile_scope(profile):
+        cfg = load_config()
+        if not provider_proxy_editable(cfg, provider_id):
+            raise HTTPException(
+                status_code=400, detail=f"Unknown provider: {provider_id}"
+            )
+        try:
+            result = probe_provider_proxy(provider_id, body.mode, body.url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception:
+            _log.exception("provider-proxy/test %s failed", provider_id)
+            raise HTTPException(status_code=500, detail="Proxy test failed")
+        _log.info(
+            "provider-proxy/test: %s mode=%s kind=%s",
+            provider_id, body.mode, result.get("kind"),
+        )
+        return result
 
 
 # ---------------------------------------------------------------------------
