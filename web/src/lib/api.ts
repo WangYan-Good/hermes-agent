@@ -1,5 +1,9 @@
 import { buildHermesWebSocketUrl } from "@hermes/shared";
 
+import type { ProviderProxyState, ProxyMode } from "./provider-proxy";
+
+export type { ProviderProxyState, ProxyMode };
+
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
 // (e.g. https://mission-control.tilos.com/hermes/). The Python backend
@@ -836,6 +840,33 @@ export const api = {
       `/api/providers/oauth/${encodeURIComponent(providerId)}`,
       {
         method: "DELETE",
+      },
+    ),
+
+  // Per-provider proxy. Provider-agnostic paths (not nested under /oauth) so
+  // an API-key provider UI can reuse them without a backend change.
+  setProviderProxy: (
+    providerId: string,
+    body: { mode: ProxyMode; url?: string },
+  ) =>
+    fetchJSON<{ ok: boolean; provider: string; proxy: ProviderProxyState }>(
+      `/api/providers/${encodeURIComponent(providerId)}/proxy`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  testProviderProxy: (
+    providerId: string,
+    body: { mode: ProxyMode; url?: string },
+  ) =>
+    fetchJSON<ProviderProxyTestResult>(
+      `/api/providers/${encodeURIComponent(providerId)}/proxy/test`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
       },
     ),
   startOAuthLogin: (providerId: string) =>
@@ -2524,6 +2555,22 @@ export interface OAuthProvider {
   cli_command: string;
   docs_url: string;
   status: OAuthProviderStatus;
+  /** What this provider declares for `providers.<id>.proxy`, with any
+   *  credentials masked. `null` when the row has no editable config key (the
+   *  synthetic claude-code subscription row), meaning: render no editor. */
+  proxy?: ProviderProxyState | null;
+}
+
+/** Reachability probe result for a *pending* proxy setting.
+ *  `reachable` is 200/401 — the probe sends no credentials, so 401 means
+ *  "arrived". `http` is any other status: api.anthropic.com answers 403 on a
+ *  direct connection from a blocked region, and that is not a success. */
+export interface ProviderProxyTestResult {
+  kind: "reachable" | "http" | "transport_error";
+  ok: boolean;
+  status: number | null;
+  target: string;
+  detail: string;
 }
 
 export interface OAuthProvidersResponse {

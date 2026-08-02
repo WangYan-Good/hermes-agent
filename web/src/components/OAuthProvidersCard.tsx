@@ -20,6 +20,7 @@ import {
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
+import { ProviderProxyEditor } from "@/components/ProviderProxyEditor";
 import { useI18n } from "@/i18n";
 
 interface Props {
@@ -210,6 +211,12 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                         {p.status.error}
                       </span>
                     )}
+                    <ProviderProxyEditor
+                      provider={p}
+                      onSaved={refresh}
+                      onError={onError}
+                      onSuccess={onSuccess}
+                    />
                   </div>
                 </div>
 

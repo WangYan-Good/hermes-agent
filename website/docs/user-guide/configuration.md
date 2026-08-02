@@ -146,6 +146,16 @@ A malformed value (missing scheme, bad port, wrong type) fails loudly instead of
 
 Not covered: `web_search` / `web_fetch`, update checks, and skill downloads. Those are non-model egress — use the global `HTTPS_PROXY` for them.
 
+#### Setting it from the dashboard
+
+OAuth providers can be configured without editing YAML. On the dashboard's **Env** page, each row of the OAuth providers card carries a proxy control showing what that provider declares — a `proxy <host>` badge, a `direct` badge, or an unobtrusive "proxy" link when nothing is set. Expanding it gives the same three states as the YAML key, plus a **Test** button that probes the provider's own host with the *pending* setting, before you save it.
+
+The probe reports three outcomes, not a pass/fail: it connected and answered (`200`/`401` — no credentials are sent, so `401` means the request arrived), it answered with some other status, or it could not connect at all. The middle case matters: `api.anthropic.com` replies `403` on a direct connection from a blocked region, which is a real HTTP response and not a working configuration.
+
+Two notes on saving. The setting applies to newly built clients, so no restart is needed. And saving rewrites `config.yaml` through the same path as every other dashboard write, which drops any comments in the file — edit YAML by hand if you need to keep them.
+
+A proxy URL carrying credentials is masked (`http://***@host:3128`) everywhere it leaves the server, so the dashboard shows the masked form and asks for the full address again when you change it. API-key providers (DeepSeek, DashScope, …) have no proxy control: the Env page groups those by environment-variable prefix rather than by provider id, so there is no id to write the config key under. Set those in `config.yaml`.
+
 ## Update Behavior
 
 `hermes update` settings live under `updates` in `config.yaml`:

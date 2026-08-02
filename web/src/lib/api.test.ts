@@ -173,3 +173,46 @@ describe("api OAuth helpers", () => {
     }
   });
 });
+
+describe("api provider proxy", () => {
+  it("PUTs the pending proxy setting to the provider-agnostic route", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.setProviderProxy("openai-codex", {
+      mode: "url",
+      url: "http://127.0.0.1:7890",
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/providers/openai-codex/proxy");
+    expect((init as RequestInit).method).toBe("PUT");
+    expect((init as RequestInit).body).toBe(
+      JSON.stringify({ mode: "url", url: "http://127.0.0.1:7890" }),
+    );
+  });
+
+  it("POSTs a test without saving anything", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ kind: "reachable", ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.testProviderProxy("anthropic", { mode: "direct" });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/providers/anthropic/proxy/test");
+    expect((init as RequestInit).method).toBe("POST");
+    expect((init as RequestInit).body).toBe(JSON.stringify({ mode: "direct" }));
+  });
+
+  it("escapes the provider id in the path", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.setProviderProxy("a/b", { mode: "inherit" });
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/providers/a%2Fb/proxy");
+  });
+});
