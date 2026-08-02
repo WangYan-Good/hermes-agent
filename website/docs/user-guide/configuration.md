@@ -115,6 +115,37 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+### Per-Provider Proxy
+
+`providers.<id>.proxy` routes one provider's traffic through a proxy without touching any other provider:
+
+```yaml
+providers:
+  openai-codex:
+    proxy: "http://127.0.0.1:7890"
+  anthropic:
+    proxy: "http://127.0.0.1:7890"
+  deepseek:
+    proxy: false          # force direct, ignoring a global HTTPS_PROXY
+```
+
+| Value | Meaning |
+|---|---|
+| A URL (`http://`, `https://`, `socks5://`) | Route this provider through it. Wins over `HTTPS_PROXY`. |
+| `false`, `""`, `"direct"`, `"none"` | Force a direct connection, even when a global `HTTPS_PROXY` is set. |
+| Key absent or `null` | Fall back to `HTTPS_PROXY` / `NO_PROXY` — identical to the behavior with no `proxy` key anywhere. |
+
+Matching is by provider name, so an entry may carry `proxy` and nothing else — that is the normal shape for a built-in provider like `openai-codex` or `anthropic`. Auxiliary calls (compression, vision, web_extract, title generation) resolve the same setting from the endpoint URL, so an auxiliary model on a different provider keeps that provider's policy. OAuth login and token refresh are covered too: Codex authenticates against `auth.openai.com` and Claude against `claude.ai`, which are behind the same reachability wall as the inference endpoints.
+
+Two usage patterns follow from these semantics:
+
+- **No global proxy** — set `proxy` only on the providers that need it. Everything else stays direct.
+- **Keep the global proxy** — leave `HTTPS_PROXY` set and pin the providers that must stay direct with `proxy: false`.
+
+A malformed value (missing scheme, bad port, wrong type) fails loudly instead of silently going direct — traffic you believe is proxied taking the direct route is worse than a startup error. `socks5://` needs `pip install 'httpx[socks]'`, and the Claude OAuth token endpoints accept HTTP proxies only (use your proxy's `http://` port there).
+
+Not covered: `web_search` / `web_fetch`, update checks, and skill downloads. Those are non-model egress — use the global `HTTPS_PROXY` for them.
+
 ## Update Behavior
 
 `hermes update` settings live under `updates` in `config.yaml`:

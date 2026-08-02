@@ -10925,7 +10925,11 @@ def _submit_anthropic_pkce(
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            # Honors providers.anthropic.proxy — the token endpoints sit behind
+            # the same reachability wall as api.anthropic.com.
+            from agent.anthropic_adapter import _oauth_urlopen
+
+            with _oauth_urlopen(req, timeout=20) as resp:
                 result = json.loads(resp.read().decode())
             break
         except Exception as e:
@@ -11460,11 +11464,15 @@ def _codex_full_login_worker(session_id: str) -> None:
         from hermes_cli.auth import (
             CODEX_OAUTH_CLIENT_ID,
             CODEX_OAUTH_TOKEN_URL,
+            oauth_httpx_proxy_kwargs,
         )
         issuer = "https://auth.openai.com"
 
         # Step 1: request device code
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with httpx.Client(
+            timeout=httpx.Timeout(15.0),
+            **oauth_httpx_proxy_kwargs("openai-codex"),
+        ) as client:
             resp = client.post(
                 f"{issuer}/api/accounts/deviceauth/usercode",
                 json={"client_id": CODEX_OAUTH_CLIENT_ID},
@@ -11497,7 +11505,10 @@ def _codex_full_login_worker(session_id: str) -> None:
         # Step 2: poll until authorized
         deadline = time.monotonic() + sess["expires_in"]
         code_resp = None
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with httpx.Client(
+            timeout=httpx.Timeout(15.0),
+            **oauth_httpx_proxy_kwargs("openai-codex"),
+        ) as client:
             while time.monotonic() < deadline:
                 if sess.get("cancelled"):
                     _log.info("oauth/device: openai-codex login cancelled (session=%s)", session_id)
@@ -11533,7 +11544,10 @@ def _codex_full_login_worker(session_id: str) -> None:
         code_verifier = code_resp.get("code_verifier", "")
         if not authorization_code or not code_verifier:
             raise RuntimeError("device-auth response missing authorization_code/code_verifier")
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with httpx.Client(
+            timeout=httpx.Timeout(15.0),
+            **oauth_httpx_proxy_kwargs("openai-codex"),
+        ) as client:
             token_resp = client.post(
                 CODEX_OAUTH_TOKEN_URL,
                 data={

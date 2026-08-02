@@ -3871,6 +3871,28 @@ def _recover_codex_tokens_from_cli(reason: str) -> Optional[Dict[str, str]]:
     return dict(imported)
 
 
+def oauth_httpx_proxy_kwargs(provider: str) -> Dict[str, Any]:
+    """``httpx.Client`` kwargs applying ``providers.<provider>.proxy`` to a login flow.
+
+    Codex authenticates against ``auth.openai.com`` and Claude against
+    ``claude.ai`` — both unreachable from the networks that need a proxy for
+    inference, so login has to honor the same per-provider setting or the
+    feature is unusable in practice.
+
+    Returns ``{}`` when nothing is configured, which leaves httpx's default
+    ``trust_env`` behavior (the proxy env vars) exactly as it was.
+    ``trust_env=False`` is what forced-direct requires: httpx resolves env
+    proxies through ``urllib.request.getproxies()``, which on macOS also
+    reports system proxy settings.
+    """
+    try:
+        from hermes_cli.config import provider_proxy_httpx_kwargs
+
+        return provider_proxy_httpx_kwargs(provider)
+    except Exception:
+        return {}
+
+
 def refresh_codex_oauth_pure(
     access_token: str,
     refresh_token: str,
@@ -3894,6 +3916,7 @@ def refresh_codex_oauth_pure(
             "Accept": "application/json",
             "User-Agent": CODEX_OAUTH_USER_AGENT,
         },
+        **oauth_httpx_proxy_kwargs("openai-codex"),
     ) as client:
         response = client.post(
             CODEX_OAUTH_TOKEN_URL,
@@ -8216,7 +8239,10 @@ def _codex_device_code_login() -> Dict[str, Any]:
     max_attempts = 4
     for attempt in range(1, max_attempts + 1):
         try:
-            with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+            with httpx.Client(
+                timeout=httpx.Timeout(15.0),
+                **oauth_httpx_proxy_kwargs("openai-codex"),
+            ) as client:
                 resp = client.post(
                     f"{issuer}/api/accounts/deviceauth/usercode",
                     json={"client_id": client_id},
@@ -8291,7 +8317,10 @@ def _codex_device_code_login() -> Dict[str, Any]:
     code_resp = None
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with httpx.Client(
+            timeout=httpx.Timeout(15.0),
+            **oauth_httpx_proxy_kwargs("openai-codex"),
+        ) as client:
             while _time.monotonic() - start < max_wait:
                 _time.sleep(poll_interval)
                 poll_resp = client.post(
@@ -8332,7 +8361,10 @@ def _codex_device_code_login() -> Dict[str, Any]:
         )
 
     try:
-        with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+        with httpx.Client(
+            timeout=httpx.Timeout(15.0),
+            **oauth_httpx_proxy_kwargs("openai-codex"),
+        ) as client:
             token_resp = client.post(
                 CODEX_OAUTH_TOKEN_URL,
                 data={

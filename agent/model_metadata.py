@@ -86,6 +86,36 @@ def _resolve_requests_verify(base_url: str = "") -> bool | str:
             return val
     return True
 
+
+def _codex_probe_session():
+    """A ``requests.Session`` honoring ``providers.openai-codex.proxy``, or ``None``.
+
+    The Codex ``/models`` probe talks to chatgpt.com, which is behind the same
+    reachability wall as the Codex inference endpoint. ``None`` means nothing is
+    configured and the caller should use plain ``requests.get`` — zero-config
+    behavior stays byte-for-byte what it was.
+
+    ``requests`` merges proxy env vars into every request unless the *session*
+    opts out, which is why forced-direct needs ``trust_env = False`` rather
+    than an empty ``proxies`` mapping.
+    """
+    try:
+        from hermes_cli.config import resolve_provider_proxy_safe
+
+        proxy = resolve_provider_proxy_safe("openai-codex")
+    except Exception:
+        return None
+    if proxy is None:
+        return None
+    requests_module = _ensure_requests()
+    session = requests_module.Session()
+    if proxy is False:
+        session.trust_env = False
+    else:
+        session.proxies = {"http": str(proxy), "https": str(proxy)}
+    return session
+
+
 # Compatibility snapshot for callers that inspect this private constant.
 # Prefix routing below queries the registry live so later registrations work.
 try:
@@ -99,7 +129,6 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset(
     for profile in _list_providers()
     for value in (profile.name, *profile.aliases)
 )
-
 
 _OLLAMA_TAG_PATTERN = re.compile(
     r"^(\d+\.?\d*b|latest|stable|q\d|fp?\d|instruct|chat|coder|vision|text)",
@@ -2460,9 +2489,10 @@ def _fetch_codex_oauth_context_lengths_with_source(
     if acct_id:
         headers["ChatGPT-Account-Id"] = acct_id
 
+    session = _codex_probe_session()
     try:
-        _ensure_requests()
-        resp = requests.get(
+        requests_module = _ensure_requests()
+        resp = (requests_module.get if session is None else session.get)(
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
             headers=headers,
             timeout=(5, 10),
@@ -2478,6 +2508,9 @@ def _fetch_codex_oauth_context_lengths_with_source(
     except Exception as exc:
         logger.debug("Codex /models probe failed: %s", exc)
         return {}, False
+    finally:
+        if session is not None:
+            session.close()
 
     entries = data.get("models", []) if isinstance(data, dict) else []
     result: Dict[str, int] = {}

@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
-from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars, normalize_proxy_url
 from agent.secret_scope import get_secret as _get_secret
 
 try:
@@ -710,6 +710,101 @@ def _common_betas_for_base_url(
     return betas
 
 
+def _oauth_urlopen(req: Any, *, timeout: float) -> Any:
+    """``urllib.request.urlopen`` honoring ``providers.anthropic.proxy``.
+
+    Claude's OAuth endpoints (``claude.ai``, ``platform.claude.com``) are
+    unreachable from the networks that need a proxy for ``api.anthropic.com``,
+    so wiring inference alone would leave the feature unusable — login would
+    still fail. Keyed on the provider name because these hosts are not the
+    provider's inference base_url.
+
+    With no ``proxy`` configured this is plain ``urlopen``: urllib's default
+    ``ProxyHandler`` reads the env vars exactly as before.
+    """
+    import urllib.request
+
+    try:
+        from hermes_cli.config import resolve_provider_proxy_safe
+
+        proxy = resolve_provider_proxy_safe("anthropic")
+    except Exception:
+        proxy = None
+
+    if proxy is None:
+        return urllib.request.urlopen(req, timeout=timeout)
+
+    if proxy is False:
+        # Empty mapping = no proxies, and it also stops urllib from consulting
+        # the environment (forced direct must beat a global HTTPS_PROXY).
+        handler = urllib.request.ProxyHandler({})
+    else:
+        scheme = urlparse(str(proxy)).scheme.lower()
+        if scheme.startswith("socks"):
+            raise ValueError(
+                "providers.anthropic.proxy: SOCKS proxies cannot be used for the "
+                "Claude OAuth token endpoints (urllib supports HTTP proxies only). "
+                "Point this at your proxy's http:// port instead."
+            )
+        handler = urllib.request.ProxyHandler({"http": str(proxy), "https": str(proxy)})
+    return urllib.request.build_opener(handler).open(req, timeout=timeout)
+
+
+def _resolve_anthropic_proxy(base_url: Optional[str]) -> Any:
+    """Resolve the per-provider proxy policy for an Anthropic-native endpoint.
+
+    ``base_url`` is empty for the native Anthropic API (the SDK supplies its own
+    default), in which case the provider is unambiguously ``anthropic``. When a
+    base_url IS present the endpoint may belong to any Anthropic-compatible
+    provider, so resolution goes through the URL rather than assuming Anthropic.
+
+    Best-effort: a config problem must not break client construction, so any
+    failure returns ``None`` (fall back to the proxy env vars).
+    """
+    try:
+        from hermes_cli.config import resolve_provider_proxy_safe
+
+        url = str(base_url or "").strip()
+        if not url:
+            return resolve_provider_proxy_safe("anthropic")
+        return resolve_provider_proxy_safe(base_url=url)
+    except Exception:
+        return None
+
+
+def _anthropic_http_client(proxy: Any, timeout_obj: Any) -> Optional[Any]:
+    """Build the httpx client the Anthropic SDK should use for *proxy*.
+
+    Returns ``None`` when nothing needs to change — with no per-provider proxy
+    configured the SDK keeps building its own client and reading the proxy env
+    vars itself, so zero-config behavior is bit-for-bit what it was.
+
+    ``proxy is False`` (force direct) needs ``trust_env=False``: httpx resolves
+    env proxies through ``urllib.request.getproxies()``, which on macOS also
+    reports system proxy settings. That is the same leak the plain no-proxy
+    mounts close in ``build_keepalive_http_client``.
+    """
+    if proxy is None:
+        return None
+
+    import httpx
+
+    kwargs: Dict[str, Any] = {"timeout": timeout_obj, "follow_redirects": True}
+    if proxy is False:
+        kwargs["trust_env"] = False
+    else:
+        kwargs["proxy"] = normalize_proxy_url(proxy)
+    try:
+        return httpx.Client(**kwargs)
+    except ImportError as exc:
+        # httpx raises a bare "Using SOCKS proxy, but the 'socksio' package is
+        # not installed" that never names the proxy as the cause.
+        raise ImportError(
+            "SOCKS proxy support requires the 'socksio' package. "
+            "Install it with: pip install 'httpx[socks]'"
+        ) from exc
+
+
 def _build_anthropic_client_with_bearer_hook(
     token_provider,
     base_url: str = None,
@@ -754,7 +849,18 @@ def _build_anthropic_client_with_bearer_hook(
         import re as _re
         normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
 
-    http_client = build_bearer_http_client(token_provider, timeout=timeout_obj)
+    # Same per-provider proxy policy as build_anthropic_client, applied to the
+    # bearer-hook client this path substitutes for the SDK's own.
+    _proxy_kwargs: Dict[str, Any] = {}
+    _proxy = _resolve_anthropic_proxy(normalized_base_url or base_url)
+    if _proxy is False:
+        _proxy_kwargs["trust_env"] = False
+    elif _proxy is not None:
+        _proxy_kwargs["proxy"] = normalize_proxy_url(_proxy)
+
+    http_client = build_bearer_http_client(
+        token_provider, timeout=timeout_obj, **_proxy_kwargs,
+    )
 
     kwargs = {
         "timeout": timeout_obj,
@@ -848,8 +954,17 @@ def build_anthropic_client(
         import re as _re
         normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
+    _timeout_obj = Timeout(timeout=float(_read_timeout), connect=10.0)
+    # Per-provider proxy: reaching api.anthropic.com may require a proxy that
+    # other providers must not use. The SDK builds its own httpx client and
+    # reads the env vars itself, so honoring config means handing it a client.
+    # Only done when a policy is actually configured — otherwise nothing about
+    # the constructed client changes.
+    _proxy_http_client = _anthropic_http_client(
+        _resolve_anthropic_proxy(normalized_base_url or base_url), _timeout_obj,
+    )
     kwargs = {
-        "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
+        "timeout": _timeout_obj,
         # Delegate all rate-limit / 5xx retry to hermes's outer conversation
         # loop, which honors Retry-After. The SDK default (max_retries=2) uses
         # its own 1-2s backoff that ignores Retry-After and double-retries
@@ -933,6 +1048,9 @@ def build_anthropic_client(
         headers.setdefault("X-Title", "Hermes Agent")
         headers.setdefault("User-Agent", f"HermesAgent/{_HERMES_VERSION}")
         kwargs["default_headers"] = headers
+
+    if _proxy_http_client is not None:
+        kwargs["http_client"] = _proxy_http_client
 
     client = _anthropic_sdk.Anthropic(**kwargs)
     # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it
@@ -1167,7 +1285,7 @@ def refresh_anthropic_oauth_pure(refresh_token: str, *, use_json: bool = False) 
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with _oauth_urlopen(req, timeout=10) as resp:
                 result = json.loads(resp.read().decode())
         except Exception as exc:
             last_error = exc
@@ -1630,7 +1748,7 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with _oauth_urlopen(req, timeout=15) as resp:
                     result = json.loads(resp.read().decode())
                 break
             except Exception as exc:

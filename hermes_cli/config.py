@@ -1365,7 +1365,7 @@ def _normalize_custom_provider_entry(
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify",
+        "ssl_ca_cert", "ssl_verify", "proxy",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -1510,6 +1510,13 @@ def _normalize_custom_provider_entry(
     elif isinstance(ssl_verify, str) and ssl_verify.strip():
         normalized["ssl_verify"] = ssl_verify.strip()
 
+    # Carried through verbatim (including ``False``) so a legacy
+    # ``custom_providers`` entry does not lose its proxy policy when migrated
+    # into the ``providers:`` shape. Interpretation belongs to
+    # ``resolve_provider_proxy``, which is the single authority on the value.
+    if "proxy" in entry:
+        normalized["proxy"] = entry["proxy"]
+
     return normalized
 
 
@@ -1540,6 +1547,7 @@ def _custom_provider_entry_to_provider_config(
         "extra_headers",
         "ssl_ca_cert",
         "ssl_verify",
+        "proxy",
     ):
         if field in normalized:
             provider_entry[field] = normalized[field]
@@ -1676,6 +1684,254 @@ def apply_custom_provider_tls_to_client_kwargs(
         client_kwargs["ssl_ca_cert"] = tls["ssl_ca_cert"]
     if "ssl_verify" in tls:
         client_kwargs["ssl_verify"] = tls["ssl_verify"]
+
+
+# ``proxy: false`` / ``""`` / these spellings all mean "connect directly,
+# ignoring any global HTTPS_PROXY". Checked before the value is treated as a
+# URL so a literal ``"direct"`` can never be mistaken for one.
+_PROXY_DIRECT_SENTINELS = {"direct", "none"}
+
+# Schemes httpx can route through. ``socks5h`` resolves DNS proxy-side.
+_PROXY_SCHEMES = {"http", "https", "socks5", "socks5h", "socks4", "socks4a"}
+
+
+def _validate_provider_proxy_url(proxy_url: str, provider_key: str) -> None:
+    """Raise ``ValueError`` when a configured proxy URL cannot be used by httpx.
+
+    Fails fast rather than degrading to a direct connection: traffic the
+    operator believes is proxied silently going direct is worse than a startup
+    error. Mirrors ``_validate_proxy_env_urls`` for the env-var path.
+    """
+    from urllib.parse import urlparse
+
+    from utils import redact_proxy_url
+
+    label = f"providers.{provider_key or '?'}.proxy"
+    safe = redact_proxy_url(proxy_url)
+    try:
+        parsed = urlparse(proxy_url)
+    except ValueError as exc:
+        raise ValueError(f"{label}: {safe!r} is not a valid URL.") from exc
+    if not parsed.scheme or not parsed.hostname:
+        raise ValueError(
+            f"{label}: {safe!r} is missing a scheme or host. "
+            "Use a full URL, e.g. 'http://127.0.0.1:7890'."
+        )
+    if parsed.scheme.lower() not in _PROXY_SCHEMES:
+        raise ValueError(
+            f"{label}: unsupported proxy scheme {parsed.scheme!r}. "
+            f"Supported: {', '.join(sorted(_PROXY_SCHEMES))}."
+        )
+    try:
+        _ = parsed.port  # raises ValueError for e.g. '7890export'
+    except ValueError as exc:
+        raise ValueError(f"{label}: {safe!r} has an invalid port.") from exc
+
+
+def _coerce_provider_proxy(value: Any, provider_key: str) -> Any:
+    """Interpret a raw ``providers.<name>.proxy`` value.
+
+    Returns a normalized proxy URL, ``False`` (force direct), or ``None``
+    (unconfigured — fall back to ``HTTPS_PROXY`` / ``NO_PROXY``). ``None`` and
+    ``False`` must stay distinguishable: they are what lets a deployment keep a
+    global proxy and pin individual providers direct.
+    """
+    if value is None:
+        # ``proxy:`` written with no value is a common YAML slip. Treating it
+        # as absence is the least surprising reading.
+        return None
+    if value is False:
+        return False
+    if value is True:
+        raise ValueError(
+            f"providers.{provider_key or '?'}.proxy: `true` is not a proxy URL. "
+            "Use a URL like 'http://127.0.0.1:7890', or `false` to force a "
+            "direct connection."
+        )
+    if not isinstance(value, str):
+        raise ValueError(
+            f"providers.{provider_key or '?'}.proxy: expected a proxy URL string "
+            f"or false, got {type(value).__name__}."
+        )
+    candidate = value.strip()
+    if not candidate or candidate.lower() in _PROXY_DIRECT_SENTINELS:
+        return False
+    from utils import normalize_proxy_url
+
+    normalized = normalize_proxy_url(candidate) or candidate
+    _validate_provider_proxy_url(normalized, provider_key)
+    return normalized
+
+
+def _iter_provider_config_entries(config: Dict[str, Any]):
+    """Yield ``(provider_key, entry)`` for every configured provider entry.
+
+    Covers both the keyed ``providers:`` schema and the legacy
+    ``custom_providers:`` list, un-normalized: this reads raw config keys
+    (``proxy`` included), not the runtime custom-provider view.
+    """
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for key, entry in providers.items():
+            if isinstance(entry, dict):
+                yield str(key), entry
+    custom_providers = config.get("custom_providers")
+    if isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            key = entry.get("provider_key") or entry.get("name") or ""
+            yield str(key), entry
+
+
+def _lookup_provider_entry(config: Dict[str, Any], provider: str) -> Optional[Dict[str, Any]]:
+    """Return the config entry for *provider*, matched by key then by name."""
+    wanted = provider.strip().lower()
+    if not wanted:
+        return None
+    for key, entry in _iter_provider_config_entries(config):
+        if key.strip().lower() == wanted:
+            return entry
+    for _key, entry in _iter_provider_config_entries(config):
+        name = entry.get("name")
+        if isinstance(name, str) and name.strip().lower() == wanted:
+            return entry
+    return None
+
+
+def _entry_base_url(entry: Dict[str, Any]) -> Any:
+    for url_key in ("base_url", "url", "api"):
+        raw = entry.get(url_key)
+        if isinstance(raw, str) and raw.strip():
+            return raw
+    return None
+
+
+def resolve_provider_proxy(
+    provider: Optional[str] = None,
+    *,
+    base_url: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Resolve the proxy policy for one provider.
+
+    Returns a proxy URL (``str``), ``False`` (force a direct connection even
+    when a global ``HTTPS_PROXY`` is set), or ``None`` (not configured — the
+    caller falls back to the proxy environment variables, i.e. exactly today's
+    behavior).
+
+    Matching is by provider *name*, which is how ``providers:`` is keyed and
+    what login flows hold. ``base_url`` is a fallback for callers that never
+    learn a provider name — auxiliary clients get only a URL — and is resolved
+    against configured ``base_url``s first, then against
+    ``PROVIDER_REGISTRY``'s inference hosts.
+
+    Raises ``ValueError`` for a malformed ``proxy`` value. An unreadable config
+    is not fatal: it returns ``None`` so a config problem cannot take down
+    inference.
+
+    SECURITY: the returned value may embed credentials
+    (``http://user:pass@host``). Never log it directly — use
+    ``utils.redact_proxy_url``.
+    """
+    if config is None:
+        try:
+            config = load_config_readonly()
+        except Exception:
+            return None
+    if not isinstance(config, dict):
+        return None
+
+    name = str(provider or "").strip()
+    if name:
+        entry = _lookup_provider_entry(config, name)
+        if isinstance(entry, dict) and "proxy" in entry:
+            return _coerce_provider_proxy(entry["proxy"], name)
+
+    url = str(base_url or "").strip()
+    if not url:
+        return None
+
+    target = normalize_route_base_url(url)
+    if target:
+        for key, entry in _iter_provider_config_entries(config):
+            if "proxy" not in entry:
+                continue
+            entry_url = normalize_route_base_url(_entry_base_url(entry))
+            if entry_url and entry_url == target:
+                return _coerce_provider_proxy(entry["proxy"], key)
+
+    # No configured base_url matched — the URL may belong to a built-in
+    # provider (Codex, Anthropic, DeepSeek…) whose entry carries only a
+    # ``proxy`` key and no base_url of its own.
+    from utils import base_url_hostname
+
+    host = base_url_hostname(url)
+    if not host:
+        return None
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+    except Exception:
+        return None
+    for registry_id, registry_entry in PROVIDER_REGISTRY.items():
+        registry_url = getattr(registry_entry, "inference_base_url", "")
+        if not registry_url or base_url_hostname(registry_url) != host:
+            continue
+        entry = _lookup_provider_entry(config, str(registry_id))
+        if isinstance(entry, dict) and "proxy" in entry:
+            return _coerce_provider_proxy(entry["proxy"], str(registry_id))
+    return None
+
+
+def resolve_provider_proxy_safe(
+    provider: Optional[str] = None,
+    *,
+    base_url: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """:func:`resolve_provider_proxy` for callers that must not raise.
+
+    The primary client fails fast on a malformed ``proxy`` entry — that is where
+    an operator sees it. Auxiliary calls, login flows and model probes instead
+    degrade to the env-var behavior, but say so once per provider so the reason
+    a request went direct is never invisible. The exception message is already
+    credential-safe.
+    """
+    try:
+        return resolve_provider_proxy(provider, base_url=base_url, config=config)
+    except Exception as exc:
+        _warn_once_per_provider(
+            str(provider or base_url or "?"),
+            "proxy-invalid",
+            "Ignoring per-provider proxy setting: %s", exc,
+        )
+        return None
+
+
+def provider_proxy_httpx_kwargs(
+    provider: Optional[str] = None,
+    *,
+    base_url: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """``httpx`` kwargs applying a provider's proxy policy to a one-off client.
+
+    For the direct ``httpx.Client(...)`` / ``httpx.get(...)`` call sites that
+    don't go through ``build_keepalive_http_client`` — login flows, model
+    probes, account-usage lookups.
+
+    ``{}`` means "not configured", leaving httpx's default ``trust_env``
+    behavior untouched. Forced-direct needs ``trust_env=False`` rather than
+    ``proxy=None``: httpx resolves env proxies through
+    ``urllib.request.getproxies()``, which on macOS also reports system proxy
+    settings.
+    """
+    proxy = resolve_provider_proxy_safe(provider, base_url=base_url, config=config)
+    if proxy is None:
+        return {}
+    if proxy is False:
+        return {"trust_env": False}
+    return {"proxy": str(proxy)}
 
 
 def normalize_extra_headers(extra_headers: Any) -> Dict[str, str]:
@@ -1975,7 +2231,7 @@ _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
     "context_length", "rate_limit_delay", "extra_body",
-    "ssl_ca_cert", "ssl_verify",
+    "ssl_ca_cert", "ssl_verify", "proxy",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",

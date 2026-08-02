@@ -220,7 +220,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview,
     _trajectory_normalize_msg,  # noqa: F401  # re-exported for tests that `from run_agent import _trajectory_normalize_msg`
 )
-from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_url
 
 
 # Internal flags that mark a message as ephemeral empty-response/prefill
@@ -5032,7 +5032,9 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
+    def _build_keepalive_http_client(
+        base_url: str = "", *, verify: Any = True, proxy: Any = None,
+    ) -> Any:
         """Build an httpx.Client with proactive idle-connection reaping.
 
         Previously this method injected a custom ``httpx.HTTPTransport``
@@ -5056,13 +5058,27 @@ class AIAgent:
         ``HERMES_CA_BUNDLE`` settings.  It is passed on the client AND on
         the plain no-proxy mounts (a mounted transport owns the SSL context
         for its scheme).
+
+        ``proxy`` carries an already-resolved ``providers.<name>.proxy``
+        policy (see ``hermes_cli.config.resolve_provider_proxy``): a URL to
+        use, ``False`` to force a direct connection even when a global
+        ``HTTPS_PROXY`` is set, or ``None`` (the default) to keep the
+        historical env-var behavior.  Resolution stays in the caller — this
+        builder only consumes the decision.
         """
         try:
             import httpx as _httpx
 
             # Explicitly read proxy settings so requests route through
-            # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
-            _proxy = _get_proxy_for_base_url(base_url)
+            # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.  A per-provider
+            # ``proxy`` overrides that: config is more specific than a global
+            # env var, so a stray HTTPS_PROXY can't silently defeat it.
+            if proxy is None:
+                _proxy = _get_proxy_for_base_url(base_url)
+            elif proxy is False:
+                _proxy = None
+            else:
+                _proxy = normalize_proxy_url(proxy)
 
             # Proactive pool reaping: close idle connections at 20 s,
             # before reverse proxies (30–60 s typical) send FIN and

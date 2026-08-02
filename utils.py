@@ -836,6 +836,31 @@ def normalize_proxy_url(proxy_url: str | None) -> str | None:
     return candidate
 
 
+def redact_proxy_url(proxy_url: Any) -> str:
+    """Render a proxy URL safe to log, masking any embedded credentials.
+
+    ``http://user:pass@host:3128`` becomes ``http://***@host:3128``. Proxy URLs
+    carry credentials as routinely as ``extra_headers`` do, and the same rule
+    applies: never log the raw value. Non-URL inputs degrade to ``"<proxy>"``
+    rather than leaking an unparsed string.
+    """
+    if proxy_url is False:
+        return "direct"
+    candidate = str(proxy_url or "").strip()
+    if not candidate:
+        return ""
+    try:
+        parsed = urlparse(candidate)
+        if not parsed.scheme or not parsed.netloc:
+            return "<proxy>"
+        if "@" not in parsed.netloc:
+            return candidate
+        hostport = parsed.netloc.rsplit("@", 1)[1]
+        return f"{parsed.scheme}://***@{hostport}"
+    except Exception:
+        return "<proxy>"
+
+
 def normalize_proxy_env_vars() -> None:
     """Rewrite supported proxy env vars to canonical URL forms in-place."""
     for key in _PROXY_ENV_KEYS:
