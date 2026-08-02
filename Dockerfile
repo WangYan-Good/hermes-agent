@@ -102,27 +102,43 @@ db.close()"
 # We use `curl` instead of `ADD` for ALL three tarballs: `ADD` evaluates its
 # URL at parse time (no ARG / TARGETARCH substitution) and — critically for
 # CI reliability — cannot retry, so a single GitHub-release CDN blip fails
-# the whole 15-45 min build. curl -fsSL --retry 3 self-heals those blips,
-# and every tarball is still checksum-verified below before extraction.
+# the whole 15-45 min build. curl -fsSL --retry self-heals those blips.
+#
+# GitHub Releases is unreachable or flaky from some build networks (e.g.
+# mainland China) even though CI's runners reach it fine direct.
+# S6_OVERLAY_MIRROR lets a failed direct fetch fall back to a GitHub
+# reverse-proxy mirror. The fallback download still goes through the same
+# SHA256 verification below, so a wrong or tampered mirror response fails
+# the build instead of being trusted — which is not hypothetical: some
+# proxies (ghproxy.com as of 2026-07) answer 200 with an HTML landing page
+# rather than the asset, and only the checksum catches that. Verify any
+# replacement mirror by checksum, not by HTTP status. Pass
+# --build-arg S6_OVERLAY_MIRROR= (empty) to disable the fallback entirely.
 ARG TARGETARCH
 ARG S6_OVERLAY_VERSION=3.2.3.0
 ARG S6_OVERLAY_NOARCH_SHA256=b720f9d9340efc8bb07528b9743813c836e4b02f8693d90241f047998b4c53cf
 ARG S6_OVERLAY_X86_64_SHA256=a93f02882c6ed46b21e7adb5c0add86154f01236c93cd82c7d682722e8840563
 ARG S6_OVERLAY_AARCH64_SHA256=0952056ff913482163cc30e35b2e944b507ba1025d78f5becbb89367bf344581
 ARG S6_OVERLAY_SYMLINKS_SHA256=a60dc5235de3ecbcf874b9c1f18d73263ab99b289b9329aa950e8729c4789f0e
+ARG S6_OVERLAY_MIRROR=https://ghfast.top/https://github.com
 RUN set -eu; \
     case "${TARGETARCH:-amd64}" in \
         amd64) s6_arch="x86_64"; s6_arch_sha="${S6_OVERLAY_X86_64_SHA256}" ;; \
         arm64) s6_arch="aarch64"; s6_arch_sha="${S6_OVERLAY_AARCH64_SHA256}" ;; \
         *) echo "Unsupported TARGETARCH=${TARGETARCH} for s6-overlay" >&2; exit 1 ;; \
     esac; \
-    base="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}"; \
-    curl -fsSL --retry 3 -o /tmp/s6-overlay-noarch.tar.xz \
-        "${base}/s6-overlay-noarch.tar.xz"; \
-    curl -fsSL --retry 3 -o /tmp/s6-overlay-symlinks-noarch.tar.xz \
-        "${base}/s6-overlay-symlinks-noarch.tar.xz"; \
-    curl -fsSL --retry 3 -o /tmp/s6-overlay-arch.tar.xz \
-        "${base}/s6-overlay-${s6_arch}.tar.xz"; \
+    path="just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}"; \
+    fetch() { \
+        out="$1"; name="$2"; \
+        curl -fsSL --connect-timeout 10 --max-time 60 --retry 2 --retry-all-errors \
+            -o "$out" "https://github.com/${path}/${name}" || \
+        { [ -n "${S6_OVERLAY_MIRROR}" ] && \
+          curl -fsSL --connect-timeout 10 --max-time 60 --retry 2 --retry-all-errors \
+              -o "$out" "${S6_OVERLAY_MIRROR}/${path}/${name}"; }; \
+    }; \
+    fetch /tmp/s6-overlay-noarch.tar.xz s6-overlay-noarch.tar.xz; \
+    fetch /tmp/s6-overlay-symlinks-noarch.tar.xz s6-overlay-symlinks-noarch.tar.xz; \
+    fetch /tmp/s6-overlay-arch.tar.xz "s6-overlay-${s6_arch}.tar.xz"; \
     { \
         printf '%s  %s\n' "${S6_OVERLAY_NOARCH_SHA256}" /tmp/s6-overlay-noarch.tar.xz; \
         printf '%s  %s\n' "${s6_arch_sha}" /tmp/s6-overlay-arch.tar.xz; \
@@ -195,6 +211,17 @@ COPY apps/shared/ apps/shared/
 # runtime `npm install` that then failed with EACCES.  Keeping the env
 # guards against a future regression if the source npm version changes.
 ENV npm_config_install_links=false
+
+# Registry override for networks where registry.npmjs.org is slow or gets
+# connection-reset mid-install (China, corporate MITM proxies). The default is
+# the upstream registry, so CI and normal builds are byte-for-byte unchanged;
+# only an explicit --build-arg switches it, e.g.
+#   --build-arg NPM_REGISTRY=https://registry.npmmirror.com
+# npm verifies every tarball against the integrity hashes already pinned in
+# package-lock.json, so a mirror cannot substitute different package content
+# without the install failing.
+ARG NPM_REGISTRY=https://registry.npmjs.org
+ENV npm_config_registry=${NPM_REGISTRY}
 
 RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
     for i in 1 2 3; do \
@@ -277,13 +304,22 @@ RUN cd web && npm run build && \
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
-# --link decouples this layer from parents for cache purposes; --chmod bakes
-# the final read-only permissions at copy time so we skip the separate
-# `chmod -R` pass that previously walked ~30k files across the venv +
-# node_modules + source (21s amd64 / 222s arm64 — #49113).  `a+rX,go-w`
-# gives the non-root hermes user read + traverse but no write; root retains
-# write so the build steps below don't need chmod u+w dances.
-COPY --link --chmod=a+rX,go-w . .
+# --link decouples this layer from parents for cache purposes.
+#
+# Permissions are applied by a separate `chmod -R` rather than COPY's
+# `--chmod=a+rX,go-w` (#49113): buildah/podman only parse OCTAL modes there
+# and abort with "Error parsing chmod a+rX,go-w", so the symbolic form makes
+# the image unbuildable outside Docker/BuildKit. Octal is not a substitute —
+# a fixed 0755 would mark every regular file executable, losing the whole
+# point of `X` (traverse directories, don't flip the executable bit on data
+# files). The separate pass costs one walk of ~30k files across the venv +
+# node_modules + source (21s amd64 / 222s arm64) and is the pre-#49113
+# behaviour; correctness and portability win over that.
+#
+# `a+rX,go-w` gives the non-root hermes user read + traverse but no write;
+# root retains write so the build steps below don't need chmod u+w dances.
+COPY --link . .
+RUN chmod -R a+rX,go-w /opt/hermes
 
 # ---------- Permissions ----------
 # Link hermes-agent itself (editable). Deps are already installed in the
