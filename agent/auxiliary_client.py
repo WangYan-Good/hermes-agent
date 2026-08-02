@@ -166,6 +166,33 @@ def _resolve_aux_verify(base_url: Optional[str]) -> Any:
         return True
 
 
+def _resolve_aux_proxy(base_url: Optional[str]) -> Any:
+    """Resolve the per-provider proxy policy for an auxiliary-client base_url.
+
+    Auxiliary clients (compression, vision, web_extract, title generation, …)
+    never learn a provider name — they hold only a URL, and the auxiliary model
+    may live on a different provider than the primary one. So resolution runs
+    in reverse, matching the URL against configured ``base_url``s and then
+    against ``PROVIDER_REGISTRY``'s inference hosts; the configuration key is
+    still the provider name.
+
+    Returns a proxy URL, ``False`` (force direct), or ``None`` (fall back to
+    the proxy env vars). Best-effort like ``_resolve_aux_verify``: any failure
+    — including a malformed config entry — degrades to ``None`` rather than
+    taking down an auxiliary call. The primary client raises on the same
+    malformed entry, and the safe resolver warns once, so the operator still
+    finds out.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly, resolve_provider_proxy_safe
+
+        return resolve_provider_proxy_safe(
+            base_url=str(base_url or ""), config=load_config_readonly()
+        )
+    except Exception:
+        return None
+
+
 _WARNED_KEEPALIVE_IMPORT_SKEW = False
 
 
@@ -181,10 +208,12 @@ def _openai_http_client_kwargs(
             str(base_url or ""),
             async_mode=async_mode,
             verify=_resolve_aux_verify(base_url),
+            proxy=_resolve_aux_proxy(base_url),
         )
-    except (ImportError, AttributeError):
+    except (ImportError, AttributeError, TypeError):
         # Version-skewed installs (#64333): a process whose sys.path resolves
-        # an older agent/process_bootstrap.py without this helper — seen when
+        # an older agent/process_bootstrap.py without this helper (or with an
+        # older signature that predates ``proxy=``) — seen when
         # the Desktop app's bundled runtime lags a git-installed source tree
         # that newer callers (cron scheduler) were written against. Every cron
         # job died on this ImportError before any agent logic ran. Degrade

@@ -2241,6 +2241,7 @@ def anthropic_prompt_cache_policy(
 def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: bool) -> Any:
     from agent.auxiliary_client import _validate_base_url, _validate_proxy_env_urls
     from agent.ssl_verify import resolve_httpx_verify
+    from hermes_cli.config import resolve_provider_proxy
     # Treat client_kwargs as read-only. Callers pass agent._client_kwargs (or shallow
     # copies of it) in; any in-place mutation leaks back into the stored dict and is
     # reused on subsequent requests. #10933 hit this by injecting an httpx.Client
@@ -2253,6 +2254,15 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
     httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
+    # Per-provider proxy policy: a URL, False (force direct), or None (fall back
+    # to HTTPS_PROXY / NO_PROXY, i.e. the historical behavior). Resolved here —
+    # the builder only consumes an already-decided value. A malformed entry
+    # raises rather than silently going direct: traffic the operator believes is
+    # proxied taking the direct route is worse than failing at startup.
+    httpx_proxy = resolve_provider_proxy(
+        getattr(agent, "provider", None),
+        base_url=str(client_kwargs.get("base_url", "") or ""),
+    )
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
     if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
@@ -2277,7 +2287,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             }
             if "http_client" not in safe_kwargs:
                 keepalive_http = agent._build_keepalive_http_client(
-                    base_url, verify=httpx_verify,
+                    base_url, verify=httpx_verify, proxy=httpx_proxy,
                 )
                 if keepalive_http is not None:
                     safe_kwargs["http_client"] = keepalive_http
@@ -2308,7 +2318,7 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
     if "http_client" not in client_kwargs:
         keepalive_http = agent._build_keepalive_http_client(
-            client_kwargs.get("base_url", ""), verify=httpx_verify,
+            client_kwargs.get("base_url", ""), verify=httpx_verify, proxy=httpx_proxy,
         )
         if keepalive_http is not None:
             client_kwargs["http_client"] = keepalive_http

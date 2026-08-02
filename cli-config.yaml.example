@@ -156,6 +156,27 @@ model:
 #       gpt-5.4:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
+# Per-provider egress proxy (optional)
+# ``providers.<id>.proxy`` routes one provider through a proxy while leaving
+# every other provider alone. Covers inference, auxiliary calls, the native
+# Anthropic SDK path, and OAuth login / token refresh.
+#
+#   <url>                     Route this provider through it; wins over HTTPS_PROXY.
+#   false / "" / direct/none  Force a direct connection, even with HTTPS_PROXY set.
+#   absent or null            Fall back to HTTPS_PROXY / NO_PROXY (today's behavior).
+#
+# A malformed value raises instead of silently going direct. socks5:// needs
+# `pip install 'httpx[socks]'`. Non-model egress (web_search/web_fetch, update
+# checks, skill downloads) is not covered — use HTTPS_PROXY for that.
+#
+# providers:
+#   openai-codex:
+#     proxy: "http://127.0.0.1:7890"
+#   anthropic:
+#     proxy: "http://127.0.0.1:7890"
+#   deepseek:
+#     proxy: false                   # keep this one direct despite a global HTTPS_PROXY
+
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================

@@ -2579,6 +2579,19 @@ def list_authenticated_providers(
                 or ep_cfg.get("url", "")
                 or ""
             )
+            # A ``providers.<name>`` entry can carry only cross-cutting settings
+            # for a built-in provider — ``providers.openai-codex: {proxy: ...}``
+            # is the canonical case. With no endpoint and no models it cannot
+            # produce a selectable row: the probe is skipped (no api_url) and
+            # runtime resolution rejects it, so it would render as a dead
+            # "0 models" duplicate of the built-in whenever the built-in row
+            # hasn't been emitted (i.e. before that provider is authenticated).
+            if not str(api_url).strip() and not _declared_model_ids(
+                ep_cfg.get("models", [])
+            ) and not str(
+                ep_cfg.get("default_model", "") or ep_cfg.get("model", "") or ""
+            ).strip():
+                continue
             key_env = str(ep_cfg.get("key_env", "") or "").strip()
             inline_api_key = str(ep_cfg.get("api_key", "") or "").strip()
             api_mode = str(

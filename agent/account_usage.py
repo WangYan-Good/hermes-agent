@@ -449,6 +449,21 @@ def _resolve_codex_usage_url(base_url: str) -> str:
     return _codex_backend_urls(base_url)[0]
 
 
+def _usage_proxy_kwargs(provider: str = "", base_url: str = "") -> dict:
+    """httpx kwargs applying ``providers.<name>.proxy`` to an account-usage probe.
+
+    These probes hit the provider's own hosts (chatgpt.com, api.anthropic.com),
+    so they are behind the same reachability wall as inference. Returns ``{}``
+    when nothing is configured, leaving the env-var behavior untouched.
+    """
+    try:
+        from hermes_cli.config import provider_proxy_httpx_kwargs
+
+        return provider_proxy_httpx_kwargs(provider or None, base_url=base_url or None)
+    except Exception:
+        return {}
+
+
 def _resolve_codex_usage_credentials(
     base_url: Optional[str],
     api_key: Optional[str],
@@ -519,7 +534,7 @@ def _fetch_codex_account_usage(
     }
     if account_id:
         headers["ChatGPT-Account-Id"] = account_id
-    with httpx.Client(timeout=15.0) as client:
+    with httpx.Client(timeout=15.0, **_usage_proxy_kwargs("openai-codex")) as client:
         response = client.get(_resolve_codex_usage_url(resolved_base_url), headers=headers)
         response.raise_for_status()
     payload = response.json() or {}
@@ -628,7 +643,7 @@ def redeem_codex_reset_credit(
         headers["ChatGPT-Account-Id"] = account_id
 
     try:
-        with httpx.Client(timeout=15.0) as client:
+        with httpx.Client(timeout=15.0, **_usage_proxy_kwargs("openai-codex")) as client:
             usage_resp = client.get(usage_url, headers=headers)
             usage_resp.raise_for_status()
             payload = usage_resp.json() or {}
@@ -766,7 +781,7 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         "anthropic-beta": "oauth-2025-04-20",
         "User-Agent": "claude-code/2.1.0",
     }
-    with httpx.Client(timeout=15.0) as client:
+    with httpx.Client(timeout=15.0, **_usage_proxy_kwargs("anthropic")) as client:
         response = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
         response.raise_for_status()
     payload = response.json() or {}
@@ -825,7 +840,9 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
     }
-    with httpx.Client(timeout=10.0) as client:
+    with httpx.Client(
+        timeout=10.0, **_usage_proxy_kwargs(base_url=normalized),
+    ) as client:
         credits_resp = client.get(credits_url, headers=headers)
         credits_resp.raise_for_status()
         credits = (credits_resp.json() or {}).get("data") or {}

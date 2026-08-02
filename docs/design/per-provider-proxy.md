@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-30
 **Branch:** `personal`
-**Status:** design approved, pending implementation plan
+**Status:** implemented 2026-07-31 — see "As built" at the end for the
+deltas between this design and the code.
 
 ## Problem
 
@@ -225,3 +226,55 @@ All tests mock the network. Verifying real connectivity means running
 - **Rejected: httpx `mounts` routing table.** Mounts match on URL prefix rather
   than provider identity, and the bare `httpx.post` calls in `hermes_cli/auth.py`
   would ignore such a table anyway.
+
+## As built
+
+Implemented as designed, with these deltas found while wiring it up.
+
+**Extra egress covered.** The four login/refresh sites in the design are the
+CLI's. The dashboard replicates both flows inline (`_codex_full_login_worker`
+and the Anthropic token exchange in `hermes_cli/web_server.py`) and is the
+surface a Docker deployment actually logs in through, so those got the same
+treatment. The two Codex `/models` probes (`hermes_cli/codex_models.py`,
+`agent/model_metadata.py`) are model-related egress that degrades *silently* to
+a static catalog when it can't reach chatgpt.com — wired for the same reason.
+The account-usage probes in `agent/account_usage.py` (chatgpt.com `/usage`,
+`api.anthropic.com/api/oauth/usage`, and the generic `/credits` lookup, which
+resolves by base_url since it holds no provider name) round out the set: every
+call that leaves for a provider's own hosts now follows that provider's policy.
+
+**Two small shared helpers.** `resolve_provider_proxy_safe` wraps the resolver
+for the best-effort callers — they must not raise, but a malformed entry
+warning once per provider (via `_warn_once_per_provider`) keeps the reason a
+request went direct from being invisible. `provider_proxy_httpx_kwargs` renders
+the policy as `httpx` kwargs for the one-off `httpx.Client(...)` /
+`httpx.get(...)` sites that never touch `build_keepalive_http_client`.
+
+**Anthropic OAuth uses urllib, not httpx.** `refresh_anthropic_oauth_pure` and
+`run_hermes_oauth_login_pure` go through `urllib.request.urlopen`. They now
+route via `_oauth_urlopen`, which installs a `ProxyHandler` (an empty mapping
+for forced-direct, which also stops urllib consulting the environment). urllib
+speaks HTTP proxies only, so a `socks5://` value raises there with a message
+pointing at the proxy's `http://` port rather than failing cryptically.
+
+**Forced-direct outside the keepalive builders uses `trust_env=False`.** The
+plain no-proxy mounts are specific to `build_keepalive_http_client`. For the
+Anthropic SDK client, the httpx OAuth clients, and the `requests` session
+behind the Codex probe, `trust_env=False` (`session.trust_env = False`) is the
+equivalent: httpx and requests both resolve env proxies through
+`urllib.request.getproxies()`, which on macOS reports system proxy settings.
+
+**Anthropic client injection is conditional.** `build_anthropic_client` passes
+`http_client` only when a policy is configured. Unconfigured, the SDK keeps
+building its own client, so zero-config construction is unchanged. The Entra ID
+bearer-hook variant takes the same policy through `build_bearer_http_client`.
+
+**Picker guard.** `providers.openai-codex: {proxy: ...}` is an entry with no
+base_url and no models. Section 3 of `list_authenticated_providers` would have
+emitted it as a dead "0 models" row whenever the built-in row wasn't already
+emitted — i.e. before that provider is authenticated, exactly when an operator
+is setting the proxy up. Such settings-only entries are now skipped.
+
+**Tests.** The five files from the design plus
+`tests/agent/test_codex_probe_proxy.py` and
+`tests/hermes_cli/test_provider_proxy_picker.py` for the two additions above.

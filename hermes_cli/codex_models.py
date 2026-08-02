@@ -132,10 +132,16 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         acct_id = _extract_chatgpt_account_id(access_token)
         if acct_id:
             headers["ChatGPT-Account-Id"] = acct_id
+        from hermes_cli.auth import oauth_httpx_proxy_kwargs
+
         resp = httpx.get(
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
             headers=headers,
             timeout=10,
+            # chatgpt.com sits behind the same reachability wall as the Codex
+            # inference endpoint, so honor providers.openai-codex.proxy here
+            # too — otherwise /model silently falls back to the static catalog.
+            **oauth_httpx_proxy_kwargs("openai-codex"),
         )
         if resp.status_code != 200:
             return []

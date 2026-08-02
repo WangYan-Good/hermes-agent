@@ -147,6 +147,7 @@ def build_keepalive_http_client(
     *,
     async_mode: bool = False,
     verify: Any = True,
+    proxy: Any = None,
 ) -> Optional[Any]:
     """Build an httpx client for OpenAI SDK calls with env-only proxy policy.
 
@@ -168,11 +169,23 @@ def build_keepalive_http_client(
     ``ssl_ca_cert`` / ``ssl_verify`` and ``HERMES_CA_BUNDLE`` settings the main
     client uses. It is passed on the client AND on the plain no-proxy mounts
     (a mounted transport owns the SSL context for its scheme).
+
+    ``proxy`` carries an already-resolved ``providers.<name>.proxy`` policy
+    (see ``hermes_cli.config.resolve_provider_proxy``): a URL to use, ``False``
+    to force a direct connection even when a global ``HTTPS_PROXY`` is set, or
+    ``None`` (the default) to keep the historical env-var behavior. Resolution
+    stays in the caller — this module runs during startup, so importing
+    ``hermes_cli.config`` here would risk an import cycle.
     """
     try:
         import httpx
 
-        proxy = _get_proxy_for_base_url(base_url)
+        if proxy is None:
+            proxy = _get_proxy_for_base_url(base_url)
+        elif proxy is False:
+            proxy = None
+        else:
+            proxy = normalize_proxy_url(proxy)
 
         limits = httpx.Limits(
             max_keepalive_connections=20,
