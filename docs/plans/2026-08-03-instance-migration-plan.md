@@ -378,7 +378,7 @@ def save_targets(path: Path, targets: Dict[str, Dict[str, Any]]) -> None:
 
 - [ ] **Step 4: Run the test to verify it passes**
 
-Same command as Step 2. Expected: `14 passed`.
+Same command as Step 2. Expected: `11 passed`.
 
 - [ ] **Step 5: Commit**
 
