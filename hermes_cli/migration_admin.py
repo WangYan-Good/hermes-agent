@@ -237,3 +237,79 @@ def run_preflight(
         ))
 
     return results
+
+
+# Ordered stages. `install` precedes `stop_source` on purpose: it depends on no
+# data and is the likeliest to fail, so it should fail while the source is
+# still serving. There is no `start` stage — the run halts at a verified-but-
+# idle target because promotion is a decision for a human.
+STAGES: Tuple[str, ...] = (
+    "install",
+    "stop_source",
+    "backup",
+    "transfer",
+    "restore",
+    "verify",
+)
+
+_INSTALL_URL = "https://hermes-agent.nousresearch.com/install.sh"
+_INSTALL_PS1_URL = "https://hermes-agent.nousresearch.com/install.ps1"
+
+
+class MigrationAborted(Exception):
+    """A stage failed. Carries the stage so the caller can classify recovery."""
+
+    def __init__(self, stage: str, detail: str):
+        super().__init__(f"{stage}: {detail}")
+        self.stage = stage
+        self.detail = detail
+
+
+def source_is_stopped_at(stage: str) -> bool:
+    """True when the source gateway is already stopped by the time *stage* runs."""
+    if stage not in STAGES:
+        raise ValueError(f"unknown stage {stage!r}")
+    return STAGES.index(stage) >= STAGES.index("stop_source")
+
+
+def recovery_for(stage: str) -> str:
+    """Operator-facing recovery sentence for a failure at *stage*.
+
+    Derived from one invariant: the source is only ever stopped, never
+    modified. So before the stop there is nothing to undo, and after it the
+    remedy is always to start the source again.
+    """
+    if stage not in STAGES:
+        raise ValueError(f"unknown stage {stage!r}")
+
+    if not source_is_stopped_at(stage):
+        return (
+            "The source is still serving and the target was not modified. "
+            "Fix the problem and run the migration again."
+        )
+    if stage == "restore":
+        return (
+            "The source is stopped but its data is intact — restart it to roll "
+            "back. The target home is partially populated because import "
+            "overwrites; clear it before retrying."
+        )
+    return (
+        "The source is stopped but its data is intact — restart it to roll back."
+    )
+
+
+def install_command(os_info: Dict[str, Any]) -> str:
+    """Command that installs Hermes on the target.
+
+    Drives the project's existing installers rather than reimplementing
+    per-platform setup.
+    """
+    os_name = str(os_info.get("os") or "").lower()
+    if os_name in ("linux", "macos"):
+        return f"curl -fsSL {_INSTALL_URL} | sh"
+    if os_name == "windows":
+        return (
+            "powershell -NoProfile -ExecutionPolicy Bypass -Command "
+            f"\"irm {_INSTALL_PS1_URL} | iex\""
+        )
+    raise ValueError(f"unsupported target OS {os_name!r}: no installer available")
