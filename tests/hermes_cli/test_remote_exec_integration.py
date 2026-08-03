@@ -4,9 +4,14 @@ Marked `integration` because it needs a container running sshd. Everything that
 does not need a machine is in test_remote_exec.py and must stay there.
 
 Start the fixture sshd with:
-  docker run -d --rm --name hermes-sshd -p 2222:22 \
+  docker run -d --rm --name hermes-sshd -p 2222:2222 \
     -e USER_NAME=hermes -e USER_PASSWORD= -e PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
     linuxserver/openssh-server
+
+Note the port mapping: this image's sshd listens on 2222 *inside* the
+container by default (it runs unprivileged and cannot bind port 22), so the
+host and container sides of -p must both be 2222 -- `-p 2222:22` connects to
+nothing and the connection gets reset before the SSH banner.
 """
 
 import os

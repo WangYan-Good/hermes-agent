@@ -110,3 +110,50 @@ class TestParseOsProbe:
         # Guessing here would pick the wrong installer.
         with pytest.raises(ValueError, match="could not identify"):
             parse_os_probe("")
+
+
+class _FakeProc:
+    """Stand-in for the Popen object `_invoke` gets back from subprocess.Popen."""
+
+    def __init__(self, returncode, stdout=b"", stderr=b""):
+        self.returncode = returncode
+        self._stdout = stdout
+        self._stderr = stderr
+
+    def communicate(self, timeout=None):
+        return self._stdout, self._stderr
+
+
+class TestInvokeExitCode255:
+    """A remote command that exits 255 on its own must not be mistaken for
+    ssh's own "could not establish the session" exit code. Only stderr text
+    that looks like ssh's own failure output should raise; real sshd
+    behaviour for genuine transport failures is covered by the integration
+    suite (test_unreachable_host_raises_ssh_error), which stays fixture-only.
+    """
+
+    def _invoke_against(self, monkeypatch, *, stdout=b"", stderr=b""):
+        import hermes_cli.remote_exec as remote_exec
+
+        fake_proc = _FakeProc(255, stdout=stdout, stderr=stderr)
+        monkeypatch.setattr(
+            remote_exec.subprocess, "Popen", lambda *a, **k: fake_proc
+        )
+        return remote_exec.SshExecutor(PROFILE)._invoke(["ssh", "true"], timeout=5)
+
+    def test_255_without_an_ssh_failure_signature_is_a_normal_result(self, monkeypatch):
+        # The remote command itself chose to exit 255; that is data for the
+        # caller (e.g. a preflight check), not a broken connection.
+        got = self._invoke_against(
+            monkeypatch, stderr=b"my-script: unexpected condition, aborting\n"
+        )
+        assert got.rc == 255
+        assert got.stderr.strip() == "my-script: unexpected condition, aborting"
+
+    def test_255_with_an_ssh_failure_signature_raises(self, monkeypatch):
+        from hermes_cli.remote_exec import SshError
+
+        with pytest.raises(SshError):
+            self._invoke_against(
+                monkeypatch, stderr=b"Permission denied (publickey).\n"
+            )
