@@ -112,6 +112,27 @@ class TestPreflightBlocking:
         assert home.ok is False
         assert home.tier == "blocking"
 
+    def test_nonexistent_target_home_checks_parent_filesystem(self):
+        from hermes_cli.migration_admin import run_preflight
+
+        # target_home=/h/doesnotexist doesn't exist, but parent filesystem has space.
+        # df command walks up to find /h which exists.
+        # This should NOT produce a blocking disk_space failure.
+        ex = FakeExecutor({
+            "df ": FakeResult(stdout="100000000\n"),  # Walk-up finds /h, df on it
+            "command -v python3": FakeResult(rc=0),
+            "ls -A": FakeResult(rc=0, stdout=""),     # /h/doesnotexist is absent
+        })
+        results = run_preflight(
+            ex, target_home="/h/doesnotexist", archive_bytes=1000, source_version="0.19.0"
+        )
+        by_name = _by_name(results)
+        # target_home absent is OK (fresh install case)
+        assert by_name["target_home"].ok is True
+        # disk_space must not block just because target_home doesn't exist
+        assert by_name["disk_space"].ok is True
+        assert by_name["disk_space"].tier == "blocking"
+
 
 class TestPreflightWarnings:
     def test_clock_skew_warns_but_does_not_block(self):

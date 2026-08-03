@@ -178,9 +178,16 @@ def run_preflight(
 
     # --- free space (blocking) ----------------------------------------------
     # 2x the archive: it must fit alongside the unpacked result.
+    # Walk up to nearest existing ancestor directory since target_home may not exist yet.
+    # We check the filesystem the home will be created on.
     needed = archive_bytes * 2
-    df = executor.run(f"df -Pk {shlex.quote(target_home)} "
-                      f"| awk 'NR==2 {{print $4 * 1024}}'")
+    find_df_cmd = (
+        f"d={shlex.quote(target_home)}; "
+        f"while [ ! -d \"$d\" ] && [ \"$d\" != \"/\" ]; do "
+        f"d=$(dirname \"$d\"); done; "
+        f"df -Pk \"$d\" | awk 'NR==2 {{print $4 * 1024}}'"
+    )
+    df = executor.run(find_df_cmd)
     try:
         free = int((df.stdout or "0").strip() or 0)
     except ValueError:
