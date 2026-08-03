@@ -14,8 +14,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 TARGETS_FILENAME = "migration_targets.json"
 
@@ -114,3 +117,116 @@ def save_targets(path: Path, targets: Dict[str, Dict[str, Any]]) -> None:
     finally:
         os.close(fd)
     os.chmod(path, 0o600)
+
+
+# Presence of any of these in the target HERMES_HOME means real user state, as
+# opposed to the config.yaml a fresh install writes on first run.
+HOME_STATE_MARKERS: Tuple[str, ...] = (
+    "auth.json",
+    "sessions",
+    "state.db",
+    ".env",
+    "skills",
+)
+
+_MAX_CLOCK_SKEW_SECONDS = 120
+
+
+@dataclass
+class CheckResult:
+    name: str
+    tier: str      # "blocking" | "warning"
+    ok: bool
+    detail: str
+
+
+def preflight_blocks(results: List[CheckResult]) -> bool:
+    """True when any blocking check failed."""
+    return any(r.tier == "blocking" and not r.ok for r in results)
+
+
+def run_preflight(
+    executor,
+    *,
+    target_home: str,
+    archive_bytes: int,
+    source_version: str,
+) -> List[CheckResult]:
+    """Read-only checks against the target. Never modifies it.
+
+    Every command here must be a read. ``TestPreflightIsReadOnly`` asserts that
+    by inspecting the commands actually issued, because a preflight that
+    mutates the target defeats the point of running it before you commit.
+    """
+    results: List[CheckResult] = []
+
+    # --- OS identification (blocking: picks the installer) -------------------
+    try:
+        os_info = executor.detect_os()
+        results.append(CheckResult("os", "blocking", True,
+                                   f"{os_info['os']}/{os_info['arch']}"))
+    except Exception as exc:  # noqa: BLE001 - surfaced to the operator
+        results.append(CheckResult("os", "blocking", False, str(exc)))
+        os_info = {"os": "unknown", "arch": "unknown"}
+
+    # --- python3 (blocking: the installer and hermes both need it) ----------
+    py = executor.run("command -v python3")
+    results.append(CheckResult(
+        "python3", "blocking", py.rc == 0,
+        py.stdout.strip() or "python3 not found on PATH",
+    ))
+
+    # --- free space (blocking) ----------------------------------------------
+    # 2x the archive: it must fit alongside the unpacked result.
+    needed = archive_bytes * 2
+    df = executor.run(f"df -Pk {shlex.quote(target_home)} "
+                      f"| awk 'NR==2 {{print $4 * 1024}}'")
+    try:
+        free = int((df.stdout or "0").strip() or 0)
+    except ValueError:
+        free = 0
+    results.append(CheckResult(
+        "disk_space", "blocking", free >= needed,
+        f"{free} bytes free, need {needed}",
+    ))
+
+    # --- target home safety (blocking) --------------------------------------
+    listing = executor.run(f"ls -A {shlex.quote(target_home)}")
+    entries = [e for e in (listing.stdout or "").split() if e]
+    conflicting = sorted(set(entries) & set(HOME_STATE_MARKERS))
+    if not entries:
+        detail, ok = "absent or empty", True
+    elif not conflicting:
+        detail, ok = f"pristine ({', '.join(entries)})", True
+    else:
+        detail, ok = (
+            "contains existing state: " + ", ".join(conflicting)
+            + " — confirm overwrite to proceed", False
+        )
+    results.append(CheckResult("target_home", "blocking", ok, detail))
+
+    # --- clock skew (warning) -----------------------------------------------
+    # auth.json carries expiry-sensitive OAuth tokens; a skewed target presents
+    # as "login expired" rather than as a clock problem.
+    remote_clock = executor.run("date +%s")
+    try:
+        skew = abs(int((remote_clock.stdout or "0").strip()) - int(time.time()))
+        ok = skew <= _MAX_CLOCK_SKEW_SECONDS
+        detail = f"{skew}s from source"
+    except ValueError:
+        ok, detail = True, "could not read remote clock"
+    results.append(CheckResult("clock_skew", "warning", ok, detail))
+
+    # --- existing hermes version (warning) ----------------------------------
+    ver = executor.run("hermes version | head -1")
+    remote_version = (ver.stdout or "").strip()
+    if not remote_version:
+        results.append(CheckResult("hermes_version", "warning", True,
+                                   "not installed; will be installed"))
+    else:
+        results.append(CheckResult(
+            "hermes_version", "warning", remote_version == source_version,
+            f"target {remote_version} vs source {source_version}",
+        ))
+
+    return results
