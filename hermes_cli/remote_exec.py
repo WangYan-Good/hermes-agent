@@ -109,9 +109,31 @@ class RemoteResult:
 
 
 # ssh's own exit code for "I could not establish the session". A remote command
-# that genuinely exits 255 is indistinguishable, which is why callers should
-# not rely on 255 as a normal command result.
+# can also genuinely exit 255 on its own, so 255 alone is not proof of a
+# transport failure -- see _looks_like_ssh_transport_failure below, which is
+# what actually decides whether to raise.
 _SSH_TRANSPORT_FAILURE = 255
+
+# Substrings ssh itself writes to stderr when *it* fails to establish the
+# session -- auth rejected, DNS failure, refused/timed-out connection, a
+# reset mid-handshake, or a host-key mismatch. A remote command's own stderr
+# won't contain these unless it is deliberately impersonating ssh, so their
+# presence (alongside exit 255) is what distinguishes ssh's own failure from
+# a remote command that merely happens to exit 255.
+_SSH_FAILURE_SIGNATURES = (
+    "permission denied",
+    "could not resolve hostname",
+    "connection refused",
+    "connection timed out",
+    "connection reset by peer",
+    "kex_exchange_identification",
+    "host key verification failed",
+)
+
+
+def _looks_like_ssh_transport_failure(stderr: str) -> bool:
+    lowered = stderr.lower()
+    return any(signature in lowered for signature in _SSH_FAILURE_SIGNATURES)
 
 
 class SshExecutor:
@@ -120,24 +142,31 @@ class SshExecutor:
     def __init__(self, profile: Dict[str, Any]):
         self.profile = profile
 
-    def _invoke(self, argv: List[str], *, stdin_bytes=None, timeout: int) -> RemoteResult:
+    def _invoke(self, argv: List[str], *, stdin_file=None, timeout: int) -> RemoteResult:
+        # stdin_file, when given, is an open binary file handed straight to
+        # the child as its stdin so the OS pipes it directly -- put_file's
+        # payload never gets read into a Python bytes object.
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 argv,
-                input=stdin_bytes,
+                stdin=stdin_file,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                timeout=timeout,
             )
-        except subprocess.TimeoutExpired as exc:
-            raise SshError(f"timed out after {timeout}s connecting to "
-                           f"{self.profile.get('host')!r}") from exc
         except OSError as exc:
             raise SshError(f"could not launch ssh: {exc}") from exc
 
-        stdout = proc.stdout.decode("utf-8", "replace")
-        stderr = proc.stderr.decode("utf-8", "replace")
-        if proc.returncode == _SSH_TRANSPORT_FAILURE:
+        try:
+            stdout_bytes, stderr_bytes = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            proc.communicate()
+            raise SshError(f"timed out after {timeout}s connecting to "
+                           f"{self.profile.get('host')!r}") from exc
+
+        stdout = stdout_bytes.decode("utf-8", "replace")
+        stderr = stderr_bytes.decode("utf-8", "replace")
+        if proc.returncode == _SSH_TRANSPORT_FAILURE and _looks_like_ssh_transport_failure(stderr):
             raise SshError(stderr.strip() or "ssh failed to establish a session")
         return RemoteResult(rc=proc.returncode, stdout=stdout, stderr=stderr)
 
@@ -145,12 +174,9 @@ class SshExecutor:
         return self._invoke(build_ssh_argv(self.profile, command), timeout=timeout)
 
     def put_file(self, local: Path, remote_path: str, *, timeout: int = 1800) -> RemoteResult:
-        data = Path(local).read_bytes()
-        return self._invoke(
-            build_put_argv(self.profile, remote_path),
-            stdin_bytes=data,
-            timeout=timeout,
-        )
+        argv = build_put_argv(self.profile, remote_path)
+        with open(local, "rb") as fh:
+            return self._invoke(argv, stdin_file=fh, timeout=timeout)
 
     def detect_os(self) -> Dict[str, str]:
         return parse_os_probe(self.run(OS_PROBE_COMMAND).stdout)
