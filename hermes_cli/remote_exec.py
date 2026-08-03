@@ -12,6 +12,9 @@ single ssh invocation rather than depending on a second binary.
 from __future__ import annotations
 
 import shlex
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, List
 
 KNOWN_HOSTS_ENV = "HERMES_MIGRATION_KNOWN_HOSTS"
@@ -87,3 +90,67 @@ def parse_os_probe(stdout: str) -> Dict[str, str]:
         raise ValueError("could not identify remote OS from kernel %r" % kernel)
 
     return {"os": os_name, "arch": arch}
+
+
+class SshError(RuntimeError):
+    """Transport failure: unreachable, auth rejected, or host key mismatch.
+
+    Deliberately distinct from a non-zero remote exit code. Preflight checks
+    read exit codes as data ("is python3 installed?"); only a broken connection
+    is exceptional.
+    """
+
+
+@dataclass
+class RemoteResult:
+    rc: int
+    stdout: str
+    stderr: str
+
+
+# ssh's own exit code for "I could not establish the session". A remote command
+# that genuinely exits 255 is indistinguishable, which is why callers should
+# not rely on 255 as a normal command result.
+_SSH_TRANSPORT_FAILURE = 255
+
+
+class SshExecutor:
+    """Runs commands and streams files to one host over SSH."""
+
+    def __init__(self, profile: Dict[str, Any]):
+        self.profile = profile
+
+    def _invoke(self, argv: List[str], *, stdin_bytes=None, timeout: int) -> RemoteResult:
+        try:
+            proc = subprocess.run(
+                argv,
+                input=stdin_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise SshError(f"timed out after {timeout}s connecting to "
+                           f"{self.profile.get('host')!r}") from exc
+        except OSError as exc:
+            raise SshError(f"could not launch ssh: {exc}") from exc
+
+        stdout = proc.stdout.decode("utf-8", "replace")
+        stderr = proc.stderr.decode("utf-8", "replace")
+        if proc.returncode == _SSH_TRANSPORT_FAILURE:
+            raise SshError(stderr.strip() or "ssh failed to establish a session")
+        return RemoteResult(rc=proc.returncode, stdout=stdout, stderr=stderr)
+
+    def run(self, command: str, *, timeout: int = 60) -> RemoteResult:
+        return self._invoke(build_ssh_argv(self.profile, command), timeout=timeout)
+
+    def put_file(self, local: Path, remote_path: str, *, timeout: int = 1800) -> RemoteResult:
+        data = Path(local).read_bytes()
+        return self._invoke(
+            build_put_argv(self.profile, remote_path),
+            stdin_bytes=data,
+            timeout=timeout,
+        )
+
+    def detect_os(self) -> Dict[str, str]:
+        return parse_os_probe(self.run(OS_PROBE_COMMAND).stdout)
