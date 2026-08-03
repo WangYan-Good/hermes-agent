@@ -678,7 +678,7 @@ Marked `integration` because it needs a container running sshd. Everything that
 does not need a machine is in test_remote_exec.py and must stay there.
 
 Start the fixture sshd with:
-  docker run -d --rm --name hermes-sshd -p 2222:22 \
+  docker run -d --rm --name hermes-sshd -p 2222:2222 \
     -e USER_NAME=hermes -e USER_PASSWORD= -e PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)" \
     linuxserver/openssh-server
 """
@@ -759,7 +759,7 @@ def test_put_file_transfers_bytes_intact(profile, tmp_path):
 - [ ] **Step 2: Start the fixture and run the test to verify it fails**
 
 ```bash
-docker run -d --rm --name hermes-sshd -p 2222:22 \
+docker run -d --rm --name hermes-sshd -p 2222:2222 \
   -e PUBLIC_KEY="$(cat ~/.ssh/id_ed25519.pub)" -e USER_NAME=hermes \
   linuxserver/openssh-server
 
