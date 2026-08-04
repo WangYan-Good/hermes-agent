@@ -18,7 +18,7 @@
 - **Commit messages carry no AI-attribution trailer** of any kind (`CLAUDE.md`).
 - **Never run the whole `tests/hermes_cli` directory.** It hard-exits at ~33% on this branch *and* on clean HEAD — a pre-existing fault, not a regression. Always name the specific test file.
 - **Frontend type-checking must use `tsc -b` or `npm run build`. `npm run typecheck` proves nothing** — the root `tsconfig.json` is `{"files": [], "references": [...]}`, so `tsc -p .` checks an empty file list and passes with a deliberate type error present.
-- **New i18n keys must be added to all 17 locale files**, not just `en`/`zh`. Every locale is declared `: Translations` (the full type); `define-locale.ts` exports a deep-partial `TranslationOverrides` that no locale uses. Missing one fails `tsc -b` and makes the Docker image unbuildable.
+- **New i18n keys must be added to the 16 locale files declared `: Translations` (`ar.ts` uses `defineLocale` and inherits from English)**, not just `en`/`zh`. 16 of the 17 locales are declared `: Translations` (the full type); only `ar.ts` uses `define-locale.ts`'s deep-partial `TranslationOverrides` and inherits missing keys from English. Missing one fails `tsc -b` and makes the Docker image unbuildable.
 - **`run_backup()` / `run_import()` call `sys.exit(1)` on error.** They are CLI entrypoints, not APIs. Always invoke them as subprocesses and check the return code, or a failure kills the migration process and skips temp-archive cleanup.
 - **Proxy URLs and SSH details never reach a log line raw.** Reuse `utils.redact_proxy_url` style discipline for anything credential-adjacent.
 - **Branch:** `personal`. Repo root: `/mnt/main/CodeSpace/Project/hermes-agent`.
