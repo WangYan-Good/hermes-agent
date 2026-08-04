@@ -113,6 +113,38 @@ class TestArchiveHygiene:
             "the plaintext archive must not be left on the target"
 
 
+class TestStopVerification:
+    def test_aborts_if_gateway_is_still_alive_after_a_successful_looking_stop(
+        self, profile, tmp_path, monkeypatch
+    ):
+        """`hermes gateway stop` can exit 0 without the process actually
+        having died (stop_profile_gateway() unconditionally returns True
+        after its own bounded wait). execute_migration must independently
+        verify liveness and refuse to back up a still-running source."""
+        from hermes_cli.migrate import execute_migration
+        from hermes_cli.migration_admin import MigrationAborted
+
+        monkeypatch.setattr("hermes_cli.migrate._stop_source_gateway", lambda: 0)
+        monkeypatch.setattr("hermes_cli.migrate._gateway_still_running", lambda: True)
+        monkeypatch.setattr("hermes_cli.migrate._STOP_VERIFY_TIMEOUT_SECONDS", 0.05)
+        monkeypatch.setattr("hermes_cli.migrate._STOP_VERIFY_POLL_INTERVAL_SECONDS", 0.01)
+
+        backup_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.migrate._run_source_backup",
+            lambda archive_path: backup_calls.append(archive_path) or 0,
+        )
+
+        ex = FakeExecutor()
+        with pytest.raises(MigrationAborted) as err:
+            execute_migration(ex, profile, home=tmp_path, confirm_overwrite=False,
+                              emit=lambda *a: None)
+
+        assert err.value.stage == "stop_source"
+        assert backup_calls == [], \
+            "must not back up while the source is still detectably running"
+
+
 class TestFailures:
     def test_install_failure_aborts_before_stopping_the_source(
         self, profile, fake_backup, tmp_path
