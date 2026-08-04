@@ -74,6 +74,7 @@ export const ja: Translations = {
       documentation: "ドキュメント",
       keys: "キー",
       logs: "ログ",
+      migration: "バックアップと移行",
       models: "モデル",
       profiles: "プロファイル : マルチエージェント",
       plugins: "プラグイン",

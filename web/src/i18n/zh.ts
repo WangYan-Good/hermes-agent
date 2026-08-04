@@ -73,6 +73,7 @@ export const zh: Translations = {
       documentation: "文档",
       keys: "密钥",
       logs: "日志",
+      migration: "迁移与备份",
       models: "模型",
       profiles: "多Agent配置",
       plugins: "插件管理",

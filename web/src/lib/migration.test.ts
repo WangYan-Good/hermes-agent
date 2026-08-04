@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   MIGRATION_STAGES,
+  canStartMigration,
   checkTone,
   isBlocked,
+  isHostKeyMismatchError,
+  migrationStartCommand,
+  needsOverwriteConfirm,
   parseActionLine,
   stageProgress,
+  toTargetPayload,
   validateTargetDraft,
 } from "./migration";
 
@@ -106,6 +111,105 @@ describe("parseActionLine", () => {
     const cleanupNotice = parseActionLine("[cleanup] warn failed to remove");
     expect(stageEvent?.stage === "cleanup").toBe(false);
     expect(cleanupNotice?.stage === "cleanup").toBe(true);
+  });
+});
+
+describe("needsOverwriteConfirm", () => {
+  it("is false when nothing is blocking", () => {
+    expect(needsOverwriteConfirm([{ name: "os", tier: "blocking", ok: true, detail: "" }]))
+      .toBe(false);
+  });
+
+  it("is true when target_home is the only blocking failure", () => {
+    expect(needsOverwriteConfirm([
+      { name: "target_home", tier: "blocking", ok: false, detail: "" },
+      { name: "clock_skew", tier: "warning", ok: false, detail: "" },
+    ])).toBe(true);
+  });
+
+  it("is false when a non-target_home check is also blocking", () => {
+    // python3 missing is not something an overwrite checkbox can waive.
+    expect(needsOverwriteConfirm([
+      { name: "target_home", tier: "blocking", ok: false, detail: "" },
+      { name: "python3", tier: "blocking", ok: false, detail: "" },
+    ])).toBe(false);
+  });
+});
+
+describe("canStartMigration", () => {
+  it("is enabled when nothing blocks, regardless of the checkbox", () => {
+    expect(canStartMigration([{ name: "os", tier: "blocking", ok: true, detail: "" }], false))
+      .toBe(true);
+  });
+
+  it("stays disabled for a target_home block until the checkbox is ticked", () => {
+    const checks = [{ name: "target_home", tier: "blocking" as const, ok: false, detail: "" }];
+    expect(canStartMigration(checks, false)).toBe(false);
+    expect(canStartMigration(checks, true)).toBe(true);
+  });
+
+  it("cannot be overridden by the checkbox when another blocking check also failed", () => {
+    const checks = [
+      { name: "target_home", tier: "blocking" as const, ok: false, detail: "" },
+      { name: "disk_space", tier: "blocking" as const, ok: false, detail: "" },
+    ];
+    expect(canStartMigration(checks, true)).toBe(false);
+  });
+});
+
+describe("isHostKeyMismatchError", () => {
+  it("recognizes ssh's own host-key-mismatch stderr", () => {
+    expect(isHostKeyMismatchError("Host key verification failed.")).toBe(true);
+    expect(isHostKeyMismatchError("502: REMOTE HOST IDENTIFICATION HAS CHANGED! ... Host key verification failed."))
+      .toBe(true);
+  });
+
+  it("does not flag an unrelated failure", () => {
+    expect(isHostKeyMismatchError("Connection timed out")).toBe(false);
+    expect(isHostKeyMismatchError("404: unknown target prod")).toBe(false);
+  });
+});
+
+describe("migrationStartCommand", () => {
+  it("builds a plain ssh command for the default port with no identity file", () => {
+    expect(migrationStartCommand({
+      host: "example.com", user: "hermes", port: 22, identity_file: "", target_home: "",
+    })).toBe('ssh hermes@example.com "HERMES_HOME=~/.hermes hermes gateway start"');
+  });
+
+  it("includes -p for a non-default port and -i for an identity file", () => {
+    expect(migrationStartCommand({
+      host: "10.0.0.5", user: "root", port: 2222,
+      identity_file: "~/.ssh/id_migration", target_home: "/opt/hermes-home",
+    })).toBe(
+      'ssh -p 2222 -i ~/.ssh/id_migration root@10.0.0.5 "HERMES_HOME=/opt/hermes-home hermes gateway start"',
+    );
+  });
+});
+
+describe("toTargetPayload", () => {
+  it("trims required fields and omits blank optional ones", () => {
+    expect(toTargetPayload({
+      id: " prod ", host: " h ", user: " u ",
+      label: "", identity_file: "", target_home: "", port: "",
+    })).toEqual({ id: "prod", host: "h", user: "u" });
+  });
+
+  it("includes optional fields when present, converting port to a number", () => {
+    expect(toTargetPayload({
+      id: "prod", host: "h", user: "u", label: "Prod box",
+      identity_file: "~/.ssh/id_ed25519", target_home: "/opt/hermes-home",
+      port: "2222",
+    })).toEqual({
+      id: "prod", host: "h", user: "u", label: "Prod box",
+      identity_file: "~/.ssh/id_ed25519", target_home: "/opt/hermes-home",
+      port: 2222,
+    });
+  });
+
+  it("never sends a blank port — the server can't coerce '' to int", () => {
+    const payload = toTargetPayload({ id: "a", host: "h", user: "u", port: "" });
+    expect(payload).not.toHaveProperty("port");
   });
 });
 

@@ -74,6 +74,7 @@ export const ru: Translations = {
       documentation: "Документация",
       keys: "Ключи",
       logs: "Журналы",
+      migration: "Резервное копирование и миграция",
       models: "Модели",
       profiles: "профили: мульти-агенты",
       plugins: "Плагины",
