@@ -20,6 +20,10 @@ export type MigrationStage =
   | "restore"
   | "verify";
 
+/** A notice is not a progress stage, but part of the completion cleanup.
+ *  It must be distinguishable from stage events by checking `stage === "cleanup"`. */
+export type MigrationStageOrNotice = MigrationStage | "cleanup";
+
 /** Same order as migration_admin.STAGES; install precedes stop_source. */
 export const MIGRATION_STAGES: readonly MigrationStage[] = [
   "install",
@@ -58,10 +62,12 @@ export function stageProgress(
 
 export function parseActionLine(
   line: string,
-): { stage: MigrationStage; status: string; detail: string } | null {
+): { stage: MigrationStageOrNotice; status: string; detail: string } | null {
   const m = /^\[([a-z_]+)\]\s+(\S+)\s*(.*)$/.exec(line.trim());
-  if (!m || !STAGE_SET.has(m[1])) return null;
-  return { stage: m[1] as MigrationStage, status: m[2], detail: m[3] ?? "" };
+  if (!m) return null;
+  const stageName = m[1];
+  if (!STAGE_SET.has(stageName) && stageName !== "cleanup") return null;
+  return { stage: stageName as MigrationStageOrNotice, status: m[2], detail: m[3] ?? "" };
 }
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
@@ -69,6 +75,9 @@ const ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 /** Client-side mirror of validate_target. The server still validates; this
  *  exists so the form can refuse before a round trip. */
 export function validateTargetDraft(d: Record<string, string>): string | null {
+  if ("password" in d) {
+    return "password authentication is not supported: use an SSH key instead";
+  }
   if (!ID_RE.test(d.id ?? "")) {
     return "id must be lowercase alphanumeric with - or _";
   }

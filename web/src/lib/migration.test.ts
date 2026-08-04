@@ -59,6 +59,12 @@ describe("stageProgress", () => {
   it("does not advance past a failure", () => {
     expect(stageProgress("transfer", "fail")).toBe(stageProgress("transfer", "start"));
   });
+
+  it("handles cleanup notice without advancing progress", () => {
+    // Cleanup is not a progress stage; it must not crash and must not advance
+    expect(stageProgress("cleanup" as any, "ok")).toBe(0);
+    expect(stageProgress("cleanup" as any, "start")).toBe(0);
+  });
 });
 
 describe("parseActionLine", () => {
@@ -83,6 +89,24 @@ describe("parseActionLine", () => {
     expect(parseActionLine("Downloading hermes...")).toBeNull();
     expect(parseActionLine("[not-a-stage] ok")).toBeNull();
   });
+
+  it("parses a cleanup notice as a distinct warning", () => {
+    // Cleanup is emitted when the remote archive cannot be deleted.
+    // It must be recognizable as a notice (not a progress stage).
+    const result = parseActionLine("[cleanup] warn failed to remove /tmp/hermes-migration.zip on the target");
+    expect(result).not.toBeNull();
+    expect(result?.stage).toBe("cleanup");
+    expect(result?.status).toBe("warn");
+    expect(result?.detail).toMatch(/failed to remove/);
+  });
+
+  it("distinguishes cleanup notice from stage events", () => {
+    // The caller must identify cleanup as a notice without string-sniffing.
+    const stageEvent = parseActionLine("[transfer] ok 12345 bytes");
+    const cleanupNotice = parseActionLine("[cleanup] warn failed to remove");
+    expect(stageEvent?.stage === "cleanup").toBe(false);
+    expect(cleanupNotice?.stage === "cleanup").toBe(true);
+  });
 });
 
 describe("validateTargetDraft", () => {
@@ -102,5 +126,11 @@ describe("validateTargetDraft", () => {
   it("rejects an out-of-range port", () => {
     expect(validateTargetDraft({ id: "a", host: "h", user: "u", port: "70000" }))
       .toMatch(/port/);
+  });
+
+  it("rejects password authentication", () => {
+    // Password must never be accepted: the server mirrors this check.
+    expect(validateTargetDraft({ id: "a", host: "h", user: "u", password: "secret" }))
+      .toMatch(/password/);
   });
 });
