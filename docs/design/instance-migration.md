@@ -253,8 +253,10 @@ in the other 15 locale files**.
 
 This is not boilerplate advice. The per-provider-proxy design asserted that the
 other locales are partial and fall back to English by construction; they are
-not. `define-locale.ts` exports a deep-partial `TranslationOverrides`, but no
-locale uses it — all 17 are declared `: Translations`, the full type. Adding a
+not. `define-locale.ts` exports a deep-partial `TranslationOverrides`, and exactly
+one locale — `ar.ts` — actually uses it. The other 16 are declared
+`: Translations`, the full type, so a new required key must be added to all
+sixteen; `ar.ts` inherits it from English automatically. Adding a
 required key to three of them made `tsc -b` fail on the other 15, which meant
 the Docker image could not be built at all.
 
