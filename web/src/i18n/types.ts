@@ -877,4 +877,42 @@ export interface Translations {
     commentHint?: string;
     commentHintTitle?: string;
   };
+
+  // ── Instance migration page ──
+  migration: {
+    title: string;
+    description: string;
+    addTarget: string;
+    editTarget: string;
+    deleteTarget: string;
+    fieldId: string;
+    fieldLabel: string;
+    fieldHost: string;
+    fieldUser: string;
+    fieldPort: string;
+    fieldIdentityFile: string;
+    fieldTargetHome: string;
+    identityFileHint: string;
+    preflight: string;
+    preflightRunning: string;
+    preflightBlocked: string;
+    preflightPassed: string;
+    tierBlocking: string;
+    tierWarning: string;
+    start: string;
+    starting: string;
+    confirmOverwrite: string;
+    confirmOverwriteHint: string;
+    stageInstall: string;
+    stageStopSource: string;
+    stageBackup: string;
+    stageTransfer: string;
+    stageRestore: string;
+    stageVerify: string;
+    doneTitle: string;
+    doneNotStarted: string;
+    doneStartCommand: string;
+    doneResidualCredentials: string;
+    fingerprintChanged: string;
+  };
 }

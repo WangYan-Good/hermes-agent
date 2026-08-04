@@ -216,3 +216,88 @@ describe("api provider proxy", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("/api/providers/a%2Fb/proxy");
   });
 });
+
+describe("api migration targets", () => {
+  it("posts a target to the collection route", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true, target: {} });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.createMigrationTarget({ id: "prod", host: "h", user: "u" });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/migration/targets");
+    expect((init as RequestInit).method).toBe("POST");
+    expect((init as RequestInit).body).toBe(
+      JSON.stringify({ id: "prod", host: "h", user: "u" }),
+    );
+  });
+
+  it("encodes the id in per-target routes", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.deleteMigrationTarget("a b");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/migration/targets/a%20b");
+    expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe("DELETE");
+  });
+
+  it("passes confirm_overwrite as a query parameter", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true, action: "migrate-host" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.startMigration("prod", true);
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toContain("/api/migration/targets/prod/migrate");
+    expect(url).toContain("confirm_overwrite=true");
+    expect((init as RequestInit).method).toBe("POST");
+  });
+
+  it("defaults confirm_overwrite to false when omitted", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true, action: "migrate-host" });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.startMigration("prod");
+
+    expect(fetchMock.mock.calls[0][0]).toContain("confirm_overwrite=false");
+  });
+
+  it("lists targets from the collection route", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ targets: [] });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.listMigrationTargets();
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/migration/targets");
+  });
+
+  it("PUTs an update to the per-target route", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ ok: true, target: {} });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.updateMigrationTarget("prod", { label: "Prod box" });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/migration/targets/prod");
+    expect((init as RequestInit).method).toBe("PUT");
+  });
+
+  it("POSTs to the preflight route", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ checks: [], blocked: false });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.preflightMigrationTarget("prod");
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/migration/targets/prod/preflight");
+    expect((init as RequestInit).method).toBe("POST");
+  });
+});

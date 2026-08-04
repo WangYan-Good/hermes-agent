@@ -794,4 +794,47 @@ export const hu: Translations = {
     logTruncated: "(az utolsó 100 KB látható — teljes napló: ",
     logAt: ")",
   },
+
+  migration: {
+    title: "Migrate to another host",
+    description:
+      "Move this whole instance to another machine. The source instance is only stopped, never modified.",
+    addTarget: "Add target host",
+    editTarget: "Edit",
+    deleteTarget: "Delete",
+    fieldId: "Id",
+    fieldLabel: "Label",
+    fieldHost: "Host",
+    fieldUser: "User",
+    fieldPort: "Port",
+    fieldIdentityFile: "Identity file",
+    fieldTargetHome: "Target HERMES_HOME",
+    identityFileHint:
+      "Only the path is saved, never key material; password authentication is not supported.",
+    preflight: "Preflight",
+    preflightRunning: "Running preflight…",
+    preflightBlocked: "Blocking checks failed — migration cannot proceed",
+    preflightPassed: "Preflight passed",
+    tierBlocking: "Blocking",
+    tierWarning: "Warning",
+    start: "Start migration",
+    starting: "Migrating…",
+    confirmOverwrite: "Overwrite existing data on the target machine",
+    confirmOverwriteHint:
+      "The target HERMES_HOME already has real state — continuing will overwrite it.",
+    stageInstall: "Install Hermes",
+    stageStopSource: "Stop source instance",
+    stageBackup: "Package state",
+    stageTransfer: "Transfer",
+    stageRestore: "Restore",
+    stageVerify: "Verify",
+    doneTitle: "Migration complete",
+    doneNotStarted:
+      "The target is ready, but **not started yet**. Start it manually once you've confirmed everything looks right.",
+    doneStartCommand: "Start command:",
+    doneResidualCredentials:
+      "Full credentials (.env, auth.json, state.db) remain on the source machine's disk. Kept for rollback — clean them up yourself if you don't need them.",
+    fingerprintChanged:
+      "The target host's key has changed. This could be a reinstall, or a man-in-the-middle. Do not continue until you've confirmed it's expected.",
+  },
 };

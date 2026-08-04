@@ -1,8 +1,10 @@
 import { buildHermesWebSocketUrl } from "@hermes/shared";
 
 import type { ProviderProxyState, ProxyMode } from "./provider-proxy";
+import type { PreflightCheck } from "./migration";
 
 export type { ProviderProxyState, ProxyMode };
+export type { PreflightCheck };
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -1292,6 +1294,44 @@ export const api = {
   // ── Admin: Portal ───────────────────────────────────────────────────
   getPortal: () => fetchJSON<PortalStatus>("/api/portal"),
 
+  // ── Admin: Instance migration ────────────────────────────────────────
+  listMigrationTargets: () =>
+    fetchJSON<{ targets: MigrationTarget[] }>("/api/migration/targets"),
+  createMigrationTarget: (body: Record<string, unknown>) =>
+    fetchJSON<{ ok: boolean; target: MigrationTarget }>(
+      "/api/migration/targets",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  updateMigrationTarget: (id: string, body: Record<string, unknown>) =>
+    fetchJSON<{ ok: boolean; target: MigrationTarget }>(
+      `/api/migration/targets/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+  deleteMigrationTarget: (id: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/migration/targets/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+  preflightMigrationTarget: (id: string) =>
+    fetchJSON<{ checks: PreflightCheck[]; blocked: boolean }>(
+      `/api/migration/targets/${encodeURIComponent(id)}/preflight`,
+      { method: "POST" },
+    ),
+  startMigration: (id: string, confirmOverwrite = false) =>
+    fetchJSON<{ ok: boolean; action: string }>(
+      `/api/migration/targets/${encodeURIComponent(id)}/migrate` +
+        `?confirm_overwrite=${confirmOverwrite ? "true" : "false"}`,
+      { method: "POST" },
+    ),
+
   // ── Admin: Diagnostics (backgrounded) ───────────────────────────────
   runPromptSize: () =>
     fetchJSON<ActionResponse>("/api/ops/prompt-size", { method: "POST" }),
@@ -1852,6 +1892,20 @@ export interface CheckpointSession {
 export interface CheckpointsResponse {
   sessions: CheckpointSession[];
   total_bytes: number;
+}
+
+// ── Instance migration ───────────────────────────────────────────────
+
+export interface MigrationTarget {
+  id: string;
+  label: string;
+  host: string;
+  user: string;
+  port: number;
+  identity_file: string;
+  target_home: string;
+  host_fingerprint: string | null;
+  last_preflight: { at: string; blocked: boolean } | null;
 }
 
 /** Per-call overrides for {@link fetchJSON}. */
