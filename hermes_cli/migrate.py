@@ -10,6 +10,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict
 
@@ -24,6 +25,23 @@ from hermes_cli.migration_admin import (
 )
 
 _REMOTE_ARCHIVE = "/tmp/hermes-migration.zip"
+
+# How long to wait, after `hermes gateway stop` exits, for the source PID to
+# actually disappear before refusing to proceed. `stop_profile_gateway()`
+# already waits ~10s internally, so this is a confirmation window, not the
+# primary wait — see `_wait_for_gateway_to_stop`.
+_STOP_VERIFY_TIMEOUT_SECONDS = 15.0
+_STOP_VERIFY_POLL_INTERVAL_SECONDS = 0.5
+
+
+def _single_line(text: str) -> str:
+    """Collapse whitespace (including embedded newlines) to one line.
+
+    `emit`'s output is parsed downstream as `[stage] status detail` by a
+    single-line regex; remote stdout/stderr can contain newlines that would
+    break that contract.
+    """
+    return " ".join((text or "").split())
 
 
 def cmd_migrate(args: Any) -> int:
@@ -162,6 +180,39 @@ def _stop_source_gateway() -> int:
     ).returncode
 
 
+def _gateway_still_running() -> bool:
+    """True if the source gateway's PID file / runtime lock shows it alive.
+
+    Reuses the same PID-file/lock detection ``stop_profile_gateway()`` (and
+    the dashboard's status polling) already rely on, rather than inventing a
+    second way to track gateway liveness.
+    """
+    from gateway.status import is_gateway_running
+
+    return is_gateway_running()
+
+
+def _wait_for_gateway_to_stop() -> bool:
+    """Poll until the source gateway is verifiably down, or the budget expires.
+
+    ``_stop_source_gateway`` exiting 0 does not prove the process died:
+    ``stop_profile_gateway()`` in ``hermes_cli/gateway.py`` unconditionally
+    returns ``True`` after its own bounded SIGTERM wait, even when the PID is
+    still alive, and that never surfaces through the subprocess's exit code.
+    Trusting the exit code alone would let a still-mutating instance get
+    backed up, producing an inconsistent snapshot of live SQLite state — this
+    re-checks liveness independently before the migration is allowed past
+    this stage.
+    """
+    deadline = time.monotonic() + _STOP_VERIFY_TIMEOUT_SECONDS
+    while True:
+        if not _gateway_still_running():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_STOP_VERIFY_POLL_INTERVAL_SECONDS)
+
+
 def execute_migration(
     executor,
     profile: Dict[str, Any],
@@ -189,10 +240,13 @@ def execute_migration(
     try:
         # 1. install (source untouched, still serving)
         _step("install")
-        cmd = install_command(executor.detect_os())
+        try:
+            cmd = install_command(executor.detect_os())
+        except Exception as exc:  # noqa: BLE001 - any probe/lookup failure aborts this stage
+            _fail("install", _single_line(str(exc)) or "could not determine target OS/installer")
         got = executor.run(f"command -v hermes >/dev/null 2>&1 || ({cmd})", timeout=1800)
         if got.rc != 0:
-            _fail("install", got.stderr.strip() or "installer returned non-zero")
+            _fail("install", _single_line(got.stderr) or "installer returned non-zero")
         emit("install", "ok", "")
 
         # 2. stop the source — downtime starts here
@@ -200,6 +254,11 @@ def execute_migration(
         stop_rc = _stop_source_gateway()
         if stop_rc != 0:
             _fail("stop_source", f"gateway stop exited {stop_rc}")
+        if not _wait_for_gateway_to_stop():
+            _fail(
+                "stop_source",
+                "gateway is still running after stop — refusing to back up a live instance",
+            )
         emit("stop_source", "ok", "")
 
         # 3. backup
@@ -213,7 +272,7 @@ def execute_migration(
         _step("transfer")
         put = executor.put_file(archive, _REMOTE_ARCHIVE)
         if put.rc != 0:
-            _fail("transfer", put.stderr.strip() or "transfer failed")
+            _fail("transfer", _single_line(put.stderr) or "transfer failed")
         executor.run(f"chmod 600 {_REMOTE_ARCHIVE}")
         emit("transfer", "ok", "")
 
@@ -222,7 +281,7 @@ def execute_migration(
         flag = " --force" if confirm_overwrite else ""
         got = executor.run(f"hermes import{flag} {_REMOTE_ARCHIVE}", timeout=1800)
         if got.rc != 0:
-            _fail("restore", got.stderr.strip() or "hermes import returned non-zero")
+            _fail("restore", _single_line(got.stderr) or "hermes import returned non-zero")
         emit("restore", "ok", "")
 
         # 6. verify — read-only assertions about what landed
@@ -231,19 +290,41 @@ def execute_migration(
             f"test -f {quoted_target_home}/config.yaml && "
             f"stat -c '%a' {quoted_target_home}/auth.json 2>/dev/null || echo missing"
         )
-        emit("verify", "ok", checks.stdout.strip())
+        emit("verify", "ok", _single_line(checks.stdout))
         return 0
     finally:
         # The archive holds plaintext .env and auth.json. Remove both copies on
-        # every path, including failures.
+        # every path, including failures. A failure to remove the remote copy
+        # must not mask whatever exception is already propagating — but it
+        # must not be silent either, since it strands plaintext secrets on
+        # the target with no other operator-visible signal.
         try:
             archive.unlink(missing_ok=True)
         except OSError:
             pass
         try:
-            executor.run(f"rm -f {_REMOTE_ARCHIVE}")
-        except Exception:  # noqa: BLE001 - cleanup must never mask the real error
-            pass
+            cleanup = executor.run(f"rm -f {_REMOTE_ARCHIVE}")
+            if cleanup.rc != 0:
+                emit(
+                    "cleanup", "warn",
+                    _single_line(
+                        f"failed to remove {_REMOTE_ARCHIVE} on the target "
+                        f"({cleanup.stderr}) — remove it by hand, it contains "
+                        f"plaintext .env and auth.json"
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001 - cleanup must never mask the real error
+            try:
+                emit(
+                    "cleanup", "warn",
+                    _single_line(
+                        f"failed to remove {_REMOTE_ARCHIVE} on the target "
+                        f"({exc}) — remove it by hand, it contains plaintext "
+                        f".env and auth.json"
+                    ),
+                )
+            except Exception:  # noqa: BLE001 - emit itself must not mask the real error
+                pass
 
 
 def cmd_migrate_host(args: Any) -> int:
