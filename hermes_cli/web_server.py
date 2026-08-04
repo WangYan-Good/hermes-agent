@@ -10831,9 +10831,18 @@ class MigrationTargetBody(BaseModel):
 
 
 def _targets_file() -> Path:
-    from hermes_constants import get_default_hermes_root
+    """Location of the host-profile store for the request's scoped profile.
 
-    return targets_path(get_default_hermes_root())
+    Must be called while ``_profile_scope(profile)`` is active. Uses
+    ``get_hermes_home()`` — same accessor ``load_config``/``save_config``
+    resolve at call time (see ``_profile_scope``'s docstring) — rather than
+    ``get_default_hermes_root()``, which reads the process-wide default
+    directly and ignores the context-local override, silently making every
+    route's ``profile=`` query param a no-op.
+    """
+    from hermes_constants import get_hermes_home
+
+    return targets_path(get_hermes_home())
 
 
 @app.get("/api/migration/targets")
@@ -10902,6 +10911,55 @@ async def delete_migration_target(
     return {"ok": True}
 
 
+def _estimate_archive_bytes(home: Path) -> int:
+    """Approximate what ``hermes backup`` would archive out of *home*.
+
+    Mirrors ``hermes_cli.backup``'s own walk — same directory pruning, same
+    per-file exclusion check — instead of a raw ``rglob`` that would count
+    every byte under ``HERMES_HOME`` including the regenerable trees a real
+    backup never writes (the ``hermes-agent`` checkout, ``.venv``/``venv``,
+    ``node_modules``, ``checkpoints``, package caches, ...). Counting those
+    inflates the estimate the disk-space check demands 2x of on the target,
+    which can block a migration that would otherwise have fit.
+
+    Reuses ``backup.py``'s exclusion set and predicate directly so the two
+    lists cannot drift apart. A stat failure on any one entry (a broken
+    symlink, a permission error) is skipped rather than allowed to fail the
+    whole preflight — an approximate number beats a 500.
+    """
+    from hermes_cli.backup import _EXCLUDED_DIRS, _should_exclude
+
+    total = 0
+    # os.walk is lazy and silently skips unreadable directories on its own
+    # (onerror=None, the default) — nothing to guard at the call site itself.
+    for dirpath, dirnames, filenames in os.walk(home, followlinks=False):
+        dp = Path(dirpath)
+        try:
+            rel_dir = dp.relative_to(home)
+        except ValueError:
+            rel_dir = Path(".")
+        is_root = rel_dir == Path(".")
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
+        ]
+        for fname in filenames:
+            fpath = dp / fname
+            try:
+                rel = fpath.relative_to(home)
+            except ValueError:
+                continue
+            if _should_exclude(rel):
+                continue
+            try:
+                if fpath.is_symlink():
+                    continue
+                total += fpath.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
 @app.post("/api/migration/targets/{target_id}/preflight")
 async def preflight_migration_target(
     target_id: str, request: Request, profile: Optional[str] = None
@@ -10910,40 +10968,51 @@ async def preflight_migration_target(
 
     ``run_preflight`` itself guarantees every command it issues is a read;
     this route adds nothing on top that writes to the target.
+
+    Several seconds-scale SSH round-trips plus the archive-size walk are real
+    blocking IO, so the whole thing runs in a worker thread via
+    ``asyncio.to_thread`` — same off-the-event-loop pattern as
+    ``/api/model/set`` and ``/api/memory/providers/{name}/config`` elsewhere
+    in this file. ``_profile_scope`` is entered and exited entirely inside
+    that thread rather than around the ``await``, per its own docstring
+    warning against holding it across one.
     """
     _require_token(request)
-    with _profile_scope(profile):
-        from hermes_cli.banner import format_banner_version_label
-        from hermes_constants import get_default_hermes_root
 
-        path = _targets_file()
-        targets = load_targets(path)
-        entry = targets.get(target_id)
-        if not entry:
-            raise HTTPException(status_code=404, detail=f"unknown target {target_id}")
+    def _run() -> Dict[str, Any]:
+        with _profile_scope(profile):
+            from hermes_cli.banner import format_banner_version_label
+            from hermes_constants import get_hermes_home
 
-        home = get_default_hermes_root()
-        approx = sum(f.stat().st_size for f in home.rglob("*") if f.is_file())
-        try:
-            checks = migration_admin.run_preflight(
-                SshExecutor(entry),
-                target_home=entry.get("target_home") or "~/.hermes",
-                archive_bytes=approx,
-                source_version=format_banner_version_label(),
-            )
-        except Exception as exc:  # noqa: BLE001 - transport failure is a result
-            raise HTTPException(status_code=502, detail=str(exc))
+            path = _targets_file()
+            targets = load_targets(path)
+            entry = targets.get(target_id)
+            if not entry:
+                raise HTTPException(status_code=404, detail=f"unknown target {target_id}")
 
-        payload = [c.__dict__ for c in checks]
-        blocked = preflight_blocks(checks)
-        entry["last_preflight"] = {
-            "at": datetime.now(timezone.utc).isoformat(),
-            "blocked": blocked,
-        }
-        targets[target_id] = entry
-        save_targets(path, targets)
+            home = get_hermes_home()
+            approx = _estimate_archive_bytes(home)
+            try:
+                checks = migration_admin.run_preflight(
+                    SshExecutor(entry),
+                    target_home=entry.get("target_home") or "~/.hermes",
+                    archive_bytes=approx,
+                    source_version=format_banner_version_label(),
+                )
+            except Exception as exc:  # noqa: BLE001 - transport failure is a result
+                raise HTTPException(status_code=502, detail=str(exc))
 
-    return {"checks": payload, "blocked": blocked}
+            payload = [c.__dict__ for c in checks]
+            blocked = preflight_blocks(checks)
+            entry["last_preflight"] = {
+                "at": datetime.now(timezone.utc).isoformat(),
+                "blocked": blocked,
+            }
+            targets[target_id] = entry
+            save_targets(path, targets)
+        return {"checks": payload, "blocked": blocked}
+
+    return await asyncio.to_thread(_run)
 
 
 @app.post("/api/migration/targets/{target_id}/migrate")
