@@ -89,6 +89,15 @@ from hermes_cli.provider_proxy_admin import (
     provider_proxy_editable,
     read_provider_proxy_state,
 )
+from hermes_cli import migration_admin
+from hermes_cli.migration_admin import (
+    load_targets,
+    preflight_blocks,
+    save_targets,
+    targets_path,
+    validate_target,
+)
+from hermes_cli.remote_exec import SshExecutor
 from plugins.memory.config_schema import (
     ProviderConfigSchema,
     ProviderField,
@@ -4297,6 +4306,7 @@ _ACTION_LOG_FILES: Dict[str, str] = {
     "dump": "action-dump.log",
     "config-migrate": "action-config-migrate.log",
     "tools-post-setup": "action-tools-post-setup.log",
+    "migrate-host": "action-migrate-host.log",
 }
 
 # ``name`` → most recently spawned Popen handle.  Used so ``status`` can
@@ -10791,6 +10801,166 @@ async def test_provider_proxy(
             return result
 
     return await asyncio.to_thread(_run)
+
+
+# ---------------------------------------------------------------------------
+# Instance migration — host profiles, preflight, launch
+# ---------------------------------------------------------------------------
+#
+# Thin by construction: token check, profile scope, load/save, ValueError ->
+# 400. Anything with a rule in it lives in migration_admin and is tested
+# there without an HTTP client. The launcher does not reimplement migration —
+# it spawns the already-working `hermes migrate host <id>` CLI runner via the
+# same `_spawn_hermes_action` every other long-running dashboard action uses;
+# progress polling reuses the existing `/api/actions/{name}/status`.
+#
+# Every route here is token-protected: host profiles carry SSH connection
+# details (host, user, identity file path) and the preflight/migrate routes
+# trigger remote execution against them.
+
+
+class MigrationTargetBody(BaseModel):
+    id: Optional[str] = None
+    label: Optional[str] = None
+    host: Optional[str] = None
+    user: Optional[str] = None
+    port: Optional[int] = None
+    identity_file: Optional[str] = None
+    target_home: Optional[str] = None
+    password: Optional[str] = None   # accepted only to reject it explicitly
+
+
+def _targets_file() -> Path:
+    from hermes_constants import get_default_hermes_root
+
+    return targets_path(get_default_hermes_root())
+
+
+@app.get("/api/migration/targets")
+async def list_migration_targets(request: Request, profile: Optional[str] = None):
+    _require_token(request)
+    with _profile_scope(profile):
+        targets = load_targets(_targets_file())
+    return {"targets": [targets[k] for k in sorted(targets)]}
+
+
+@app.post("/api/migration/targets")
+async def create_migration_target(
+    body: MigrationTargetBody, request: Request, profile: Optional[str] = None
+):
+    _require_token(request)
+    with _profile_scope(profile):
+        path = _targets_file()
+        targets = load_targets(path)
+        try:
+            entry = validate_target(body.model_dump(exclude_none=True))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if entry["id"] in targets:
+            raise HTTPException(
+                status_code=409, detail=f"target {entry['id']} already exists"
+            )
+        targets[entry["id"]] = entry
+        save_targets(path, targets)
+    return {"ok": True, "target": entry}
+
+
+@app.put("/api/migration/targets/{target_id}")
+async def update_migration_target(
+    target_id: str, body: MigrationTargetBody, request: Request,
+    profile: Optional[str] = None,
+):
+    _require_token(request)
+    with _profile_scope(profile):
+        path = _targets_file()
+        targets = load_targets(path)
+        if target_id not in targets:
+            raise HTTPException(status_code=404, detail=f"unknown target {target_id}")
+        merged = {**targets[target_id], **body.model_dump(exclude_none=True)}
+        merged["id"] = target_id
+        try:
+            entry = validate_target(merged)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        targets[target_id] = entry
+        save_targets(path, targets)
+    return {"ok": True, "target": entry}
+
+
+@app.delete("/api/migration/targets/{target_id}")
+async def delete_migration_target(
+    target_id: str, request: Request, profile: Optional[str] = None
+):
+    _require_token(request)
+    with _profile_scope(profile):
+        path = _targets_file()
+        targets = load_targets(path)
+        if target_id not in targets:
+            raise HTTPException(status_code=404, detail=f"unknown target {target_id}")
+        targets.pop(target_id)
+        save_targets(path, targets)
+    return {"ok": True}
+
+
+@app.post("/api/migration/targets/{target_id}/preflight")
+async def preflight_migration_target(
+    target_id: str, request: Request, profile: Optional[str] = None
+):
+    """Read-only checks. Never modifies the target.
+
+    ``run_preflight`` itself guarantees every command it issues is a read;
+    this route adds nothing on top that writes to the target.
+    """
+    _require_token(request)
+    with _profile_scope(profile):
+        from hermes_cli.banner import format_banner_version_label
+        from hermes_constants import get_default_hermes_root
+
+        path = _targets_file()
+        targets = load_targets(path)
+        entry = targets.get(target_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail=f"unknown target {target_id}")
+
+        home = get_default_hermes_root()
+        approx = sum(f.stat().st_size for f in home.rglob("*") if f.is_file())
+        try:
+            checks = migration_admin.run_preflight(
+                SshExecutor(entry),
+                target_home=entry.get("target_home") or "~/.hermes",
+                archive_bytes=approx,
+                source_version=format_banner_version_label(),
+            )
+        except Exception as exc:  # noqa: BLE001 - transport failure is a result
+            raise HTTPException(status_code=502, detail=str(exc))
+
+        payload = [c.__dict__ for c in checks]
+        blocked = preflight_blocks(checks)
+        entry["last_preflight"] = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "blocked": blocked,
+        }
+        targets[target_id] = entry
+        save_targets(path, targets)
+
+    return {"checks": payload, "blocked": blocked}
+
+
+@app.post("/api/migration/targets/{target_id}/migrate")
+async def start_migration(
+    target_id: str, request: Request, profile: Optional[str] = None,
+    confirm_overwrite: bool = False,
+):
+    """Launch the CLI runner; the dashboard polls /api/actions/migrate-host/status."""
+    _require_token(request)
+    with _profile_scope(profile):
+        if target_id not in load_targets(_targets_file()):
+            raise HTTPException(status_code=404, detail=f"unknown target {target_id}")
+        argv = ["migrate", "host", target_id]
+        if confirm_overwrite:
+            argv.append("--confirm-overwrite")
+        _spawn_hermes_action(argv, "migrate-host")
+    return {"ok": True, "action": "migrate-host"}
 
 
 # ---------------------------------------------------------------------------
