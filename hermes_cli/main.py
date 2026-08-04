@@ -11370,7 +11370,7 @@ def main():
     # =========================================================================
     # migrate command
     # =========================================================================
-    from hermes_cli.migrate import cmd_migrate, cmd_migrate_xai
+    from hermes_cli.migrate import cmd_migrate, cmd_migrate_host, cmd_migrate_xai
 
     migrate_parser = subparsers.add_parser(
         "migrate",
@@ -11403,6 +11403,24 @@ def main():
         help="Skip the timestamped backup of config.yaml when applying",
     )
     migrate_xai.set_defaults(func=cmd_migrate_xai)
+
+    migrate_host = migrate_subparsers.add_parser(
+        "host",
+        help="Migrate this whole instance to another host over SSH",
+        description=(
+            "Install Hermes on the target if needed, stop this instance, "
+            "transfer its state, and restore it there. Halts at a verified "
+            "but unstarted target; the source is only stopped, never modified."
+        ),
+    )
+    migrate_host.add_argument("target_id", help="Host profile id")
+    migrate_host.add_argument(
+        "--confirm-overwrite",
+        action="store_true",
+        help="Overwrite existing state in the target's HERMES_HOME",
+    )
+    migrate_host.set_defaults(func=cmd_migrate_host)
+
     migrate_parser.set_defaults(func=cmd_migrate)
 
     # =========================================================================
