@@ -74,6 +74,7 @@ export const pt: Translations = {
       documentation: "Documentação",
       keys: "Chaves",
       logs: "Registos",
+      migration: "Cópia de segurança e migração",
       models: "Modelos",
       profiles: "perfis: multiagentes",
       plugins: "Plugins",

@@ -74,6 +74,7 @@ export const ga: Translations = {
       documentation: "Doiciméadú",
       keys: "Eochracha",
       logs: "Logaí",
+      migration: "Cúltaca agus Imirce",
       models: "Samhlacha",
       profiles: "próifílí : il-agents",
       plugins: "Plugins",

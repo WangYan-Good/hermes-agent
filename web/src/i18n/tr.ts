@@ -74,6 +74,7 @@ export const tr: Translations = {
       documentation: "Dokümantasyon",
       keys: "Anahtarlar",
       logs: "Günlükler",
+      migration: "Yedekleme ve Taşıma",
       models: "Modeller",
       profiles: "profiller : çoklu agent",
       plugins: "Eklentiler",
