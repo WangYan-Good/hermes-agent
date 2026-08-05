@@ -53,7 +53,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes send` | Send a one-shot message to a configured messaging platform (Telegram, Discord, Slack, Signal, SMS, …). Useful from shell scripts, cron jobs, CI hooks, and monitoring daemons — no agent loop, no LLM. |
 | `hermes secrets` | Manage external secret sources (currently Bitwarden Secrets Manager) for pulling API keys at process startup instead of from `~/.hermes/.env`. |
-| `hermes migrate` | Diagnose and (optionally) rewrite `config.yaml` to replace references to retired models or deprecated settings (e.g. `migrate xai`). |
+| `hermes migrate` | Rewrite `config.yaml` for retired models or deprecated settings (`migrate xai`), or move the whole instance to another host over SSH (`migrate host`). |
 | `hermes status` | Show agent, auth, and platform status. |
 | `hermes cron` | Inspect and tick the cron scheduler. |
 | `hermes kanban` | Multi-profile collaboration board (tasks, links, dispatcher). |
@@ -469,13 +469,20 @@ Diagnose and (optionally) rewrite the active `config.yaml` to replace references
 | Subcommand | Description |
 |------------|-------------|
 | `xai` | Scan `config.yaml` for references to xAI models scheduled for retirement on May 15, 2026 and (with `--apply`) rewrite them in-place to the official replacements per the xAI migration guide. Defaults to dry-run. |
+| `host <target-id>` | Move this **whole instance** to another machine over SSH — installing Hermes there first if needed, stopping the source, transferring its state and restoring it. Halts at a verified but unstarted target. See [Migrate to another host](../user-guide/migration.md). |
 
-Common flags for migration subcommands:
+Flags for `migrate xai`:
 
 | Flag | Description |
 |------|-------------|
 | `--apply` | Rewrite `config.yaml` in-place (default: dry-run, no writes). |
 | `--no-backup` | Skip the timestamped backup of `config.yaml` when applying. |
+
+Flags for `migrate host`:
+
+| Flag | Description |
+|------|-------------|
+| `--confirm-overwrite` | Overwrite existing user state in the target's `HERMES_HOME`. Required when preflight's `target_home` check blocks; waives nothing else. |
 
 > Not to be confused with `hermes claw migrate` (one-shot import of OpenClaw configuration into Hermes) — `hermes migrate` is the top-level config-rewrite command.
 

@@ -368,7 +368,7 @@ A consolidated administration panel for installation-wide operations:
 - **Gateway** — start, stop, and restart the messaging gateway, with live status (running/stopped, PID, state)
 - **Memory** — pick the external memory provider (or built-in only), and reset the built-in `MEMORY.md` / `USER.md` stores
 - **Credential pool** — add and remove the rotating API keys the agent round-robins through (per provider). Keys are redacted in the list; the raw value only ever reaches the agent.
-- **Operations** — run `doctor`, a security audit, create a backup, restore from a backup archive, update skills, show the system-prompt size breakdown, generate a support dump, or migrate config for retired settings. Each spawns a background action whose live log streams into the page.
+- **Operations** — run `doctor`, a security audit, update skills, show the system-prompt size breakdown, generate a support dump, or migrate config for retired settings. Each spawns a background action whose live log streams into the page. (Backup and restore moved to **Backup & Migration**, below.)
 - **Checkpoints** — see the `/rollback` shadow store size and prune it
 - **Shell hooks** — list configured hooks with their consent + executable status, **create** a hook (event, command, matcher, timeout, with an opt-in consent grant), and remove one. Hooks run arbitrary commands, so the create form carries a security warning and the hook only fires after consent is granted.
 
@@ -381,6 +381,15 @@ A consolidated administration panel for installation-wide operations:
 Creating a shell hook (note the consent checkbox and the run-arbitrary-commands warning):
 
 ![New shell hook modal](/img/dashboard/admin-hook-create.png)
+
+### Backup & Migration
+
+Two related things on one page (`/migrate`):
+
+- **Backup & restore** — create a full backup of the Hermes home, download the resulting archive, or restore from one you upload. These are the same `/api/ops/backup` · `/backup/download` · `/import` · `/import-upload` actions that used to sit in **System → Operations**.
+- **Migrate to another host** — register a target machine (host, user, port, SSH identity file, target `HERMES_HOME`), run a read-only **preflight** against it, and then move this whole instance there over SSH. Blocking checks (OS, `python3`, disk space, target home safety) disable the start button; warnings (clock skew, version mismatch) show amber and do not. The run streams stage progress and a live log, then halts at a target that is **ready but not started**.
+
+See [Migrate to another host](../migration.md) for what each stage does, how to read preflight, and what to do when one fails.
 
 :::warning Security
 The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine, with no login required. Binding to any non-loopback address (including `0.0.0.0`) engages the [auth gate](#authentication-gated-mode): the server refuses to start until an auth provider (username/password or OAuth) is configured.
@@ -539,6 +548,9 @@ same auth gate as the rest of `/api/`.
 | `POST /api/memory/reset` | Reset built-in memory. Body: `{target: all\|memory\|user}` |
 | `POST /api/gateway/start` · `/stop` · `/restart` | Gateway lifecycle (backgrounded) |
 | `POST /api/ops/doctor` · `/security-audit` · `/backup` · `/import` | Diagnostics & maintenance (backgrounded; tail via `/api/actions/{name}/status`) |
+| `GET /api/migration/targets` · `POST` · `PUT /{id}` · `DELETE /{id}` | Migration host profiles (stored at `$HERMES_HOME/migration_targets.json`, 0600; key *paths* only, no passwords) |
+| `POST /api/migration/targets/{id}/preflight` | Read-only checks against a target; returns per-check verdicts and whether anything blocks |
+| `POST /api/migration/targets/{id}/migrate` | Launch the migration (backgrounded as `migrate-host`; tail via `/api/actions/migrate-host/status`) |
 | `GET /api/ops/hooks` | Configured shell hooks + allowlist status |
 | `GET /api/ops/checkpoints` · `POST .../prune` | Inspect / prune the `/rollback` store |
 | `POST /api/ops/hooks` · `DELETE /api/ops/hooks` | Create / remove a shell hook (consent-gated) |

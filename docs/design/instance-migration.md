@@ -2,7 +2,8 @@
 
 **Date:** 2026-08-03
 **Branch:** `personal`
-**Status:** design approved, pending implementation plan
+**Status:** implemented (see [As built](#as-built)); plan
+`docs/plans/2026-08-03-instance-migration-plan.md`
 
 ## Problem
 
@@ -316,3 +317,106 @@ Per `CLAUDE.md`, everything runs in a container.
   reworking shared navigation and defining submenu behaviour under collapse.
   One page with two sections gives the same grouping without putting shared
   infrastructure on this feature's critical path.
+
+## As built
+
+**Date:** 2026-08-05. Implemented across commits `2c75f7eea`..`8a2b76acd`, plus
+this section and `website/docs/user-guide/migration.md`.
+
+The shape held: `remote_exec.py` is the only IO boundary, `migration_admin.py`
+is pure rules over an injected executor, routes are thin, the CLI is the
+implementation and the dashboard drives it through `_spawn_hermes_action()`.
+The six stages, their order, the two preflight tiers and the "stop at a
+verified-but-idle target" halt are all as designed. What follows is everything
+that is *not*.
+
+### Deviations
+
+**Host-key pinning is not implemented.** The design specified TOFU: first
+preflight records the fingerprint, every later connection verifies against it,
+mismatch fails hard. What exists is the shape without the mechanism —
+`host_fingerprint` is a validated profile field, and `_base_argv()` switches
+`StrictHostKeyChecking` from `accept-new` to `yes` when it is set — but nothing
+ever records a fingerprint (the preflight route writes only `last_preflight`),
+nothing compares one, no UI field sets one, and `KNOWN_HOSTS_ENV` in
+`remote_exec.py` is declared and unused. In practice the field is always `null`,
+so every connection runs `accept-new` and host-key verification falls back to
+the `known_hosts` of the account running Hermes. That still rejects a changed
+key after first contact, which is why this shipped — but it is ambient ssh
+behaviour, not the per-profile pin the design asked for. **Outstanding work,
+and the one deviation with a security dimension.**
+
+**`verify` cannot fail.** The design's verification was "config schema version,
+`auth.json` at 0600, every SQLite store opens". The implementation runs
+`test -f <home>/config.yaml && stat -c '%a' <home>/auth.json 2>/dev/null || echo missing`
+and then emits `verify ok` with that output as the detail — it never inspects
+the result, so a missing config or a world-readable `auth.json` completes the
+migration and is only visible to an operator reading the log line. It also uses
+GNU `stat -c`, which is not BSD/macOS `stat -f`. Making the stage assert rather
+than report is the natural follow-up.
+
+**The confirm-overwrite waiver is narrower than "the Start button is disabled
+when `isBlocked(checks)`".** `lib/migration.ts` adds `needsOverwriteConfirm()`
+and `canStartMigration()`, so the checkbox waives a `target_home` block *only*
+when that is the sole blocking failure. Consenting to overwrite data cannot
+waive a missing `python3` or insufficient disk.
+
+**Windows targets are untested and probably do not work.** The OS probe
+(`uname -s -m 2>/dev/null || echo "$env:OS $env:PROCESSOR_ARCHITECTURE"`) and
+the install guard (`command -v hermes >/dev/null 2>&1 || (...)`) are POSIX-shell
+constructs; they only parse on a Windows target whose sshd shell is a POSIX
+shell, not the default `cmd`/PowerShell. `install_command()` does return the
+`install.ps1` invocation for `os == "windows"`, so the branch exists — it is
+reaching it that is unverified. The user guide carries the OpenSSH Server
+prerequisite and an explicit "Windows targets are unverified" caution rather
+than implying support the code has never demonstrated.
+
+**Profile scoping is asymmetric.** The routes are profile-scoped
+(`_profile_scope` + `get_hermes_home()`), so targets can be created under a
+non-default profile. `cmd_migrate_host()` resolves `get_default_hermes_root()`
+and `start_migration` spawns `migrate host <id>` with no profile argument, so
+such a target is not found when the run is launched. Migration is effectively
+default-profile-only; documented as such rather than papered over.
+
+### Additions the design did not call for
+
+- **The source stop is verified, not trusted.** `stop_profile_gateway()` returns
+  `True` after a bounded SIGTERM wait even when the PID is still alive, so
+  `_wait_for_gateway_to_stop()` re-checks liveness (15s budget) before the
+  backup is allowed to run. Backing up a live instance would snapshot SQLite
+  mid-write — the design assumed the stop was a stop.
+- **`hermes backup` and `hermes gateway stop` run as subprocesses.** Both are
+  CLI entrypoints that call `sys.exit(1)`; in-process calls would take the
+  migration process down and skip the archive cleanup in the `finally`.
+- **The preflight disk estimate reuses `backup.py`'s own walk**
+  (`_estimate_archive_bytes` imports `_EXCLUDED_DIRS` and `_should_exclude`)
+  rather than sizing `HERMES_HOME` raw, which would count the checkout,
+  `.venv`, `node_modules` and `checkpoints` and demand 2× a number no real
+  backup produces.
+- **A `[cleanup] warn` event exists that is not a stage.** Failing to delete the
+  remote archive strands plaintext `.env` and `auth.json` on the target, so it
+  is surfaced instead of swallowed — but it must not move the progress bar,
+  hence `MigrationStageOrNotice` in `lib/migration.ts`.
+- **ssh exit 255 is not by itself a transport failure.** A remote command can
+  exit 255 on its own, so `_looks_like_ssh_transport_failure()` also requires
+  one of ssh's own stderr signatures before raising `SshError`. Without this,
+  preflight checks that read exit codes as data would be misread as broken
+  connections.
+- **`hermes import --force`** carries the confirm-overwrite decision, because
+  `import` otherwise prompts interactively and would hang a non-interactive
+  action.
+
+### Testing, as built
+
+68 backend tests across `test_migration_targets`, `test_remote_exec`,
+`test_migration_preflight`, `test_migration_stages`, `test_migration_api` and
+`test_migrate_host_cli`; 33 vitest cases over `web/src/lib/migration.ts`;
+`npm run build` green (which is what proves the 16 `: Translations` locales
+carry the new `migration` block).
+
+Two gaps against the design's testing section: the sshd integration tests
+(`test_remote_exec_integration.py`) skip unless `HERMES_TEST_SSHD_HOST` is set,
+so they are not part of any routine run; and the **end-to-end smoke test —
+migrate into an sshd container and assert the restored home's files and
+permissions — was never written**. It appears in this document's testing
+section but was never turned into a plan task, which is how it went missing.

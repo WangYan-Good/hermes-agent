@@ -57,6 +57,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/docker',
         'user-guide/security',
         'user-guide/checkpoints-and-rollback',
+        'user-guide/migration',
       ],
     },
     {
