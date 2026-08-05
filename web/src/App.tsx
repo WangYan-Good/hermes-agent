@@ -33,6 +33,7 @@ import {
   FolderOpen,
   FileText,
   Globe,
+  HardDriveDownload,
   Heart,
   KeyRound,
   Menu,
@@ -90,6 +91,7 @@ const ProfileBuilderPage = lazy(() => import("@/pages/ProfileBuilderPage"));
 const SkillsPage = lazy(() => import("@/pages/SkillsPage"));
 const PluginsPage = lazy(() => import("@/pages/PluginsPage"));
 const McpPage = lazy(() => import("@/pages/McpPage"));
+const MigratePage = lazy(() => import("@/pages/MigratePage"));
 const PairingPage = lazy(() => import("@/pages/PairingPage"));
 const ChannelsPage = lazy(() => import("@/pages/ChannelsPage"));
 const WebhooksPage = lazy(() => import("@/pages/WebhooksPage"));
@@ -171,6 +173,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/profiles/new": ProfileBuilderPage,
   "/config": ConfigPage,
   "/env": EnvPage,
+  "/migrate": MigratePage,
   "/docs": DocsPage,
 };
 
@@ -213,6 +216,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
+  {
+    path: "/migrate",
+    labelKey: "migration",
+    label: "Backup & Migration",
+    icon: HardDriveDownload,
+  },
   { path: "/system", label: "System", icon: Wrench },
   {
     path: "/docs",
