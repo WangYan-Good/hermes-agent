@@ -15,16 +15,34 @@ export function ActionLogViewer({
   action,
   onClose,
   onComplete,
+  onLines,
 }: {
   action: string;
   onClose: () => void;
   onComplete?: (action: string, exitCode: number | null) => void;
+  /** Fired with the full line buffer on every poll tick, so a caller that
+   *  needs to derive structure from the log (e.g. MigratePage parsing
+   *  `[stage] status detail` lines for a progress bar) can piggyback on this
+   *  component's existing poll instead of starting a second one. */
+  onLines?: (lines: string[]) => void;
 }) {
   const [lines, setLines] = useState<string[]>([]);
   const [running, setRunning] = useState(true);
   const [exitCode, setExitCode] = useState<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const completeRef = useRef(false);
+
+  // Held in refs, and updated in an effect rather than during render, so the
+  // poll loop always calls the CURRENT callback. Capturing them in the poll
+  // closure instead would pin whichever callback existed on first render —
+  // a stale-closure bug that only shows up once the parent re-renders with a
+  // new handler, which MigratePage does on every log tick.
+  const onLinesRef = useRef(onLines);
+  const onCompleteRef = useRef(onComplete);
+  useEffect(() => {
+    onLinesRef.current = onLines;
+    onCompleteRef.current = onComplete;
+  }, [onLines, onComplete]);
 
   useEffect(() => {
     let cancelled = false;
@@ -36,9 +54,10 @@ export function ActionLogViewer({
         setLines(st.lines);
         setRunning(st.running);
         setExitCode(st.exit_code);
+        onLinesRef.current?.(st.lines);
         if (!st.running && !completeRef.current) {
           completeRef.current = true;
-          onComplete?.(action, st.exit_code);
+          onCompleteRef.current?.(action, st.exit_code);
         }
         if (st.running) timer.current = setTimeout(poll, 1200);
       } catch {
@@ -50,7 +69,8 @@ export function ActionLogViewer({
       cancelled = true;
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [action, onComplete]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onLines/onComplete are read at call time; adding them here would restart polling on every parent render.
+  }, [action]);
 
   return (
     <Card>
