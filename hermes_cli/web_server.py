@@ -10336,15 +10336,20 @@ async def preflight_migration_target(
 
             home = get_hermes_home()
             approx = _estimate_archive_bytes(home)
+            executor = SshExecutor(migration_admin.executor_profile(entry, home))
             try:
                 checks = migration_admin.run_preflight(
-                    SshExecutor(entry),
+                    executor,
                     target_home=entry.get("target_home") or "~/.hermes",
                     archive_bytes=approx,
                     source_version=format_banner_version_label(),
                 )
             except Exception as exc:  # noqa: BLE001 - transport failure is a result
                 raise HTTPException(status_code=502, detail=str(exc))
+
+            # TOFU: the first successful contact pins the host key. Every later
+            # connection verifies against it and fails hard on a mismatch.
+            migration_admin.pin_fingerprint(entry, executor)
 
             payload = [c.__dict__ for c in checks]
             blocked = preflight_blocks(checks)
@@ -10354,7 +10359,11 @@ async def preflight_migration_target(
             }
             targets[target_id] = entry
             save_targets(path, targets)
-        return {"checks": payload, "blocked": blocked}
+        return {
+            "checks": payload,
+            "blocked": blocked,
+            "host_fingerprint": entry.get("host_fingerprint"),
+        }
 
     return await asyncio.to_thread(_run)
 
@@ -10369,7 +10378,10 @@ async def start_migration(
     with _profile_scope(profile):
         if target_id not in load_targets(_targets_file()):
             raise HTTPException(status_code=404, detail=f"unknown target {target_id}")
-        argv = ["migrate", "host", target_id]
+        # The target list is profile-scoped, so the CLI has to be pointed at the
+        # same profile — otherwise it looks in the default home and reports the
+        # target as unknown.
+        argv = _profile_cli_args(profile) + ["migrate", "host", target_id]
         if confirm_overwrite:
             argv.append("--confirm-overwrite")
         _spawn_hermes_action(argv, "migrate-host")

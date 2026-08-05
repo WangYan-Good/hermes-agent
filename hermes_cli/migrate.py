@@ -18,13 +18,56 @@ from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config
 from hermes_cli.migration_admin import (
     MigrationAborted,
+    executor_profile,
     install_command,
     load_targets,
+    pin_fingerprint,
     recovery_for,
+    save_targets,
     targets_path,
 )
 
 _REMOTE_ARCHIVE = "/tmp/hermes-migration.zip"
+
+# Runs on the target at the end of the migration. Python rather than shell
+# because python3 is a blocking preflight check (so it is guaranteed present),
+# it behaves identically on Linux and macOS unlike `stat`, and it can open the
+# SQLite stores — a shell one-liner can only look at names and modes.
+#
+# It exits non-zero on any problem: verification that always reports success is
+# not verification.
+_VERIFY_SCRIPT = """
+import glob, os, sqlite3, sys
+
+home = os.path.expanduser(sys.argv[1])
+problems = []
+
+if not os.path.isfile(os.path.join(home, 'config.yaml')):
+    problems.append('config.yaml is missing')
+
+auth = os.path.join(home, 'auth.json')
+if os.path.isfile(auth):
+    mode = os.stat(auth).st_mode & 0o777
+    if mode != 0o600:
+        problems.append('auth.json is mode %o, expected 600' % mode)
+
+stores = sorted(glob.glob(os.path.join(home, '*.db')))
+for store in stores:
+    try:
+        con = sqlite3.connect(store)
+        try:
+            con.execute('select count(*) from sqlite_master').fetchone()
+        finally:
+            con.close()
+    except Exception as exc:
+        problems.append('%s does not open: %s' % (os.path.basename(store), exc))
+
+if problems:
+    sys.stderr.write('; '.join(problems))
+    raise SystemExit(1)
+
+print('config.yaml present, auth.json 0600, %d sqlite store(s) open' % len(stores))
+"""
 
 # How long to wait, after `hermes gateway stop` exits, for the source PID to
 # actually disappear before refusing to proceed. `stop_profile_gateway()`
@@ -287,9 +330,10 @@ def execute_migration(
         # 6. verify — read-only assertions about what landed
         _step("verify")
         checks = executor.run(
-            f"test -f {quoted_target_home}/config.yaml && "
-            f"stat -c '%a' {quoted_target_home}/auth.json 2>/dev/null || echo missing"
+            f"python3 -c {shlex.quote(_VERIFY_SCRIPT)} {quoted_target_home}"
         )
+        if checks.rc != 0:
+            _fail("verify", _single_line(checks.stderr) or "verification failed")
         emit("verify", "ok", _single_line(checks.stdout))
         return 0
     finally:
@@ -329,20 +373,35 @@ def execute_migration(
 
 def cmd_migrate_host(args: Any) -> int:
     """``hermes migrate host <id> [--confirm-overwrite]``."""
-    from hermes_constants import get_default_hermes_root
-    from hermes_cli.remote_exec import SshExecutor
+    from hermes_constants import get_hermes_home
+    from hermes_cli.remote_exec import SshError, SshExecutor
 
-    home = get_default_hermes_root()
+    # get_hermes_home(), not get_default_hermes_root(): the target store is
+    # per-profile, and the dashboard passes --profile through when it spawns
+    # this command, so both sides must resolve the same home.
+    home = get_hermes_home()
     targets = load_targets(targets_path(home))
     profile = targets.get(args.target_id)
     if not profile:
         print(f"Unknown migration target: {args.target_id}", file=sys.stderr)
         return 2
 
-    executor = SshExecutor(profile)
+    executor = SshExecutor(executor_profile(profile, home))
 
     def emit(stage: str, status: str, detail: str) -> None:
         print(f"[{stage}] {status} {detail}".rstrip(), flush=True)
+
+    # First contact, before anything is stopped or transferred: this is where a
+    # changed host key surfaces, and where an unpinned target gets pinned.
+    try:
+        executor.run("true", timeout=30)
+    except SshError as exc:
+        print(f"Cannot reach {profile.get('host')}: {exc}", file=sys.stderr)
+        return 1
+    if pin_fingerprint(profile, executor):
+        targets[args.target_id] = profile
+        save_targets(targets_path(home), targets)
+        emit("pin", "ok", f"recorded host key {profile['host_fingerprint']}")
 
     try:
         return execute_migration(

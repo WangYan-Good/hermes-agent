@@ -262,6 +262,8 @@ export default function MigratePage() {
     setChecks([]);
     try {
       setChecks((await api.preflightMigrationTarget(target.id)).checks);
+      // The first preflight pins the host key, so the stored profile changed.
+      await refresh();
     } catch (e) {
       const message = String(e);
       // A changed host key is a decision for a human, not a raw stderr dump:
@@ -486,6 +488,13 @@ export default function MigratePage() {
                   <div className="text-sm font-medium">{x.label}</div>
                   <div className="font-mono-ui text-xs text-text-tertiary">
                     {x.user}@{x.host}:{x.port}
+                  </div>
+                  {/* The pin is what makes a later host-key change an error
+                      rather than something silently accepted. */}
+                  <div className="font-mono-ui text-xs text-text-tertiary">
+                    {x.host_fingerprint
+                      ? `${copy.hostKeyPinned} ${x.host_fingerprint}`
+                      : copy.hostKeyUnpinned}
                   </div>
                 </button>
                 <Button

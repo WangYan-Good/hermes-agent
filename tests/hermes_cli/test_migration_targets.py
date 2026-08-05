@@ -106,3 +106,59 @@ class TestTargetsStore:
         raw = json.loads(p.read_text(encoding="utf-8"))
         assert "password" not in json.dumps(raw)
         assert raw["prod"]["identity_file"] == "/k/id", "path only, never key material"
+
+
+class TestHostKeyPinning:
+    """TOFU: the first connection records the host key, later ones verify it.
+
+    This channel carries plaintext .env and auth.json, so a silently accepted
+    new host key is a man-in-the-middle being handed the credentials.
+    """
+
+    def test_known_hosts_lives_beside_the_target_store(self, tmp_path):
+        from hermes_cli.migration_admin import known_hosts_path
+
+        assert known_hosts_path(tmp_path).parent == tmp_path
+        assert known_hosts_path(tmp_path).name == "migration_known_hosts"
+
+    def test_executor_profile_points_at_that_file(self, tmp_path):
+        from hermes_cli.migration_admin import executor_profile, known_hosts_path
+
+        got = executor_profile({"id": "prod", "host": "h", "user": "u"}, tmp_path)
+        assert got["known_hosts_file"] == str(known_hosts_path(tmp_path))
+        assert got["host"] == "h", "the rest of the profile is carried through"
+
+    def test_first_contact_records_the_fingerprint(self):
+        from hermes_cli.migration_admin import pin_fingerprint
+
+        class Executor:
+            def recorded_fingerprint(self):
+                return "SHA256:abc"
+
+        entry = {"id": "prod", "host_fingerprint": None}
+        assert pin_fingerprint(entry, Executor()) is True
+        assert entry["host_fingerprint"] == "SHA256:abc"
+
+    def test_an_existing_pin_is_never_overwritten(self):
+        from hermes_cli.migration_admin import pin_fingerprint
+
+        class Executor:
+            def recorded_fingerprint(self):
+                return "SHA256:new-key"
+
+        # Re-pinning silently would defeat the point: a changed key must reach
+        # a human, not be absorbed on the next preflight.
+        entry = {"id": "prod", "host_fingerprint": "SHA256:old-key"}
+        assert pin_fingerprint(entry, Executor()) is False
+        assert entry["host_fingerprint"] == "SHA256:old-key"
+
+    def test_nothing_recorded_means_nothing_pinned(self):
+        from hermes_cli.migration_admin import pin_fingerprint
+
+        class Executor:
+            def recorded_fingerprint(self):
+                return None
+
+        entry = {"id": "prod", "host_fingerprint": None}
+        assert pin_fingerprint(entry, Executor()) is False
+        assert entry["host_fingerprint"] is None

@@ -920,6 +920,8 @@ export interface Translations {
     fieldPort: string;
     fieldIdentityFile: string;
     fieldTargetHome: string;
+    hostKeyPinned: string;
+    hostKeyUnpinned: string;
     identityFileHint: string;
     preflight: string;
     preflightRunning: string;
