@@ -788,6 +788,33 @@ export const zh: Translations = {
     logAt: "）",
   },
 
+  backupRestore: {
+    title: "备份与恢复",
+    description: "创建此实例的完整备份，或从先前创建的备份恢复。",
+    fullBackupLabel: "完整备份",
+    createBackup: "创建备份",
+    downloadBackup: "下载备份",
+    noBackupYet: "尚未创建备份",
+    restoreUploadLabel: "从上传的备份恢复",
+    chooseRestoreZip: "选择恢复用的压缩包",
+    noArchiveSelected: "未选择备份压缩包",
+    restoreUpload: "恢复上传的备份",
+    restorePathLabel: "从备份路径恢复",
+    restorePathPlaceholder: "$HERMES_HOME/backups/hermes-backup.zip",
+    restorePath: "恢复路径",
+    confirmRestoreTitle: "恢复完整的 Hermes 备份？",
+    confirmRestoreDescription:
+      "此操作会用 {archive} 中的内容覆盖当前的 Hermes 配置、技能、会话和数据，且无法撤销。",
+    confirmRestoreConfirm: "恢复",
+    archiveFallback: "该压缩包",
+    backupStarted: "备份已开始",
+    backupFailed: "备份失败",
+    backupReady: "备份已就绪，可供下载",
+    downloadFailed: "下载失败",
+    importStarted: "导入已开始",
+    importFailed: "导入失败",
+  },
+
   migration: {
     title: "迁移到其他主机",
     description: "把这个实例整体搬到另一台机器。源实例只会被停止，不会被修改。",
