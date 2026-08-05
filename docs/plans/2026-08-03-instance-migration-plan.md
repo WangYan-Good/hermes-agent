@@ -126,7 +126,7 @@ docker run --rm -v /mnt/main/CodeSpace/Project/hermes-agent:/src:ro -e HOME=/tmp
   - `load_targets(path: Path) -> Dict[str, Dict[str, Any]]` — keyed by id; `{}` when absent or corrupt
   - `save_targets(path: Path, targets: Dict[str, Dict[str, Any]]) -> None` — writes 0600
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/hermes_cli/test_migration_targets.py`:
 
@@ -241,7 +241,7 @@ class TestTargetsStore:
         assert raw["prod"]["identity_file"] == "/k/id", "path only, never key material"
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 ```bash
 docker run --rm --network host \
@@ -253,7 +253,7 @@ docker run --rm --network host \
 
 Expected: every test errors with `ModuleNotFoundError: No module named 'hermes_cli.migration_admin'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `hermes_cli/migration_admin.py`:
 
@@ -376,11 +376,11 @@ def save_targets(path: Path, targets: Dict[str, Dict[str, Any]]) -> None:
     os.chmod(path, 0o600)
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Same command as Step 2. Expected: `11 passed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /mnt/main/CodeSpace/Project/hermes-agent
@@ -409,7 +409,7 @@ must not block this half.
   - `parse_os_probe(stdout: str) -> Dict[str, str]` — `{"os": ..., "arch": ...}`
   - `KNOWN_HOSTS_ENV: str` — env var name used to pin a fingerprint
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/hermes_cli/test_remote_exec.py`:
 
@@ -528,7 +528,7 @@ class TestParseOsProbe:
             parse_os_probe("")
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 ```bash
 docker run --rm --network host \
@@ -540,7 +540,7 @@ docker run --rm --network host \
 
 Expected: `ModuleNotFoundError: No module named 'hermes_cli.remote_exec'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `hermes_cli/remote_exec.py`:
 
@@ -636,11 +636,11 @@ def parse_os_probe(stdout: str) -> Dict[str, str]:
     return {"os": os_name, "arch": arch}
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Same command as Step 2. Expected: `12 passed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /mnt/main/CodeSpace/Project/hermes-agent
@@ -656,6 +656,12 @@ git commit -m "feat(migration): SSH argv construction and OS probe parsing"
 The only task in the plan that needs a live machine. Isolated so a network
 problem blocks this task alone.
 
+> **Status (2026-08-05):** the test file and the implementation shipped, but the
+> two steps that require the sshd fixture are left unticked — the tests skip
+> unless `HERMES_TEST_SSHD_HOST` is set, so no routine run exercises them and
+> the last green run against a live sshd is not recorded anywhere. Re-run them
+> against the fixture before trusting the SSH transport on a new platform.
+
 **Files:**
 - Modify: `hermes_cli/remote_exec.py`
 - Test: `tests/hermes_cli/test_remote_exec_integration.py`
@@ -667,7 +673,7 @@ problem blocks this task alone.
   - `SshExecutor` — class with `run(command: str, *, timeout: int = 60) -> RemoteResult`, `put_file(local: Path, remote_path: str, *, timeout: int = 1800) -> RemoteResult`, `detect_os() -> Dict[str, str]`
   - `SshError` — raised on transport failure (auth, host-key mismatch, unreachable), distinct from a non-zero remote exit code
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/hermes_cli/test_remote_exec_integration.py`:
 
@@ -774,7 +780,7 @@ docker run --rm --network host \
 
 Expected: `ImportError: cannot import name 'SshExecutor'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Append to `hermes_cli/remote_exec.py`:
 
@@ -856,7 +862,7 @@ already declared, so `-m "not integration"` works.
 Same command as Step 2. Expected: `5 passed`. Then stop the fixture:
 `docker stop hermes-sshd`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /mnt/main/CodeSpace/Project/hermes-agent
@@ -881,7 +887,7 @@ git commit -m "feat(migration): SshExecutor run/put_file/detect_os over real SSH
   - `preflight_blocks(results: List[CheckResult]) -> bool`
   - `HOME_STATE_MARKERS: Tuple[str, ...]` — files whose presence means "real user state"
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/hermes_cli/test_migration_preflight.py`:
 
@@ -1055,7 +1061,7 @@ class TestPreflightIsReadOnly:
             assert not any(f in cmd for f in forbidden), f"preflight mutated: {cmd}"
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 ```bash
 docker run --rm --network host \
@@ -1067,7 +1073,7 @@ docker run --rm --network host \
 
 Expected: `ImportError: cannot import name 'run_preflight'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Append to `hermes_cli/migration_admin.py`:
 
@@ -1191,11 +1197,11 @@ def run_preflight(
 
 Add `import shlex` to the module imports.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Same command as Step 2. Expected: `9 passed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /mnt/main/CodeSpace/Project/hermes-agent
@@ -1224,7 +1230,7 @@ which installer a given OS needs. Actually running them is Task 5.
   - `install_command(os_info: Dict[str, str]) -> str`
   - `MigrationAborted(Exception)` with `.stage: str`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/hermes_cli/test_migration_stages.py`:
 
@@ -1333,7 +1339,7 @@ class TestMigrationAborted:
         assert "connection reset" in str(exc)
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 ```bash
 docker run --rm --network host \
@@ -1345,7 +1351,7 @@ docker run --rm --network host \
 
 Expected: `ImportError: cannot import name 'STAGES'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Append to `hermes_cli/migration_admin.py`:
 
@@ -1426,11 +1432,11 @@ def install_command(os_info: Dict[str, Any]) -> str:
     raise ValueError(f"unsupported target OS {os_name!r}: no installer available")
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Same command as Step 2. Expected: `13 passed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /mnt/main/CodeSpace/Project/hermes-agent
@@ -1457,7 +1463,7 @@ Task 6 only launches it.
   - `cmd_migrate_host(args) -> int`
   - `execute_migration(executor, profile, *, home: Path, confirm_overwrite: bool, emit) -> int` — `emit(stage, status, detail)` is the progress callback the dashboard's log tail reads
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/hermes_cli/test_migrate_host_cli.py`:
 
@@ -1604,7 +1610,7 @@ class TestFailures:
         assert err.value.stage == "restore"
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 ```bash
 docker run --rm --network host \
@@ -1616,7 +1622,7 @@ docker run --rm --network host \
 
 Expected: `ImportError: cannot import name 'execute_migration'`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Append to `hermes_cli/migrate.py`:
 
@@ -1804,11 +1810,11 @@ and add after the `migrate_xai.set_defaults(...)` line:
     migrate_host.set_defaults(func=cmd_migrate_host)
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Same command as Step 2. Expected: `8 passed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /mnt/main/CodeSpace/Project/hermes-agent
@@ -1838,7 +1844,7 @@ git commit -m "feat(migration): hermes migrate host runner"
 | `POST /api/migration/targets/{id}/preflight` | Run checks, store `last_preflight`, return results |
 | `POST /api/migration/targets/{id}/migrate` | Spawn `hermes migrate host <id>`, return the action name |
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/hermes_cli/test_migration_api.py`:
 
@@ -1972,7 +1978,7 @@ class TestMigrateRoute:
         assert spawned["subcommand"][:3] == ["migrate", "host", "prod"]
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 ```bash
 docker run --rm --network host \
@@ -1984,7 +1990,7 @@ docker run --rm --network host \
 
 Expected: 404s everywhere — the routes do not exist.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Add `"migrate-host": "action-migrate-host.log"` to `_ACTION_LOG_FILES` (line 3787).
 
@@ -2144,11 +2150,11 @@ async def start_migration(
 Use whatever helper `web_server.py` already has for the running version in place
 of `_hermes_version_string()` if one exists.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Same command as Step 2. Expected: `12 passed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /mnt/main/CodeSpace/Project/hermes-agent
@@ -2181,7 +2187,7 @@ untestable, and that cannot be retrofitted later.
   - `parseActionLine(line: string): { stage: MigrationStage; status: string; detail: string } | null`
   - `validateTargetDraft(d: Record<string, string>): string | null`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `web/src/lib/migration.test.ts`:
 
@@ -2294,7 +2300,7 @@ describe("validateTargetDraft", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 ```bash
 docker run --rm -v /mnt/main/CodeSpace/Project/hermes-agent:/src:ro -e HOME=/tmp \
@@ -2304,7 +2310,7 @@ docker run --rm -v /mnt/main/CodeSpace/Project/hermes-agent:/src:ro -e HOME=/tmp
 
 Expected: `Failed to resolve import "./migration"`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `web/src/lib/migration.ts`:
 
@@ -2395,11 +2401,11 @@ export function validateTargetDraft(d: Record<string, string>): string | null {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Same command as Step 2. Expected: `17 passed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /mnt/main/CodeSpace/Project/hermes-agent
@@ -2429,7 +2435,7 @@ because the root tsconfig is `{"files": [], "references": [...]}`.
 - Consumes: `PreflightCheck` (Task 7); the six routes (Task 6).
 - Produces on `api`: `listMigrationTargets()`, `createMigrationTarget(body)`, `updateMigrationTarget(id, body)`, `deleteMigrationTarget(id)`, `preflightMigrationTarget(id)`, `startMigration(id, confirmOverwrite)`; plus the `MigrationTarget` interface.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `web/src/lib/api.test.ts`:
 
@@ -2477,7 +2483,7 @@ describe("migration api", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 ```bash
 docker run --rm -v /mnt/main/CodeSpace/Project/hermes-agent:/src:ro -e HOME=/tmp \
@@ -2487,7 +2493,7 @@ docker run --rm -v /mnt/main/CodeSpace/Project/hermes-agent:/src:ro -e HOME=/tmp
 
 Expected: `api.createMigrationTarget is not a function`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Add to `web/src/lib/api.ts`:
 
@@ -2636,7 +2642,7 @@ Add the English block to `en.ts` and **the same block, English strings, to all
   },
 ```
 
-- [ ] **Step 4: Verify — vitest, then the production build**
+- [x] **Step 4: Verify — vitest, then the production build**
 
 ```bash
 docker run --rm -v /mnt/main/CodeSpace/Project/hermes-agent:/src:ro -e HOME=/tmp \
@@ -2648,7 +2654,7 @@ Expected: vitest passes, then `✓ built in …`. If `npm run build` reports
 `TS2741: Property 'migration' is missing`, a locale file was missed — the error
 names it.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /mnt/main/CodeSpace/Project/hermes-agent
@@ -2674,7 +2680,7 @@ No component test — this repo has none, and inventing a setup for one page is
 out of scope. The page must therefore contain **no logic**: everything
 decidable lives in `lib/migration.ts` and is already covered.
 
-- [ ] **Step 1: Add the route and nav entry**
+- [x] **Step 1: Add the route and nav entry**
 
 In `web/src/App.tsx`, beside the other lazy imports:
 
@@ -2700,7 +2706,7 @@ Add `migration: "迁移与备份"` to the `nav` block in `zh.ts` and
 `migration: "Backup & Migration"` to `en.ts` (plus the other 15 locales if the
 `nav` block is typed — check `types.ts`).
 
-- [ ] **Step 2: Build to confirm the nav change compiles**
+- [x] **Step 2: Build to confirm the nav change compiles**
 
 ```bash
 docker run --rm -v /mnt/main/CodeSpace/Project/hermes-agent:/src:ro -e HOME=/tmp \
@@ -2710,7 +2716,7 @@ docker run --rm -v /mnt/main/CodeSpace/Project/hermes-agent:/src:ro -e HOME=/tmp
 
 Expected: fails with `Cannot find module '@/pages/MigratePage'`.
 
-- [ ] **Step 3: Write the page**
+- [x] **Step 3: Write the page**
 
 Create `web/src/pages/MigratePage.tsx`. Structure — two sections, no logic:
 
@@ -2776,14 +2782,14 @@ Render rules, all delegating to `lib/migration.ts`:
 - an `SshError` mentioning a host-key mismatch renders
   `t.migration.fingerprintChanged` rather than the raw stderr
 
-- [ ] **Step 4: Move backup/restore out of SystemPage**
+- [x] **Step 4: Move backup/restore out of SystemPage**
 
 Cut the backup/restore JSX and its handlers from `web/src/pages/SystemPage.tsx`
 into the first section of `MigratePage`. The API calls
 (`/api/ops/backup`, `/api/ops/backup/download`, `/api/ops/import`,
 `/api/ops/import-upload`) are unchanged — only where they are rendered moves.
 
-- [ ] **Step 5: Verify build and lint**
+- [x] **Step 5: Verify build and lint**
 
 ```bash
 docker run --rm -v /mnt/main/CodeSpace/Project/hermes-agent:/src:ro -e HOME=/tmp \
@@ -2794,7 +2800,7 @@ docker run --rm -v /mnt/main/CodeSpace/Project/hermes-agent:/src:ro -e HOME=/tmp
 Expected: build succeeds; eslint reports 0 errors. Warnings already present in
 untouched files are the recorded baseline — do not "fix" them here.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd /mnt/main/CodeSpace/Project/hermes-agent
@@ -2812,7 +2818,7 @@ git commit -m "feat(migration): /migrate page holding backup and migration"
   `website/docs/user-guide/migration.md` if the section outgrows a subsection)
 - Modify: `docs/design/instance-migration.md` (append "As built")
 
-- [ ] **Step 1: Write the user-facing guide**
+- [x] **Step 1: Write the user-facing guide**
 
 Cover, in this order:
 
@@ -2833,14 +2839,14 @@ Cover, in this order:
 8. That credentials remain on the source afterwards, and that clearing them is
    the operator's call.
 
-- [ ] **Step 2: Append "As built" to the design doc**
+- [x] **Step 2: Append "As built" to the design doc**
 
 Record every deviation found during implementation. If none, say so explicitly —
 an "As built" that says "implemented as designed, with these three deltas" is
 what the existing design docs in this repo do, and it is what makes them worth
 reading later.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd /mnt/main/CodeSpace/Project/hermes-agent
