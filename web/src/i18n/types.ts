@@ -896,6 +896,33 @@ export interface Translations {
     };
   };
 
+  // ── Backup & restore (Migrate page) ──
+  backupRestore: {
+    title: string;
+    description: string;
+    fullBackupLabel: string;
+    createBackup: string;
+    downloadBackup: string;
+    noBackupYet: string;
+    restoreUploadLabel: string;
+    chooseRestoreZip: string;
+    noArchiveSelected: string;
+    restoreUpload: string;
+    restorePathLabel: string;
+    restorePathPlaceholder: string;
+    restorePath: string;
+    confirmRestoreTitle: string;
+    confirmRestoreDescription: string;
+    confirmRestoreConfirm: string;
+    archiveFallback: string;
+    backupStarted: string;
+    backupFailed: string;
+    backupReady: string;
+    downloadFailed: string;
+    importStarted: string;
+    importFailed: string;
+  };
+
   // ── Instance migration page ──
   migration: {
     title: string;

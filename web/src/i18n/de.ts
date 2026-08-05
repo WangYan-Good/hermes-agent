@@ -801,6 +801,34 @@ export const de: Translations = {
     logAt: ")",
   },
 
+  backupRestore: {
+    title: "Backup & restore",
+    description:
+      "Create a full backup of this instance, or restore from a previously created one.",
+    fullBackupLabel: "Full backup",
+    createBackup: "Create backup",
+    downloadBackup: "Download backup",
+    noBackupYet: "No backup created yet",
+    restoreUploadLabel: "Restore from backup upload",
+    chooseRestoreZip: "Choose restore zip",
+    noArchiveSelected: "No backup archive selected",
+    restoreUpload: "Restore upload",
+    restorePathLabel: "Restore from backups path",
+    restorePathPlaceholder: "$HERMES_HOME/backups/hermes-backup.zip",
+    restorePath: "Restore path",
+    confirmRestoreTitle: "Restore full Hermes backup?",
+    confirmRestoreDescription:
+      "This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of {archive}. This cannot be undone.",
+    confirmRestoreConfirm: "Restore",
+    archiveFallback: "the archive",
+    backupStarted: "Backup started",
+    backupFailed: "Backup failed",
+    backupReady: "Backup ready to download",
+    downloadFailed: "Download failed",
+    importStarted: "Import started",
+    importFailed: "Import failed",
+  },
+
   migration: {
     title: "Migrate to another host",
     description:

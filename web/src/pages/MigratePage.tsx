@@ -1,5 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
-import { Archive, Plus, Server, Trash2, TriangleAlert } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  Archive,
+  Database,
+  Download,
+  Plus,
+  Server,
+  Trash2,
+  TriangleAlert,
+  Upload,
+} from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import {
@@ -11,9 +20,12 @@ import {
 } from "@nous-research/ui/ui/components/card";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { CommandBlock } from "@nous-research/ui/ui/components/command-block";
+import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Toast } from "@nous-research/ui/ui/components/toast";
+import { useToast } from "@nous-research/ui/hooks/use-toast";
 
 import { ActionLogViewer } from "@/components/ActionLogViewer";
 import { api, type MigrationTarget } from "@/lib/api";
@@ -46,6 +58,23 @@ const EMPTY_DRAFT: Draft = {
   target_home: "",
 };
 
+type BackupImportTarget =
+  | { kind: "upload"; file: File }
+  | { kind: "path"; path: string };
+
+function backupImportLabel(
+  target: BackupImportTarget | null,
+  fallback: string,
+): string {
+  if (!target) return fallback;
+  return target.kind === "upload" ? target.file.name : target.path;
+}
+
+function backupFileName(path: string | null, fallback: string): string {
+  if (!path) return fallback;
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
 /**
  * Backup/migration hub. Two sections: local backup & restore (moved here from
  * SystemPage in a follow-up task) and migrating the whole instance to another
@@ -58,6 +87,99 @@ const EMPTY_DRAFT: Draft = {
 export default function MigratePage() {
   const { t } = useI18n();
   const copy = t.migration;
+  const bcopy = t.backupRestore;
+  const { toast, showToast } = useToast();
+
+  // ── Backup & restore ──────────────────────────────────────────────
+  const [backupAction, setBackupAction] = useState<string | null>(null);
+  const [pendingBackupArchive, setPendingBackupArchive] = useState<
+    string | null
+  >(null);
+  const [downloadableBackupArchive, setDownloadableBackupArchive] = useState<
+    string | null
+  >(null);
+  const [downloadingBackup, setDownloadingBackup] = useState(false);
+  const importUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importPath, setImportPath] = useState("");
+  // Restore-from-backup is destructive (overwrites the live config) and the
+  // spawned `hermes import` runs non-interactively (stdin is /dev/null), so
+  // its CLI "Continue? [y/N]" prompt would auto-abort. The dashboard owns the
+  // consent: confirm here, then call the endpoint with force=true.
+  const [importingBackup, setImportingBackup] = useState(false);
+  const [importConfirmTarget, setImportConfirmTarget] =
+    useState<BackupImportTarget | null>(null);
+
+  const runDashboardBackup = async () => {
+    try {
+      const res = await api.runBackup();
+      setBackupAction(res.name);
+      setPendingBackupArchive(res.archive ?? null);
+      setDownloadableBackupArchive(null);
+      showToast(bcopy.backupStarted, "success");
+    } catch (e) {
+      showToast(`${bcopy.backupFailed}: ${e}`, "error");
+    }
+  };
+
+  const handleBackupActionComplete = useCallback(
+    (action: string, exitCode: number | null) => {
+      if (action === "backup" && pendingBackupArchive) {
+        if (exitCode === 0) {
+          setDownloadableBackupArchive(pendingBackupArchive);
+          showToast(bcopy.backupReady, "success");
+        } else {
+          setPendingBackupArchive(null);
+        }
+      }
+    },
+    [pendingBackupArchive, showToast, bcopy.backupReady],
+  );
+
+  const downloadBackup = async () => {
+    const archive = downloadableBackupArchive;
+    if (!archive) return;
+    setDownloadingBackup(true);
+    try {
+      const res = await api.downloadBackup(archive);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = backupFileName(archive, bcopy.noBackupYet);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showToast(`${bcopy.downloadFailed}: ${e}`, "error");
+    } finally {
+      setDownloadingBackup(false);
+    }
+  };
+
+  const clearImportFile = () => {
+    setImportFile(null);
+    if (importUploadInputRef.current) importUploadInputRef.current.value = "";
+  };
+
+  const runBackupImport = async (target: BackupImportTarget) => {
+    setImportingBackup(true);
+    try {
+      const res =
+        target.kind === "upload"
+          ? await api.runImportUpload(target.file, true)
+          : await api.runImport(target.path, true);
+      setBackupAction(res.name);
+      showToast(bcopy.importStarted, "success");
+      if (target.kind === "upload") clearImportFile();
+    } catch (e) {
+      showToast(`${bcopy.importFailed}: ${e}`, "error");
+    } finally {
+      setImportingBackup(false);
+    }
+  };
 
   const [targets, setTargets] = useState<MigrationTarget[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
@@ -188,19 +310,149 @@ export default function MigratePage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <Toast toast={toast} />
+      <input
+        ref={importUploadInputRef}
+        type="file"
+        accept=".zip,application/zip,application/x-zip-compressed"
+        className="hidden"
+        onChange={(event) => {
+          setImportFile(event.currentTarget.files?.[0] ?? null);
+        }}
+      />
+
       <Card>
         <CardHeader className="border-b border-border bg-card">
           <div className="flex items-center gap-2">
             <Archive className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-base">Backup &amp; restore</CardTitle>
+            <CardTitle className="text-base">{bcopy.title}</CardTitle>
           </div>
-          <CardDescription>
-            Create a full backup of this instance, or restore from a previously
-            created one.
-          </CardDescription>
+          <CardDescription>{bcopy.description}</CardDescription>
         </CardHeader>
-        <CardContent className="py-8 text-center text-sm text-muted-foreground">
-          Backup &amp; restore controls are coming here.
+        <CardContent className="flex flex-col gap-4 py-6">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+            <div className="grid min-w-0 flex-1 gap-2">
+              <Label>{bcopy.fullBackupLabel}</Label>
+              <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                <Button
+                  size="sm"
+                  ghost
+                  prefix={<Database className="h-3.5 w-3.5" />}
+                  onClick={() => void runDashboardBackup()}
+                >
+                  {bcopy.createBackup}
+                </Button>
+                <Button
+                  size="sm"
+                  ghost
+                  disabled={!downloadableBackupArchive || downloadingBackup}
+                  prefix={
+                    downloadingBackup ? (
+                      <Spinner className="h-3.5 w-3.5" />
+                    ) : (
+                      <Download className="h-3.5 w-3.5" />
+                    )
+                  }
+                  onClick={() => void downloadBackup()}
+                >
+                  {bcopy.downloadBackup}
+                </Button>
+                <span
+                  className="min-w-0 truncate text-xs text-muted-foreground"
+                  title={pendingBackupArchive ?? bcopy.noBackupYet}
+                >
+                  {backupFileName(pendingBackupArchive, bcopy.noBackupYet)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
+            <div className="grid min-w-0 flex-1 gap-2">
+              <Label>{bcopy.restoreUploadLabel}</Label>
+              <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center">
+                <Button
+                  type="button"
+                  size="sm"
+                  ghost
+                  disabled={importingBackup}
+                  prefix={<Upload className="h-3.5 w-3.5" />}
+                  onClick={() => importUploadInputRef.current?.click()}
+                >
+                  {bcopy.chooseRestoreZip}
+                </Button>
+                <span
+                  className="min-w-0 truncate text-xs text-muted-foreground"
+                  title={importFile?.name ?? bcopy.noArchiveSelected}
+                >
+                  {importFile?.name ?? bcopy.noArchiveSelected}
+                </span>
+              </div>
+            </div>
+            <Button
+              size="sm"
+              ghost
+              disabled={!importFile || importingBackup}
+              prefix={importingBackup ? <Spinner /> : undefined}
+              onClick={() => {
+                if (!importFile) return;
+                setImportConfirmTarget({ kind: "upload", file: importFile });
+              }}
+            >
+              {bcopy.restoreUpload}
+            </Button>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-border pt-4 sm:flex-row sm:items-end">
+            <div className="grid min-w-0 flex-1 gap-2">
+              <Label htmlFor="import-path">{bcopy.restorePathLabel}</Label>
+              <Input
+                id="import-path"
+                value={importPath}
+                onChange={(e) => setImportPath(e.target.value)}
+                placeholder={bcopy.restorePathPlaceholder}
+              />
+            </div>
+            <Button
+              size="sm"
+              ghost
+              disabled={!importPath.trim() || importingBackup}
+              prefix={importingBackup ? <Spinner /> : undefined}
+              onClick={() => {
+                const path = importPath.trim();
+                if (!path) return;
+                setImportConfirmTarget({ kind: "path", path });
+              }}
+            >
+              {bcopy.restorePath}
+            </Button>
+          </div>
+
+          {backupAction && (
+            <ActionLogViewer
+              action={backupAction}
+              onComplete={handleBackupActionComplete}
+              onClose={() => setBackupAction(null)}
+            />
+          )}
+
+          <ConfirmDialog
+            open={!!importConfirmTarget}
+            title={bcopy.confirmRestoreTitle}
+            description={bcopy.confirmRestoreDescription.replace(
+              "{archive}",
+              backupImportLabel(importConfirmTarget, bcopy.archiveFallback),
+            )}
+            destructive
+            confirmLabel={bcopy.confirmRestoreConfirm}
+            cancelLabel={t.common.cancel}
+            onCancel={() => setImportConfirmTarget(null)}
+            onConfirm={() => {
+              const target = importConfirmTarget;
+              setImportConfirmTarget(null);
+              if (target) void runBackupImport(target);
+            }}
+          />
         </CardContent>
       </Card>
 
