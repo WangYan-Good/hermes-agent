@@ -1331,7 +1331,12 @@ export const api = {
       { method: "DELETE" },
     ),
   preflightMigrationTarget: (id: string) =>
-    fetchJSON<{ checks: PreflightCheck[]; blocked: boolean }>(
+    fetchJSON<{
+      checks: PreflightCheck[];
+      blocked: boolean;
+      // Pinned on first contact (TOFU); unchanged on every later preflight.
+      host_fingerprint: string | null;
+    }>(
       `/api/migration/targets/${encodeURIComponent(id)}/preflight`,
       { method: "POST" },
     ),

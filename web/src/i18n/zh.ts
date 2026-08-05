@@ -834,6 +834,8 @@ export const zh: Translations = {
     fieldPort: "端口",
     fieldIdentityFile: "私钥路径",
     fieldTargetHome: "目标 HERMES_HOME",
+    hostKeyPinned: "已固定的主机密钥：",
+    hostKeyUnpinned: "尚未固定主机密钥——首次预检时记录。",
     identityFileHint: "只保存路径，不保存密钥内容；不支持密码认证。",
     preflight: "预检",
     preflightRunning: "预检中…",

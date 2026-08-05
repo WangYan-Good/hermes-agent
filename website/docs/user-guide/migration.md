@@ -70,23 +70,36 @@ configuration.
 password; sending a `password` field to the API is rejected outright. Because
 the file holds no secrets, the dashboard can show it verbatim.
 
-:::note Profiles
-Targets are stored per profile, but the migration run itself always uses the
-default profile's `HERMES_HOME`. Add targets and launch migrations from the
-default profile's dashboard.
-:::
+Targets are stored per profile, and the dashboard passes the profile through
+when it launches a migration, so a target added while managing profile `work`
+is the one that runs.
 
-### Host keys
+### Host keys are pinned on first contact
 
-The first connection to a target uses `StrictHostKeyChecking=accept-new`, so
-the target's host key is accepted and recorded in the `known_hosts` of the
-account running Hermes. From then on ssh itself rejects a changed key and the
-migration fails with a host-key error rather than sending anything.
+The first connection accepts the target's host key and **records its
+fingerprint** in the profile — trust on first use. Every later connection
+verifies against that pin and fails hard if it does not match:
 
-This matters more here than in ordinary ssh use: the channel carries plaintext
-`.env` and `auth.json`. If you see a host-key failure on a target that worked
-before, treat it as an event to investigate, not something to clear by deleting
-the `known_hosts` entry.
+```
+host key verification failed for '10.0.0.5': pinned SHA256:abc…,
+known_hosts now holds SHA256:xyz… This channel carries plaintext .env and
+auth.json — resolve this by hand.
+```
+
+The dashboard shows the pinned fingerprint under each target, or "Host key not
+pinned yet" before the first preflight.
+
+Host keys live in `$HERMES_HOME/migration_known_hosts`, **not** in your
+`~/.ssh/known_hosts`. That file is shared with every other ssh use on the
+account and gets edited by hand; a fingerprint read out of it would prove
+nothing about what this feature saw on first contact. The pin is checked both
+by ssh (`StrictHostKeyChecking=yes`) and independently before ssh is launched,
+so an edited `migration_known_hosts` is caught too.
+
+A mismatch is never something to clear by deleting the entry. It means either
+the target was rebuilt — in which case remove and re-add the target
+deliberately — or something is sitting between you and it, waiting to be handed
+plaintext credentials.
 
 ## Preflight
 
@@ -94,6 +107,9 @@ Preflight is **read-only** — it never modifies the target — and returns two
 tiers of verdict. If the connection itself cannot be established (bad key,
 unreachable host, changed host key), you get that ssh error instead of a
 verdict list; nothing was sent.
+
+It doubles as the connection test: the first successful preflight is also what
+pins the target's host key.
 
 **Blocking** (migration cannot start):
 
@@ -161,8 +177,10 @@ Six stages, in this order:
 4. **`transfer`** — streams the archive to `/tmp/hermes-migration.zip` on the
    target through a single ssh invocation, then chmods it to 600.
 5. **`restore`** — `hermes import` on the target.
-6. **`verify`** — read-only assertions that `config.yaml` landed and `auth.json`
-   has the expected permissions.
+6. **`verify`** — read-only assertions on the target: `config.yaml` is present,
+   `auth.json` is mode 0600 if it exists, and every SQLite store opens and
+   answers a query. Any failure aborts the stage rather than being reported as
+   a passing detail.
 
 **Install comes before the stop on purpose.** It depends on no data and is the
 step most likely to fail — network, dependencies, permissions — so it should

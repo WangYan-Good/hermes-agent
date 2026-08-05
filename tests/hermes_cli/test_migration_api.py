@@ -91,10 +91,14 @@ class TestPreflightRoute:
         client.post("/api/migration/targets", headers=token,
                     json={"id": "prod", "host": "h", "user": "u"})
 
-        monkeypatch.setattr(
-            "hermes_cli.web_server.SshExecutor",
-            lambda profile: object(),
-        )
+        class FakeExecutor:
+            def __init__(self, profile):
+                self.profile = profile
+
+            def recorded_fingerprint(self):
+                return None
+
+        monkeypatch.setattr("hermes_cli.web_server.SshExecutor", FakeExecutor)
         monkeypatch.setattr(
             migration_admin, "run_preflight",
             lambda *a, **k: [migration_admin.CheckResult("os", "blocking", True, "linux")],
@@ -106,6 +110,60 @@ class TestPreflightRoute:
 
         rows = client.get("/api/migration/targets", headers=token).json()["targets"]
         assert rows[0]["last_preflight"] is not None
+
+    def test_first_preflight_pins_the_host_key(self, client, token, monkeypatch):
+        """TOFU. The design's whole host-key story depends on this write
+        happening: without it every later connection re-accepts whatever key
+        it is offered."""
+        from hermes_cli import migration_admin
+
+        client.post("/api/migration/targets", headers=token,
+                    json={"id": "prod", "host": "h", "user": "u"})
+
+        class FakeExecutor:
+            def __init__(self, profile):
+                self.profile = profile
+
+            def recorded_fingerprint(self):
+                return "SHA256:seen-on-first-contact"
+
+        monkeypatch.setattr("hermes_cli.web_server.SshExecutor", FakeExecutor)
+        monkeypatch.setattr(
+            migration_admin, "run_preflight",
+            lambda *a, **k: [migration_admin.CheckResult("os", "blocking", True, "linux")],
+        )
+        client.post("/api/migration/targets/prod/preflight", headers=token)
+
+        rows = client.get("/api/migration/targets", headers=token).json()["targets"]
+        assert rows[0]["host_fingerprint"] == "SHA256:seen-on-first-contact"
+
+    def test_the_executor_gets_the_migration_private_known_hosts_file(
+        self, client, token, monkeypatch, tmp_path
+    ):
+        from hermes_cli import migration_admin
+
+        client.post("/api/migration/targets", headers=token,
+                    json={"id": "prod", "host": "h", "user": "u"})
+
+        seen = {}
+
+        class FakeExecutor:
+            def __init__(self, profile):
+                seen.update(profile)
+
+            def recorded_fingerprint(self):
+                return None
+
+        monkeypatch.setattr("hermes_cli.web_server.SshExecutor", FakeExecutor)
+        monkeypatch.setattr(
+            migration_admin, "run_preflight",
+            lambda *a, **k: [migration_admin.CheckResult("os", "blocking", True, "linux")],
+        )
+        client.post("/api/migration/targets/prod/preflight", headers=token)
+
+        assert seen["known_hosts_file"] == str(
+            migration_admin.known_hosts_path(tmp_path)
+        )
 
 
 class TestMigrateRoute:
@@ -127,6 +185,29 @@ class TestMigrateRoute:
         assert got.status_code == 200
         assert got.json()["action"] == "migrate-host"
         assert spawned["subcommand"][:3] == ["migrate", "host", "prod"]
+
+    def test_the_scoped_profile_reaches_the_spawned_cli(
+        self, client, token, monkeypatch, tmp_path
+    ):
+        """The routes are profile-scoped, so a target can be created under a
+        non-default profile. Launching without passing the profile through
+        would send the CLI looking in the default home, where that target does
+        not exist."""
+        (tmp_path / "profiles" / "work").mkdir(parents=True)
+        client.post("/api/migration/targets?profile=work", headers=token,
+                    json={"id": "prod", "host": "h", "user": "u"})
+
+        spawned = {}
+        monkeypatch.setattr(
+            "hermes_cli.web_server._spawn_hermes_action",
+            lambda subcommand, name: spawned.update(subcommand=subcommand) or object(),
+        )
+        got = client.post(
+            "/api/migration/targets/prod/migrate?profile=work", headers=token
+        )
+        assert got.status_code == 200
+        assert "work" in spawned["subcommand"]
+        assert spawned["subcommand"][-3:] == ["migrate", "host", "prod"]
 
 
 class TestProfileScoping:

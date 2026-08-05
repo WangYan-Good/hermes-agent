@@ -170,3 +170,54 @@ class TestFailures:
                 home=tmp_path, confirm_overwrite=False, emit=lambda *a: None,
             )
         assert err.value.stage == "restore"
+
+
+class TestVerifyStage:
+    """Verification must be able to fail.
+
+    The first implementation ran `test -f ... && stat -c ...` and then emitted
+    `verify ok` regardless of the result, so a missing config or a
+    world-readable auth.json completed the migration silently. It also quoted
+    the target home, which meant a literal `~/.hermes` was never expanded.
+    """
+
+    def _verify_command(self, ex):
+        return next((c for c in ex.commands if "python3 -c" in c), None)
+
+    def test_a_failed_check_aborts_at_verify(self, profile, fake_backup, tmp_path):
+        from hermes_cli.migrate import execute_migration
+        from hermes_cli.migration_admin import MigrationAborted
+
+        ex = FakeExecutor(fail_on={"python3 -c": 1})
+        with pytest.raises(MigrationAborted) as err:
+            execute_migration(ex, profile, home=tmp_path, confirm_overwrite=False,
+                              emit=lambda *a: None)
+        assert err.value.stage == "verify"
+
+    def test_verification_runs_on_the_target_through_python3(
+        self, profile, fake_backup, tmp_path
+    ):
+        from hermes_cli.migrate import execute_migration
+
+        # python3 is a blocking preflight check, so it is guaranteed present —
+        # and unlike `stat`, it behaves the same on Linux and macOS.
+        ex = FakeExecutor()
+        execute_migration(ex, profile, home=tmp_path, confirm_overwrite=False,
+                          emit=lambda *a: None)
+        cmd = self._verify_command(ex)
+        assert cmd is not None, "verify must actually check something"
+        assert "config.yaml" in cmd
+        assert "auth.json" in cmd
+        assert "sqlite3" in cmd, "every SQLite store must open"
+
+    def test_the_target_home_is_expanded_not_quoted_into_a_literal_tilde(
+        self, profile, fake_backup, tmp_path
+    ):
+        from hermes_cli.migrate import execute_migration
+
+        ex = FakeExecutor()
+        execute_migration(ex, {**profile, "target_home": "~/.hermes"}, home=tmp_path,
+                          confirm_overwrite=False, emit=lambda *a: None)
+        cmd = self._verify_command(ex)
+        assert "expanduser" in cmd, \
+            "a quoted ~ never expands; the script must expand it remotely"

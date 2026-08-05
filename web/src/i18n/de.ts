@@ -843,6 +843,8 @@ export const de: Translations = {
     fieldPort: "Port",
     fieldIdentityFile: "Identity file",
     fieldTargetHome: "Target HERMES_HOME",
+    hostKeyPinned: "Pinned host key:",
+    hostKeyUnpinned: "Host key not pinned yet — the first preflight records it.",
     identityFileHint:
       "Only the path is saved, never key material; password authentication is not supported.",
     preflight: "Preflight",

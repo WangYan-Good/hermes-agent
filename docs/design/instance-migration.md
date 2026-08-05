@@ -330,30 +330,58 @@ The six stages, their order, the two preflight tiers and the "stop at a
 verified-but-idle target" halt are all as designed. What follows is everything
 that is *not*.
 
-### Deviations
+### Fixed during the as-built review
 
-**Host-key pinning is not implemented.** The design specified TOFU: first
-preflight records the fingerprint, every later connection verifies against it,
-mismatch fails hard. What exists is the shape without the mechanism —
-`host_fingerprint` is a validated profile field, and `_base_argv()` switches
-`StrictHostKeyChecking` from `accept-new` to `yes` when it is set — but nothing
-ever records a fingerprint (the preflight route writes only `last_preflight`),
-nothing compares one, no UI field sets one, and `KNOWN_HOSTS_ENV` in
-`remote_exec.py` is declared and unused. In practice the field is always `null`,
-so every connection runs `accept-new` and host-key verification falls back to
-the `known_hosts` of the account running Hermes. That still rejects a changed
-key after first contact, which is why this shipped — but it is ambient ssh
-behaviour, not the per-profile pin the design asked for. **Outstanding work,
-and the one deviation with a security dimension.**
+Writing this section against the code surfaced three things the implementation
+had not actually done. They are recorded here rather than quietly corrected,
+because "the design said so" is not evidence that anything was built.
 
-**`verify` cannot fail.** The design's verification was "config schema version,
-`auth.json` at 0600, every SQLite store opens". The implementation runs
+**Host-key pinning was missing, and is now implemented.** The design specified
+TOFU: first preflight records the fingerprint, every later connection verifies
+against it, mismatch fails hard. What shipped in the first pass was the shape
+without the mechanism — `host_fingerprint` was a validated field that
+`_base_argv()` read to pick `StrictHostKeyChecking`, but nothing ever wrote one,
+so the field was always `null` and every connection ran `accept-new` against the
+operator account's `~/.ssh/known_hosts`.
+
+The mechanism now exists and lives in a **migration-private known_hosts file**,
+`$HERMES_HOME/migration_known_hosts` (`known_hosts_path()`), written with
+`HashKnownHosts=no` so entries can be matched back to a host. `remote_exec`
+gained `parse_known_hosts()` — which computes OpenSSH's `SHA256:` fingerprint in
+Python rather than shelling out to `ssh-keygen`, which the image does not
+guarantee — plus `SshExecutor.recorded_fingerprint()` and a `_verify_pin()` that
+runs *before* `Popen`. `migration_admin.pin_fingerprint()` records on first
+contact and never overwrites an existing pin. The preflight route pins after a
+successful run; `cmd_migrate_host` pins on its own first contact before anything
+is stopped.
+
+The operator's own `known_hosts` is deliberately not used: it is shared with
+every other ssh use on the account and edited by hand, so a fingerprint read out
+of it proves nothing about what this feature saw. Checking the pin in Python as
+well as through `StrictHostKeyChecking=yes` covers the one case ssh cannot — a
+tampered known_hosts file, where a swapped key would otherwise look legitimate.
+
+**`verify` could not fail, and now can.** The first implementation ran
 `test -f <home>/config.yaml && stat -c '%a' <home>/auth.json 2>/dev/null || echo missing`
-and then emits `verify ok` with that output as the detail — it never inspects
-the result, so a missing config or a world-readable `auth.json` completes the
-migration and is only visible to an operator reading the log line. It also uses
-GNU `stat -c`, which is not BSD/macOS `stat -f`. Making the stage assert rather
-than report is the natural follow-up.
+and then emitted `verify ok` with that output as the detail, never inspecting
+the result — so a missing config or a world-readable `auth.json` completed the
+migration silently. It also used GNU `stat -c` (not BSD/macOS `stat -f`) and
+quoted the target home, which meant a literal `~/.hermes` never expanded.
+
+It now runs a Python script on the target (`_VERIFY_SCRIPT`): `config.yaml`
+present, `auth.json` at 0600 when it exists, and every `*.db` opens and answers
+a query — the design's third assertion, which no shell one-liner could make.
+`python3` is a blocking preflight check, so it is guaranteed present, and it
+behaves the same on Linux and macOS. A non-zero exit aborts the stage.
+
+**Profile scoping was asymmetric, and is now threaded.** The routes were
+profile-scoped, so targets could be created under a non-default profile, but
+`cmd_migrate_host()` resolved `get_default_hermes_root()` and the spawn passed
+no profile — so launching such a target reported it as unknown. The route now
+prefixes `_profile_cli_args(profile)` and the CLI resolves `get_hermes_home()`,
+so both sides land in the same home.
+
+### Deviations that stand
 
 **The confirm-overwrite waiver is narrower than "the Start button is disabled
 when `isBlocked(checks)`".** `lib/migration.ts` adds `needsOverwriteConfirm()`
@@ -370,13 +398,6 @@ shell, not the default `cmd`/PowerShell. `install_command()` does return the
 reaching it that is unverified. The user guide carries the OpenSSH Server
 prerequisite and an explicit "Windows targets are unverified" caution rather
 than implying support the code has never demonstrated.
-
-**Profile scoping is asymmetric.** The routes are profile-scoped
-(`_profile_scope` + `get_hermes_home()`), so targets can be created under a
-non-default profile. `cmd_migrate_host()` resolves `get_default_hermes_root()`
-and `start_migration` spawns `migrate host <id>` with no profile argument, so
-such a target is not found when the run is launched. Migration is effectively
-default-profile-only; documented as such rather than papered over.
 
 ### Additions the design did not call for
 
@@ -408,11 +429,12 @@ default-profile-only; documented as such rather than papered over.
 
 ### Testing, as built
 
-68 backend tests across `test_migration_targets`, `test_remote_exec`,
+86 backend tests across `test_migration_targets`, `test_remote_exec`,
 `test_migration_preflight`, `test_migration_stages`, `test_migration_api` and
-`test_migrate_host_cli`; 33 vitest cases over `web/src/lib/migration.ts`;
-`npm run build` green (which is what proves the 16 `: Translations` locales
-carry the new `migration` block).
+`test_migrate_host_cli` (68 at first ship, plus 18 covering the three fixes
+above); 33 vitest cases over `web/src/lib/migration.ts`; `npm run build` green
+(which is what proves the 16 `: Translations` locales carry the new `migration`
+block).
 
 Two gaps against the design's testing section: the sshd integration tests
 (`test_remote_exec_integration.py`) skip unless `HERMES_TEST_SSHD_HOST` is set,

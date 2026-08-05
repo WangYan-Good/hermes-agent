@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 TARGETS_FILENAME = "migration_targets.json"
+KNOWN_HOSTS_FILENAME = "migration_known_hosts"
 
 # Slug: becomes a dict key, a filename-safe token and a URL path segment.
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
@@ -29,6 +30,38 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 def targets_path(home: Path) -> Path:
     """Location of the host-profile store inside a HERMES_HOME."""
     return Path(home) / TARGETS_FILENAME
+
+
+def known_hosts_path(home: Path) -> Path:
+    """Host keys this feature has seen, kept separate from ``~/.ssh/known_hosts``.
+
+    The operator's own file is shared with every other ssh use on the account
+    and is routinely edited by hand, so a fingerprint read out of it proves
+    nothing about what *this* feature saw on first contact.
+    """
+    return Path(home) / KNOWN_HOSTS_FILENAME
+
+
+def executor_profile(entry: Dict[str, Any], home: Path) -> Dict[str, Any]:
+    """A stored profile plus the connection settings the executor needs."""
+    return {**entry, "known_hosts_file": str(known_hosts_path(home))}
+
+
+def pin_fingerprint(entry: Dict[str, Any], executor) -> bool:
+    """TOFU: record the host key seen on first contact.
+
+    Returns True when *entry* gained a fingerprint, so the caller knows to
+    persist it. An existing pin is never overwritten — absorbing a changed key
+    on the next preflight is exactly the event that must reach a human, since
+    this channel carries plaintext ``.env`` and ``auth.json``.
+    """
+    if entry.get("host_fingerprint"):
+        return False
+    seen = executor.recorded_fingerprint()
+    if not seen:
+        return False
+    entry["host_fingerprint"] = seen
+    return True
 
 
 def validate_target(raw: Dict[str, Any]) -> Dict[str, Any]:
