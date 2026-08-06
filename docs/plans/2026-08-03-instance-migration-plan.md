@@ -656,11 +656,24 @@ git commit -m "feat(migration): SSH argv construction and OS probe parsing"
 The only task in the plan that needs a live machine. Isolated so a network
 problem blocks this task alone.
 
-> **Status (2026-08-05):** the test file and the implementation shipped, but the
-> two steps that require the sshd fixture are left unticked — the tests skip
-> unless `HERMES_TEST_SSHD_HOST` is set, so no routine run exercises them and
-> the last green run against a live sshd is not recorded anywhere. Re-run them
-> against the fixture before trusting the SSH transport on a new platform.
+> **Status (2026-08-06):** green against a live sshd — 8 passed, including the
+> three host-key-pinning cases added with the pinning fix. Note `addopts =
+> "-m 'not integration'"` in `pyproject.toml`: without `-m integration` on the
+> command line these are deselected, which is why they never ran by accident.
+>
+> ```bash
+> # fixture (image is already local)
+> docker run -d --name hermes-sshd -p 2222:2222 -e PUID=1000 -e PGID=1000 \
+>   -e USER_NAME=hermes -e SUDO_ACCESS=false \
+>   -e PUBLIC_KEY="$(cat <key>.pub)" docker.io/linuxserver/openssh-server:latest
+>
+> docker run --rm --network host -v "$PWD:/src" -v "<keydir>:/keys" -w /src \
+>   -e HOME=/tmp -e HERMES_WRITE_SAFE_ROOT= -e HERMES_TEST_SSHD_HOST=127.0.0.1 \
+>   -e HERMES_TEST_SSHD_PORT=2222 -e HERMES_TEST_SSHD_USER=hermes \
+>   -e HERMES_TEST_SSHD_KEY=/keys/id_ed25519 \
+>   --entrypoint python3 localhost/hermes-test \
+>   -m pytest -q -m integration tests/hermes_cli/test_remote_exec_integration.py
+> ```
 
 **Files:**
 - Modify: `hermes_cli/remote_exec.py`
@@ -762,7 +775,7 @@ def test_put_file_transfers_bytes_intact(profile, tmp_path):
     assert got.stdout.strip() == hashlib.sha256(src.read_bytes()).hexdigest()
 ```
 
-- [ ] **Step 2: Start the fixture and run the test to verify it fails**
+- [x] **Step 2: Start the fixture and run the test to verify it fails**
 
 ```bash
 docker run -d --rm --name hermes-sshd -p 2222:2222 \
@@ -857,7 +870,7 @@ class SshExecutor:
 Register the marker in `pytest.ini` / `pyproject.toml` if `integration` is not
 already declared, so `-m "not integration"` works.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Same command as Step 2. Expected: `5 passed`. Then stop the fixture:
 `docker stop hermes-sshd`.
