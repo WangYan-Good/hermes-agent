@@ -266,8 +266,8 @@ def execute_migration(
 ) -> int:
     """Run every stage in order. Raises ``MigrationAborted`` on the first failure.
 
-    The source is only ever stopped, never modified — that is what makes every
-    failure recoverable by restarting it.
+    Existing source data is preserved. The backup command may create persistent
+    coordination metadata, but failures remain recoverable by restarting the source.
     """
     target_home = profile.get("target_home") or "~/.hermes"
     quoted_target_home = shlex.quote(target_home)

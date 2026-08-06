@@ -826,7 +826,7 @@ export const ko: Translations = {
   migration: {
     title: "Migrate to another host",
     description:
-      "Move this whole instance to another machine. The source instance is only stopped, never modified.",
+      "Move this whole instance to another machine while preserving its existing source data.",
     addTarget: "Add target host",
     editTarget: "Edit",
     deleteTarget: "Delete",
