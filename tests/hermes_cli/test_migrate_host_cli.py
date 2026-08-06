@@ -221,3 +221,36 @@ class TestVerifyStage:
         cmd = self._verify_command(ex)
         assert "expanduser" in cmd, \
             "a quoted ~ never expands; the script must expand it remotely"
+
+
+class TestTargetHomeIsHonoured:
+    """`target_home` must reach the restore, not just the checks.
+
+    The field is labelled "Target HERMES_HOME" in the dashboard and both
+    preflight and verify use it — but the restore ran a bare `hermes import`,
+    so the archive landed in whatever home the *target's* environment
+    defaulted to. Anyone setting a non-default target home got their data
+    restored somewhere else entirely.
+    """
+
+    def test_the_restore_runs_against_the_configured_home(
+        self, profile, fake_backup, tmp_path
+    ):
+        from hermes_cli.migrate import execute_migration
+
+        ex = FakeExecutor()
+        execute_migration(ex, {**profile, "target_home": "/srv/hermes-home"},
+                          home=tmp_path, confirm_overwrite=False,
+                          emit=lambda *a: None)
+        restore = next(c for c in ex.commands if "hermes import" in c)
+        assert "HERMES_HOME=/srv/hermes-home" in restore
+
+    def test_a_home_with_a_space_is_quoted(self, profile, fake_backup, tmp_path):
+        from hermes_cli.migrate import execute_migration
+
+        ex = FakeExecutor()
+        execute_migration(ex, {**profile, "target_home": "/srv/two words"},
+                          home=tmp_path, confirm_overwrite=False,
+                          emit=lambda *a: None)
+        restore = next(c for c in ex.commands if "hermes import" in c)
+        assert "'/srv/two words'" in restore

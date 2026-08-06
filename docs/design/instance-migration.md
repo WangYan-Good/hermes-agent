@@ -381,6 +381,16 @@ no profile — so launching such a target reported it as unknown. The route now
 prefixes `_profile_cli_args(profile)` and the CLI resolves `get_hermes_home()`,
 so both sides land in the same home.
 
+**`target_home` never reached the restore, and now does.** The field is
+labelled "Target HERMES_HOME" in the dashboard, preflight checks that path for
+safety and verify asserts against it — but the restore ran a bare
+`hermes import`, so the archive landed in whatever home the *target's* own
+environment defaulted to. Anyone setting a non-default target home had their
+data restored somewhere else, silently: before verify learned to assert, even
+the check that would have caught it passed. The restore now runs with
+`HERMES_HOME=<target_home>`. Found while building the end-to-end smoke test,
+which restores into a scratch path precisely to pin this.
+
 ### Deviations that stand
 
 **The confirm-overwrite waiver is narrower than "the Start button is disabled
@@ -447,9 +457,25 @@ stay opt-in: `pyproject.toml` sets `addopts = "-m 'not integration'"`, so they
 are deselected unless `-m integration` is passed *and*
 `HERMES_TEST_SSHD_HOST` is set.
 
-**Still missing: the end-to-end smoke test** — migrate into a container and
-assert the restored home's files and permissions. It appears in this document's
-testing section but was never turned into a plan task, which is how it went
-unnoticed. It needs an image carrying both sshd *and* Hermes (the sshd fixture
-has no `python3`/`hermes`; the Hermes images have no sshd), so building one is
-the actual blocker, not the test.
+**The end-to-end smoke test now exists** — `test_migration_smoke.py`, 7 tests,
+green. It needed an image carrying both sshd *and* Hermes, which neither
+existing image provides (the sshd fixture has no `python3`/`hermes`; the Hermes
+images have no sshd), so `docker/migration-target.Dockerfile` builds one from
+the runtime image. It is a test fixture and nothing ships it.
+
+The test fakes only the gateway stop, because the test process is not a
+gateway. Everything else is real: a real `hermes backup` packs a real
+`HERMES_HOME`, real ssh streams it, a real `hermes import` unpacks it on the
+container, and the assertions read what landed — `config.yaml`, a skill under
+`skills/`, `.env` and `auth.json` at 0600, and a SQLite store that still
+answers the query whose row was written before the migration. It also asserts
+what must *not* be there: no archive on either side, and no `gateway.pid`,
+since promotion is a human decision.
+
+**The "source is never modified" invariant needed restating.** Asserting it
+absolutely failed: invoking any hermes command in a `HERMES_HOME` seeds the
+scaffolding it expects (`SOUL.md`, `logs/`, and the rest), and the migration
+runs `hermes backup` in the source home. On a real instance those already
+exist, so nothing changes — on the test's bare home they appear. What rollback
+actually requires, and what the test now pins, is that **no pre-existing file
+is altered or removed**, and that no migration artefact is left behind.

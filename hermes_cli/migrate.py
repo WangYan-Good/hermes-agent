@@ -322,7 +322,14 @@ def execute_migration(
         # 5. restore
         _step("restore")
         flag = " --force" if confirm_overwrite else ""
-        got = executor.run(f"hermes import{flag} {_REMOTE_ARCHIVE}", timeout=1800)
+        # HERMES_HOME is set explicitly: without it `hermes import` restores
+        # into whatever home the target's own environment defaults to, which
+        # silently ignores the profile's target_home — the same path preflight
+        # checked for safety and verify checks afterwards.
+        got = executor.run(
+            f"HERMES_HOME={quoted_target_home} hermes import{flag} {_REMOTE_ARCHIVE}",
+            timeout=1800,
+        )
         if got.rc != 0:
             _fail("restore", _single_line(got.stderr) or "hermes import returned non-zero")
         emit("restore", "ok", "")
