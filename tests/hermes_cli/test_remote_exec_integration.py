@@ -83,3 +83,59 @@ def test_put_file_transfers_bytes_intact(profile, tmp_path):
     import hashlib
 
     assert got.stdout.strip() == hashlib.sha256(src.read_bytes()).hexdigest()
+
+
+def test_first_contact_records_a_fingerprint_against_a_real_host_key(
+    profile, tmp_path
+):
+    """TOFU, end to end: the pin is computed from a key a real sshd offered.
+
+    The unit tests parse a hand-written known_hosts line; only this one proves
+    the pin matches what OpenSSH actually writes for a live host.
+    """
+    from hermes_cli.remote_exec import SshExecutor
+
+    known_hosts = tmp_path / "migration_known_hosts"
+    ex = SshExecutor({**profile, "known_hosts_file": str(known_hosts)})
+
+    assert ex.recorded_fingerprint() is None, "nothing pinned before first contact"
+    assert ex.run("true").rc == 0
+
+    pinned = ex.recorded_fingerprint()
+    assert pinned and pinned.startswith("SHA256:")
+    assert known_hosts.is_file(), "the pin must not land in ~/.ssh/known_hosts"
+
+
+def test_a_pin_that_no_longer_matches_refuses_to_connect(profile, tmp_path):
+    from hermes_cli.remote_exec import SshError, SshExecutor
+
+    known_hosts = tmp_path / "migration_known_hosts"
+    SshExecutor({**profile, "known_hosts_file": str(known_hosts)}).run("true")
+
+    # Same host, same recorded key, but the profile insists on a different one:
+    # the target was swapped, or something is sitting in between waiting to be
+    # handed plaintext .env and auth.json.
+    pinned_elsewhere = SshExecutor({
+        **profile,
+        "known_hosts_file": str(known_hosts),
+        "host_fingerprint": "SHA256:definitely-not-the-key-this-host-offers",
+    })
+    with pytest.raises(SshError, match="host key"):
+        pinned_elsewhere.run("true")
+
+
+def test_a_matching_pin_connects_normally(profile, tmp_path):
+    from hermes_cli.remote_exec import SshExecutor
+
+    known_hosts = tmp_path / "migration_known_hosts"
+    first = SshExecutor({**profile, "known_hosts_file": str(known_hosts)})
+    first.run("true")
+
+    pinned = SshExecutor({
+        **profile,
+        "known_hosts_file": str(known_hosts),
+        "host_fingerprint": first.recorded_fingerprint(),
+    })
+    # StrictHostKeyChecking=yes now, so this also proves the recorded entry is
+    # one ssh itself accepts -- not merely one we can parse.
+    assert pinned.run("echo pinned").stdout.strip() == "pinned"

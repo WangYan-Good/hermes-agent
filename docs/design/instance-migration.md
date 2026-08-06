@@ -436,9 +436,20 @@ above); 33 vitest cases over `web/src/lib/migration.ts`; `npm run build` green
 (which is what proves the 16 `: Translations` locales carry the new `migration`
 block).
 
-Two gaps against the design's testing section: the sshd integration tests
-(`test_remote_exec_integration.py`) skip unless `HERMES_TEST_SSHD_HOST` is set,
-so they are not part of any routine run; and the **end-to-end smoke test —
-migrate into an sshd container and assert the restored home's files and
-permissions — was never written**. It appears in this document's testing
-section but was never turned into a plan task, which is how it went missing.
+`test_remote_exec_integration.py` — 8 tests — is green against a real sshd
+(`linuxserver/openssh-server`), including three that pin a live host key: first
+contact records a `SHA256:` fingerprint into the migration-private
+`known_hosts`, a pin that no longer matches refuses to connect, and a matching
+pin connects under `StrictHostKeyChecking=yes`. That last one matters because
+it proves the recorded entry is one ssh itself accepts, not merely one this
+code can parse. The exact fixture and command are in the plan's Task 2b. These
+stay opt-in: `pyproject.toml` sets `addopts = "-m 'not integration'"`, so they
+are deselected unless `-m integration` is passed *and*
+`HERMES_TEST_SSHD_HOST` is set.
+
+**Still missing: the end-to-end smoke test** — migrate into a container and
+assert the restored home's files and permissions. It appears in this document's
+testing section but was never turned into a plan task, which is how it went
+unnoticed. It needs an image carrying both sshd *and* Hermes (the sshd fixture
+has no `python3`/`hermes`; the Hermes images have no sshd), so building one is
+the actual blocker, not the test.
