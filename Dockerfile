@@ -329,7 +329,7 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 
 # Wire the exec shim and install-method stamp.  Files under /opt/hermes are
 # already root-owned (COPY, uv sync, npm install all run as root) and
-# read-only for the hermes user (go-w from the --chmod above).
+# read-only for the hermes user (`go-w` from the permission pass above).
 
 USER root
 RUN mkdir -p /opt/hermes/bin && \
