@@ -12332,7 +12332,7 @@ def main():
         description=(
             "Install Hermes on the target if needed, stop this instance, "
             "transfer its state, and restore it there. Halts at a verified "
-            "but unstarted target; the source is only stopped, never modified."
+            "but unstarted target; existing source data is preserved."
         ),
     )
     migrate_host.add_argument("target_id", help="Host profile id")

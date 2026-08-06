@@ -31,8 +31,8 @@ What is missing is the orchestration around it.
   action.
 - Work whether or not the target already has Hermes installed.
 - Linux, macOS and Windows targets.
-- Never modify the source instance, so a failed migration is always
-  recoverable by restarting it.
+- Preserve all existing source data, so a failed migration is always
+  recoverable by restarting it. Backup coordination metadata may be created.
 - Same capability headless as in the dashboard.
 
 ## Non-goals
@@ -176,8 +176,9 @@ deliberate.
 
 ## Failure and recovery
 
-**The source is only ever stopped, never modified.** That single property is
-the whole basis of rollback.
+**Existing source data is preserved.** The backup step may create persistent
+coordination metadata such as `.backup.lock`, but it does not alter or remove
+pre-existing files. That property is the whole basis of rollback.
 
 | Failure point | Source | Recovery |
 |---|---|---|
@@ -474,8 +475,9 @@ since promotion is a human decision.
 
 **The "source is never modified" invariant needed restating.** Asserting it
 absolutely failed: invoking any hermes command in a `HERMES_HOME` seeds the
-scaffolding it expects (`SOUL.md`, `logs/`, and the rest), and the migration
-runs `hermes backup` in the source home. On a real instance those already
-exist, so nothing changes — on the test's bare home they appear. What rollback
-actually requires, and what the test now pins, is that **no pre-existing file
-is altered or removed**, and that no migration artefact is left behind.
+scaffolding it expects (`SOUL.md`, `logs/`, and the rest), and `hermes backup`
+keeps a stable `.backup.lock` for cross-process coordination. On a real
+instance the scaffolding already exists; on the test's bare home it and the
+lock may appear. What rollback actually requires, and what the test now pins,
+is that **no pre-existing file is altered or removed**, and that no migration
+artefact is left behind.

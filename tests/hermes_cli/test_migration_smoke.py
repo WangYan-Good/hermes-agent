@@ -203,8 +203,9 @@ class TestSourceIsNeverModified:
     Stated precisely, because the absolute form is not true: invoking *any*
     hermes command in a HERMES_HOME seeds the standard scaffolding it expects
     (SOUL.md, cron/, hooks/, sessions/, skills/, memories/, caches, logs), and
-    the migration runs `hermes backup` in the source home. On a real instance
-    those already exist, so nothing changes; on a bare home they appear.
+    `hermes backup` keeps a stable .backup.lock for cross-process coordination.
+    On a real instance the scaffolding already exists; on a bare home it and
+    the backup lock may appear.
 
     What rollback actually needs, and what is asserted here: no pre-existing
     file is altered or removed. That is what makes "restart the source" a
@@ -232,7 +233,7 @@ class TestSourceIsNeverModified:
             assert path in after, f"{path} was removed from the source"
             assert after[path] == state, f"{path} was modified in the source"
 
-    def test_anything_new_is_only_the_cli_bootstrap(
+    def test_anything_new_is_only_known_cli_runtime_metadata(
         self, executor, target_profile, source_home, no_local_gateway
     ):
         from hermes_cli.migrate import execute_migration
@@ -244,11 +245,11 @@ class TestSourceIsNeverModified:
 
         added = set(self._snapshot(source_home)) - before
         # Not "nothing new" — see the class docstring. What appears is the
-        # CLI's own scaffolding (SOUL.md) and its log files, never a migration
-        # artefact: the plaintext archive in particular must not survive.
+        # CLI scaffolding, logs, and the backup coordination lock are expected;
+        # migration artefacts, especially the plaintext archive, must not survive.
         unexpected = [
             p for p in added
-            if p.name != "SOUL.md" and p.parts[0] != "logs"
+            if p.name not in {"SOUL.md", ".backup.lock"} and p.parts[0] != "logs"
         ]
         assert not unexpected, f"unexpected new files in the source: {unexpected}"
         assert not list(source_home.glob("*.zip")), "the archive must not survive"

@@ -19,9 +19,10 @@ holding the same `auth.json` and `cron/jobs.json` would authenticate as the same
 user and fire every scheduled job twice, so there is no "run both" mode and no
 repeatable sync to a warm standby.
 
-**The source is only ever stopped, never modified.** That single property is why
-every failure is recoverable: if anything goes wrong, you start the source again
-and you are back where you began.
+**Existing source data is preserved.** The backup step may create a persistent
+`.backup.lock` coordination file, but it does not alter or remove pre-existing
+files. That property is why every failure is recoverable: if anything goes
+wrong, you start the source again and you are back where you began.
 
 **It stops at a target that is ready but not started.** Migration ends with a
 verified, idle instance on the target and prints the command to start it.
@@ -201,8 +202,8 @@ sitting in the target's `/tmp`. Delete it by hand.
 
 ## When a stage fails
 
-Recovery follows from the one invariant — the source is only stopped, never
-modified — so it depends on nothing but *which* stage failed.
+Recovery follows from the one invariant — existing source data is preserved —
+so it depends on nothing but *which* stage failed.
 
 | Failed at | Source | What to do |
 |---|---|---|

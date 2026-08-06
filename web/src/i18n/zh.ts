@@ -823,7 +823,7 @@ export const zh: Translations = {
 
   migration: {
     title: "迁移到其他主机",
-    description: "把这个实例整体搬到另一台机器。源实例只会被停止，不会被修改。",
+    description: "把这个实例整体搬到另一台机器，同时保留源实例的现有数据。",
     addTarget: "添加目标主机",
     editTarget: "编辑",
     deleteTarget: "删除",
