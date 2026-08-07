@@ -150,7 +150,9 @@ jobs:
   # (including PRs) get balanced slicing.
   save-durations:
     needs: test
-    if: needs.test.result == 'success' && github.ref == 'refs/heads/main'
+    # Only the repository default branch (`${{ github.event.repository.default_branch }}`)
+    # refreshes the baseline consumed by subsequent runs.
+    if: needs.test.result == 'success' && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
