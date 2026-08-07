@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, type ReactNode } from "react";
-import { I18nContext } from "./context-value";
+import { I18nContext, type I18nContextValue } from "./context-value";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
 import { zh } from "./zh";
