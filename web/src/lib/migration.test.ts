@@ -67,8 +67,8 @@ describe("stageProgress", () => {
 
   it("handles cleanup notice without advancing progress", () => {
     // Cleanup is not a progress stage; it must not crash and must not advance
-    expect(stageProgress("cleanup" as any, "ok")).toBe(0);
-    expect(stageProgress("cleanup" as any, "start")).toBe(0);
+    expect(stageProgress("cleanup", "ok")).toBe(0);
+    expect(stageProgress("cleanup", "start")).toBe(0);
   });
 });
 
