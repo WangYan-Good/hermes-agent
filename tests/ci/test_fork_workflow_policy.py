@@ -43,3 +43,22 @@ def test_default_branch_guidance_and_reusable_install_ref_are_aligned() -> None:
     assert "origin/main" not in uv_lock
     assert "refs/heads/main" not in install_run
     assert _workflow("install-e2e-run.yml")["on"]["workflow_call"]["inputs"]["install-ref"]["default"] == "refs/heads/develop"
+
+
+def test_install_e2e_is_manual_or_tag_driven_but_not_scheduled() -> None:
+    triggers = _workflow("install-e2e.yml")["on"]
+    assert "schedule" not in triggers
+    assert "workflow_dispatch" in triggers
+    assert triggers["push"]["tags"]
+
+
+def test_autofix_targets_develop_and_requires_manual_merge() -> None:
+    workflow = _workflow("js-autofix.yml")
+    text = _text("js-autofix.yml")
+    assert workflow["on"]["push"]["branches"] == ["develop"]
+    assert '--base "${{ github.event.repository.default_branch }}"' in text
+    assert "gh pr create" in text
+    assert "gh pr merge" not in text
+    assert "Wait for merge" not in text
+    assert "gh pr close" not in text
+    assert "--delete-branch" not in text
