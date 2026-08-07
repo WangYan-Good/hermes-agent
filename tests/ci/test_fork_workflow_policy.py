@@ -23,8 +23,47 @@ def test_push_ci_targets_fork_default_branch() -> None:
 
 
 def test_runtime_branch_consumers_follow_repository_default() -> None:
-    for name in ("ci.yml", "tests.yml", "e2e-desktop.yml"):
-        assert DEFAULT_BRANCH_EXPR in _text(name), name
+    ci = _text("ci.yml")
+    assert (
+        "if: github.event_name == 'push' && github.ref_name == "
+        "github.event.repository.default_branch"
+    ) in ci
+    assert (
+        "if: github.event_name == 'push' && github.ref_name == "
+        "github.event.repository.default_branch && "
+        "hashFiles('ci-timings-baseline.json') != ''"
+    ) in ci
+
+    tests = _text("tests.yml")
+    assert (
+        "if: needs.test.result == 'success' && github.ref_name == "
+        "github.event.repository.default_branch"
+    ) in tests
+
+    desktop = _text("e2e-desktop.yml")
+    assert (
+        "key: visual-baselines-${{ github.ref_name }}\n"
+        "          restore-keys: |\n"
+        "            visual-baselines-${{ github.event.repository.default_branch }}"
+    ) in desktop
+    assert (
+        'if [ "${{ github.ref_name }}" = "${{ '
+        'github.event.repository.default_branch }}" ]; then'
+    ) in desktop
+    assert (
+        "- name: Save updated baselines to cache\n"
+        "        if: github.ref_name == github.event.repository.default_branch && always()"
+    ) in desktop
+    assert "key: visual-baselines-${{ github.event.repository.default_branch }}" in desktop
+    assert (
+        "- name: Upload visual diffs\n"
+        "        id: upload-diffs\n"
+        "        if: always() && github.ref_name != github.event.repository.default_branch"
+    ) in desktop
+    assert (
+        "- name: Upload inline E2E evidence\n"
+        "        if: always() && github.ref_name != github.event.repository.default_branch"
+    ) in desktop
 
     history = _text("history-check.yml")
     contributor = _text("contributor-check.yml")
@@ -59,6 +98,8 @@ def test_autofix_targets_develop_and_requires_manual_merge() -> None:
     assert '--base "${{ github.event.repository.default_branch }}"' in text
     assert "gh pr create" in text
     assert "gh pr merge" not in text
+    assert "gh pr review --approve" not in text
+    assert "--approve" not in text
     assert "Wait for merge" not in text
     assert "gh pr close" not in text
     assert "--delete-branch" not in text
