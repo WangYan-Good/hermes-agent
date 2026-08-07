@@ -179,6 +179,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // stays true.
   const [hasActivated, setHasActivated] = useState(isActive);
   useEffect(() => {
+    // This latch preserves the PTY after the first active render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setHasActivated((prev) => latchChatActivation(prev, isActive));
   }, [isActive]);
   const [searchParams, setSearchParams] = useSearchParams();
@@ -197,6 +199,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingLearnCommandRef = useRef<string | null>(null);
+  const learnCommandTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const reconnectAttemptRef = useRef(0);
   const forceFreshPtyRef = useRef(false);
   const blockedInputNoticeRef = useRef(false);
@@ -232,6 +238,35 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
+  }, []);
+  const clearLearnCommandTimer = useCallback(() => {
+    if (learnCommandTimerRef.current) {
+      clearTimeout(learnCommandTimerRef.current);
+      learnCommandTimerRef.current = null;
+    }
+  }, []);
+  const schedulePendingLearnCommand = useCallback((ws: WebSocket) => {
+    if (!pendingLearnCommandRef.current || learnCommandTimerRef.current) {
+      return;
+    }
+
+    // Give Ink's composer time to mount and take focus before replaying the
+    // route handoff as ordinary terminal input.
+    learnCommandTimerRef.current = setTimeout(() => {
+      learnCommandTimerRef.current = null;
+      if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+
+      const command = pendingLearnCommandRef.current;
+      if (!command) return;
+      try {
+        ws.send(command + "\r");
+        pendingLearnCommandRef.current = null;
+      } catch {
+        // Keep the command pending so the next successful socket open retries.
+      }
+    }, 800);
   }, []);
   const reconnectPty = useCallback(() => {
     forceFreshPtyRef.current = false;
@@ -318,6 +353,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
+  const learnSeed = searchParams.get("learn");
   // Profile-scoped chat: spawn the PTY under the globally selected
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
@@ -333,6 +369,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     (title: string | null) => setSessionTitleState({ scope: titleScope, title }),
     [titleScope],
   );
+
+  useEffect(() => {
+    if (!isActive || !learnSeed) return;
+
+    pendingLearnCommandRef.current = `/learn ${learnSeed}`.trim();
+    const next = new URLSearchParams(searchParams);
+    next.delete("learn");
+    setSearchParams(next, { replace: true });
+
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      schedulePendingLearnCommand(ws);
+    }
+  }, [isActive, learnSeed, schedulePendingLearnCommand, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (!isActive) {
@@ -931,6 +981,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
     };
     if (resumeParam) {
+      // PTY connection lifecycle owns the resume overlay's start and finish.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setResumeHydrating(true);
       resumeMaxTimer = setTimeout(
         finishResumeHydration,
@@ -1018,25 +1070,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // follow up with the authoritative measurement — at worst Ink
       // reflows once after the PTY boots, which is imperceptible.
       ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
-      // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
-      // skill" panel) is typed into the composer as a /learn command once the
-      // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
-      // so this reuses the existing composer path — no special PTY protocol.
-      const learnSeed = searchParams.get("learn");
-      if (learnSeed) {
-        const next = new URLSearchParams(searchParams);
-        next.delete("learn");
-        setSearchParams(next, { replace: true });
-        const cmd = `/learn ${learnSeed}`.trim();
-        // Delay so Ink's composer has mounted and grabbed focus before input.
-        setTimeout(() => {
-          try {
-            wsRef.current?.send(cmd + "\r");
-          } catch {
-            /* PTY not ready / closed — user can retype */
-          }
-        }, 800);
-      }
+      // A ?learn=<text> route is consumed by the independent handoff effect.
+      // If it arrived while this socket was connecting, replay it now without
+      // rebuilding the persistent PTY.
+      schedulePendingLearnCommand(ws);
     };
 
     // Session resume: Ink's two-pass virtual scroll floods the PTY with
@@ -1231,6 +1268,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       syncMetricsRef.current = null;
       clearEraseSuppressionTimer();
       clearResumeLoadingTimers();
+      clearLearnCommandTimer();
       setResumeHydrating(false);
       onDataDisposable?.dispose();
       onResizeDisposable?.dispose();
@@ -1270,13 +1308,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         reconnectTimerRef.current = null;
       }
     };
+    // Theme changes are applied by the dedicated effect below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     hasActivated,
     channel,
+    clearLearnCommandTimer,
     clearReconnectTimer,
     resumeParam,
     scopedProfile,
     reconnectNonce,
+    schedulePendingLearnCommand,
   ]);
 
   // When the user returns to the chat tab (isActive: false → true), the

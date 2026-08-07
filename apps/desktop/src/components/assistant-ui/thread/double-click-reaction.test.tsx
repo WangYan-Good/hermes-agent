@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as ReactionsStore from '@/store/reactions'
 import { $reactionsEnabled } from '@/store/reactions-enabled'
 import { $localReactions } from '@/store/reactions-local'
+import { testDocument } from '@/test-utils/test-document'
 
 import { isTapbackDoubleClick } from './use-message-reactions'
 
@@ -71,22 +72,22 @@ afterEach(() => {
 
 describe('isTapbackDoubleClick', () => {
   it('claims a plain double-click on message body', () => {
-    expect(isTapbackDoubleClick({ detail: 2, target: document.createElement('span') })).toBe(true)
+    expect(isTapbackDoubleClick({ detail: 2, target: testDocument.createElement('span') })).toBe(true)
   })
 
   it('ignores a triple-click, so selecting a paragraph does not re-toggle', () => {
-    expect(isTapbackDoubleClick({ detail: 3, target: document.createElement('span') })).toBe(false)
+    expect(isTapbackDoubleClick({ detail: 3, target: testDocument.createElement('span') })).toBe(false)
   })
 
   it('leaves double-click alone where it already means something', () => {
-    const code = document.createElement('pre')
-    const inner = document.createElement('code')
+    const code = testDocument.createElement('pre')
+    const inner = testDocument.createElement('code')
 
     code.append(inner)
 
     expect(isTapbackDoubleClick({ detail: 2, target: inner })).toBe(false)
-    expect(isTapbackDoubleClick({ detail: 2, target: document.createElement('a') })).toBe(false)
-    expect(isTapbackDoubleClick({ detail: 2, target: document.createElement('button') })).toBe(false)
+    expect(isTapbackDoubleClick({ detail: 2, target: testDocument.createElement('a') })).toBe(false)
+    expect(isTapbackDoubleClick({ detail: 2, target: testDocument.createElement('button') })).toBe(false)
   })
 })
 

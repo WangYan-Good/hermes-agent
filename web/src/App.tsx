@@ -63,8 +63,9 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { ConfirmDialog } from "@nous-research/ui/ui/components/confirm-dialog";
 import { cn } from "@/lib/utils";
+import { gatewayLine } from "@/lib/gateway-status";
 import { SidebarFooter } from "@/components/SidebarFooter";
-import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
+import { SidebarStatusStrip } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
@@ -414,6 +415,8 @@ export default function App() {
   // PTY survives later tab switches.
   const [chatHostMounted, setChatHostMounted] = useState(isChatRoute);
   useEffect(() => {
+    // This is a one-way activation latch: unmounting later would destroy PTY state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setChatHostMounted((prev) => latchChatActivation(prev, isChatRoute));
   }, [isChatRoute]);
 
@@ -950,12 +953,8 @@ function SidebarSystemActions({
   const [updateConfirmChecking, setUpdateConfirmChecking] = useState(false);
 
   useEffect(() => {
-    if (!updateConfirmOpen) {
-      setUpdateConfirmInfo(null);
-      return;
-    }
+    if (!updateConfirmOpen) return;
     let cancelled = false;
-    setUpdateConfirmChecking(true);
     api
       .checkHermesUpdate(false)
       .then((info) => {
@@ -1011,6 +1010,7 @@ function SidebarSystemActions({
       return;
     }
     if (action === "update") {
+      setUpdateConfirmChecking(true);
       setUpdateConfirmOpen(true);
       return;
     }
@@ -1028,6 +1028,7 @@ function SidebarSystemActions({
 
   const confirmUpdate = () => {
     setUpdateConfirmOpen(false);
+    setUpdateConfirmInfo(null);
     void runAction("update");
     navigate("/sessions");
     onNavigate();
@@ -1097,7 +1098,10 @@ function SidebarSystemActions({
         updateConfirmChecking ? t.common.loading : updateConfirmDescription
       }
       loading={pendingAction === "update" || updateConfirmChecking}
-      onCancel={() => setUpdateConfirmOpen(false)}
+      onCancel={() => {
+        setUpdateConfirmOpen(false);
+        setUpdateConfirmInfo(null);
+      }}
       onConfirm={confirmUpdate}
       open={updateConfirmOpen}
       title={t.status.updateHermesConfirmTitle ?? `${t.status.updateHermes}?`}

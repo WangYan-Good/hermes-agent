@@ -2,6 +2,7 @@ import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { $artifactRegistry, $artifactVersionSelection, artifactPreviewTarget, upsertArtifact } from '@/store/artifacts'
+import { testDocument } from '@/test-utils/test-document'
 
 import { ArtifactPreview } from './preview-artifact'
 
@@ -51,8 +52,8 @@ describe('ArtifactPreview', () => {
 
     await renderArtifact(artifactId)
 
-    expect(document.querySelector('svg')).not.toBeNull()
-    expect(document.querySelector('svg script')).toBeNull()
+    expect(testDocument.querySelector('svg')).not.toBeNull()
+    expect(testDocument.querySelector('svg script')).toBeNull()
   })
 
   it('offers only the source view for code, which has nothing to render', async () => {

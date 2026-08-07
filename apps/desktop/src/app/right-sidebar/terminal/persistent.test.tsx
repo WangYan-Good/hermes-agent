@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $paneStates } from '@/store/panes'
+import { testDocument } from '@/test-utils/test-document'
 
 import { PersistentTerminal, TerminalSlot } from './persistent'
 
@@ -22,8 +23,8 @@ let container: HTMLDivElement | null = null
 let windowStateCallback: ((payload: { isMinimized?: boolean; isVisible?: boolean }) => void) | null = null
 
 function render(ui: ReactNode) {
-  container = document.createElement('div')
-  document.body.append(container)
+  container = testDocument.createElement('div')
+  testDocument.body.append(container)
   root = createRoot(container)
 
   act(() => {
@@ -44,8 +45,8 @@ function cleanup() {
 }
 
 function setVisibility(hidden: boolean) {
-  Object.defineProperty(document, 'hidden', { configurable: true, value: hidden })
-  Object.defineProperty(document, 'visibilityState', { configurable: true, value: hidden ? 'hidden' : 'visible' })
+  Object.defineProperty(testDocument, 'hidden', { configurable: true, value: hidden })
+  Object.defineProperty(testDocument, 'visibilityState', { configurable: true, value: hidden ? 'hidden' : 'visible' })
 }
 
 function installWindowStateBridge() {
@@ -129,7 +130,7 @@ describe('PersistentTerminal rect tracking', () => {
   beforeEach(() => {
     ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
     setVisibility(false)
-    vi.spyOn(document, 'hasFocus').mockReturnValue(true)
+    vi.spyOn(testDocument, 'hasFocus').mockReturnValue(true)
     installWindowStateBridge()
     resizeObserverCallback = null
     mutationObserverCallback = null
@@ -322,7 +323,7 @@ describe('PersistentTerminal rect tracking', () => {
 
   it('does not schedule an initial frame when mounted while unfocused', () => {
     const raf = installRaf()
-    vi.mocked(document.hasFocus).mockReturnValue(false)
+    vi.mocked(testDocument.hasFocus).mockReturnValue(false)
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
 
     render(<Harness />)

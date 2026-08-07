@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { $bindings } from '@/store/keybinds'
+import { testDocument } from '@/test-utils/test-document'
 
 import { TerminalRail } from './rail'
 import { $activeTerminalId, $terminals } from './terminals'
@@ -25,7 +26,7 @@ describe('TerminalRail', () => {
     fireEvent.pointerMove(screen.getByRole('tab', { name: '1. PowerShell' }), { pointerType: 'mouse' })
     await screen.findByRole('tooltip')
 
-    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
+    const content = testDocument.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
     const label = content?.firstElementChild?.firstElementChild
 
     expect(content).not.toBeNull()

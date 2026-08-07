@@ -670,6 +670,8 @@ function WhatsAppOnboardingPanel({
 
   useEffect(() => {
     if (!setup && phase === "idle" && configuredMode) {
+      // Synchronize the idle form when the persisted WhatsApp mode changes.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setMode(configuredMode);
     }
   }, [configuredMode, phase, setup]);

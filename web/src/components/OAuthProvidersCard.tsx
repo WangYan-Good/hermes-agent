@@ -60,7 +60,9 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const { t } = useI18n();
 
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -72,8 +74,24 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   }, []);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    let cancelled = false;
+    api
+      .getOAuthProviders()
+      .then((resp) => {
+        if (!cancelled) setProviders(resp.providers);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          onErrorRef.current?.(`Failed to load providers: ${e}`);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleDisconnect = async (provider: OAuthProvider) => {
     setBusyId(provider.id);

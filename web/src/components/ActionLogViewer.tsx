@@ -69,7 +69,6 @@ export function ActionLogViewer({
       cancelled = true;
       if (timer.current) clearTimeout(timer.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- onLines/onComplete are read at call time; adding them here would restart polling on every parent render.
   }, [action]);
 
   return (

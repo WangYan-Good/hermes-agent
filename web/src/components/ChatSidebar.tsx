@@ -34,6 +34,7 @@ import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, buildWsUrl } from "@/lib/api";
+import { sidecarSessionCreateParams } from "@/lib/chat-sidebar-session-params";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import {
   EVENTS_DISCONNECTED_MESSAGE,
@@ -91,21 +92,6 @@ interface ChatSidebarProps {
   className?: string;
   onDashboardNewSessionRequest?: () => void;
   onSessionTitleChange?: (title: string | null) => void;
-}
-
-/** Build the ``session.create`` params for the sidecar session.
- *
- * Extracted from the effect below so the invariant — close_on_disconnect
- * is set, source is "tool", and the profile is forwarded when present —
- * can be tested without reading component source text. See
- * ``chat-sidebar-session-params.test.ts``.
- */
-export function sidecarSessionCreateParams(profile?: string): Record<string, unknown> {
-  return {
-    close_on_disconnect: true,
-    source: "tool",
-    ...(profile ? { profile } : {}),
-  };
 }
 
 export function ChatSidebar({

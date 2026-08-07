@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router";
+import {
+  MemoryRouter,
+  useLocation,
+  useNavigate,
+} from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 class FakeFitAddon {
@@ -114,6 +118,7 @@ class FakeWebSocket {
   onmessage: ((event: { data: ArrayBuffer | string }) => void) | null = null;
   onopen: (() => void) | null = null;
   readyState = FakeWebSocket.OPEN;
+  send = vi.fn();
   url: string;
 
   constructor(url: string) {
@@ -125,7 +130,6 @@ class FakeWebSocket {
     this.readyState = 3;
   }
 
-  send() {}
 }
 
 type CloseEventLike = {
@@ -136,6 +140,39 @@ type CloseEventLike = {
 
 let container: HTMLDivElement;
 let root: Root;
+
+function NavigationHarness({ children }: { children: ReactNode }) {
+  const navigate = useNavigate();
+  return (
+    <>
+      {children}
+      <button
+        data-testid="navigate-to-learn"
+        onClick={() => navigate("/chat?learn=debugging")}
+        type="button"
+      />
+    </>
+  );
+}
+
+function RouteAwareChatHarness({ ChatPage }: { ChatPage: typeof import("./ChatPage").default }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <ChatPage isActive={location.pathname === "/chat"} />
+      <button
+        data-testid="navigate-to-hidden-learn"
+        onClick={() => navigate("/skills?learn=hidden")}
+        type="button"
+      />
+      <output data-testid="location">
+        {location.pathname}
+        {location.search}
+      </output>
+    </>
+  );
+}
 
 async function render(ui: ReactNode) {
   container = document.createElement("div");
@@ -224,5 +261,63 @@ describe("ChatPage", () => {
     });
 
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
+  });
+
+  it("hands a learn route to an already-open persistent PTY", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <NavigationHarness>
+          <ChatPage isActive />
+        </NavigationHarness>
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.onopen?.();
+    socket.send.mockClear();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>("[data-testid='navigate-to-learn']")
+        ?.click();
+    });
+
+    await vi.waitFor(
+      () => expect(socket.send).toHaveBeenCalledWith("/learn debugging\r"),
+      { timeout: 1_500 },
+    );
+    expect(socket.send).toHaveBeenCalledTimes(1);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+  });
+
+  it("leaves learn parameters untouched while the persistent chat is hidden", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <RouteAwareChatHarness ChatPage={ChatPage} />
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    socket.onopen?.();
+    socket.send.mockClear();
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          "[data-testid='navigate-to-hidden-learn']",
+        )
+        ?.click();
+    });
+
+    expect(
+      container.querySelector("[data-testid='location']")?.textContent,
+    ).toBe("/skills?learn=hidden");
+    expect(socket.send).not.toHaveBeenCalledWith("/learn hidden\r");
   });
 });

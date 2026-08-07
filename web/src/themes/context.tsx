@@ -1,12 +1,11 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useState,
   type ReactNode,
 } from "react";
+import { ThemeContext, type ThemeContextValue } from "./context-value";
 import { BUILTIN_THEMES, defaultTheme } from "./presets";
 import {
   FONT_CHOICES,
@@ -581,35 +580,4 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
-}
-
-export function useTheme(): ThemeContextValue {
-  return useContext(ThemeContext);
-}
-
-const ThemeContext = createContext<ThemeContextValue>({
-  theme: defaultTheme,
-  themeName: "default",
-  availableThemes: Object.values(BUILTIN_THEMES).map((t) => ({
-    name: t.name,
-    label: t.label,
-    description: t.description,
-  })),
-  setTheme: () => {},
-  fontId: THEME_DEFAULT_FONT_ID,
-  fontChoices: FONT_CHOICES,
-  setFont: () => {},
-});
-
-interface ThemeContextValue {
-  availableThemes: ThemeListEntry[];
-  setTheme: (name: string) => void;
-  theme: DashboardTheme;
-  themeName: string;
-  /** Active font-override id (`THEME_DEFAULT_FONT_ID` = no override). */
-  fontId: string;
-  /** Curated font catalog for the picker. */
-  fontChoices: FontChoice[];
-  /** Set the font override (independent of theme). */
-  setFont: (id: string) => void;
 }

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { $gateway } from '@/store/gateway'
+import { testDocument } from '@/test-utils/test-document'
 
 import { useComposerSubmit } from './use-composer-submit'
 
@@ -21,7 +22,7 @@ function renderSubmitHook({
   text = ''
 }: SubmitHarnessOptions = {}) {
   const draftRef = { current: text }
-  const editor = document.createElement('div')
+  const editor = testDocument.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
   const editorRef = { current: editor }

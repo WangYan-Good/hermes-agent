@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { testDocument } from '@/test-utils/test-document'
 
 import { useSessionStateCache } from '../use-session-state-cache'
 
@@ -69,7 +70,7 @@ describe('useMessageStream delta flush scheduling', () => {
     vi.spyOn(performance, 'now').mockReturnValue(100)
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
     vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
-    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    vi.spyOn(testDocument, 'hasFocus').mockReturnValue(false)
   })
 
   afterEach(() => {
@@ -322,7 +323,7 @@ describe('useMessageStream composed with the real useSessionStateCache', () => {
     vi.spyOn(performance, 'now').mockReturnValue(100)
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 1)
     vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => undefined)
-    vi.spyOn(document, 'hasFocus').mockReturnValue(false)
+    vi.spyOn(testDocument, 'hasFocus').mockReturnValue(false)
   })
 
   afterEach(() => {

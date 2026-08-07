@@ -1150,19 +1150,31 @@ export default function ModelsPage() {
       });
   }, []);
 
+  const requestModels = useCallback(
+    () =>
+      Promise.all([
+        api.getModelsAnalytics(days),
+        api.getAuxiliaryModels().catch(() => null),
+      ]),
+    [days],
+  );
   const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    Promise.all([
-      api.getModelsAnalytics(days),
-      api.getAuxiliaryModels().catch(() => null),
-    ])
+    requestModels()
       .then(([models, auxData]) => {
         setData(models);
         setAux(auxData);
       })
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
+  }, [requestModels]);
+
+  const selectPeriod = useCallback((nextDays: number) => {
+    if (nextDays === days) return;
+    setLoading(true);
+    setError(null);
+    setDays(nextDays);
   }, [days]);
 
   const refreshAux = useCallback(() => {
@@ -1191,7 +1203,7 @@ export default function ModelsPage() {
             type="button"
             size="sm"
             outlined={days !== p.days}
-            onClick={() => setDays(p.days)}
+            onClick={() => selectPeriod(p.days)}
             className="uppercase"
           >
             {p.label}
@@ -1215,11 +1227,26 @@ export default function ModelsPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
+  }, [days, loading, load, selectPeriod, setAfterTitle, setEnd, t.common.refresh]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    let cancelled = false;
+    requestModels()
+      .then(([models, auxData]) => {
+        if (cancelled) return;
+        setData(models);
+        setAux(auxData);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [requestModels]);
 
   // Model assignments can change outside this page (config editor, chat
   // /model --global, CLI), so refetch them when the page regains focus.

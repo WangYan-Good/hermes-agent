@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopBootstrapEvent, DesktopBootstrapState, DesktopConnectionProbeResult } from '@/global'
+import { testDocument } from '@/test-utils/test-document'
 
 import { DesktopInstallOverlay } from './desktop-install-overlay'
 
@@ -75,7 +76,7 @@ function whenPresent(text: string): Promise<HTMLElement> {
       }
     })
 
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+    observer.observe(testDocument.body, { childList: true, subtree: true, characterData: true })
   })
 }
 

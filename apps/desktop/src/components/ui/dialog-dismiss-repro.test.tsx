@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { testDocument } from '@/test-utils/test-document'
+
 import { Dialog, DialogContent, DialogTitle } from './dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './select'
 
@@ -39,7 +41,7 @@ describe('REPRO: dismissing an open Select inside a Dialog', () => {
     // setTimeout(0) — flush it first.
     await flushTimers()
 
-    const overlay = document.querySelector('[data-slot="dialog-overlay"]') as HTMLElement
+    const overlay = testDocument.querySelector('[data-slot="dialog-overlay"]') as HTMLElement
     expect(overlay).toBeTruthy()
     expect(screen.getByText('Option A')).toBeTruthy()
 
@@ -76,7 +78,7 @@ describe('REPRO: dismissing an open Select inside a Dialog', () => {
 
     await flushTimers()
 
-    const overlay = document.querySelector('[data-slot="dialog-overlay"]') as HTMLElement
+    const overlay = testDocument.querySelector('[data-slot="dialog-overlay"]') as HTMLElement
     fireEvent.pointerDown(overlay, { button: 0 })
     fireEvent.pointerUp(overlay, { button: 0 })
     fireEvent.click(overlay, { button: 0 })

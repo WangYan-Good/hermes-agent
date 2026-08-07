@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { testDocument } from '@/test-utils/test-document'
 
 import { group, split } from '../model'
 import {
@@ -77,7 +78,7 @@ const zoneAt = (index: number) => {
   return (node.type === 'split' ? node.children[index] : node) as never
 }
 
-const tabEl = (paneId: string) => document.querySelector<HTMLElement>(`[data-tree-tab="${paneId}"]`)
+const tabEl = (paneId: string) => testDocument.querySelector<HTMLElement>(`[data-tree-tab="${paneId}"]`)
 
 describe('right-clicking a tool panel tab', () => {
   it('offers Close when logs is STACKED with the terminal', async () => {

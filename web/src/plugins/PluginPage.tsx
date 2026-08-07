@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useSyncExternalStore, type ComponentType } from "react";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   getPluginComponent,
@@ -8,6 +8,10 @@ import {
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { Translations } from "@/i18n/types";
+
+function RegisteredPlugin({ Component }: { Component: ComponentType }) {
+  return <Component />;
+}
 
 /** Renders a plugin tab once its bundle has called `register()`. */
 export function PluginPage({ name }: { name: string }) {
@@ -26,7 +30,7 @@ export function PluginPage({ name }: { name: string }) {
   );
 
   if (Component) {
-    return <Component />;
+    return <RegisteredPlugin Component={Component} />;
   }
 
   if (loadError) {

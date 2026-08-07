@@ -190,7 +190,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
       return synced
     },
-    [requestGateway, scope.attachments]
+    [readState, requestGateway, scope.attachments]
   )
 
   // The REAL submit pipeline with tile seams: session always exists, and the

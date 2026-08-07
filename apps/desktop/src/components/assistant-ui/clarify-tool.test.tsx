@@ -8,6 +8,7 @@ import { I18nProvider } from '@/i18n'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { $activeSessionId } from '@/store/session'
+import { testDocument } from '@/test-utils/test-document'
 
 import { ClarifyTool, readClarifyResult } from './clarify-tool'
 
@@ -144,8 +145,8 @@ describe('ClarifyTool settled view', () => {
 
     expect(screen.getByText('Which deployment target?')).toBeTruthy()
     expect(screen.getByText('staging')).toBeTruthy()
-    expect(document.querySelector('[data-clarify-settled]')).toBeTruthy()
-    expect(document.querySelector('[data-clarify-answer]')?.textContent).toBe('staging')
+    expect(testDocument.querySelector('[data-clarify-settled]')).toBeTruthy()
+    expect(testDocument.querySelector('[data-clarify-answer]')?.textContent).toBe('staging')
   })
 
   it('labels an empty response as Skipped', () => {
@@ -183,7 +184,7 @@ describe('ClarifyTool settled view', () => {
 
       // The skip label renders AND the original options are still on screen.
       expect(screen.getByText('Skipped')).toBeTruthy()
-      const group = document.querySelector('[data-clarify-late-choices]')
+      const group = testDocument.querySelector('[data-clarify-late-choices]')
       expect(group).toBeTruthy()
       expect(screen.getByText('staging')).toBeTruthy()
       expect(screen.getByText('prod')).toBeTruthy()
@@ -212,7 +213,7 @@ describe('ClarifyTool settled view', () => {
       />
     )
 
-    expect(document.querySelector('[data-clarify-late-choices]')).toBeNull()
+    expect(testDocument.querySelector('[data-clarify-late-choices]')).toBeNull()
   })
 
   it('does not render late choices for a free-text (no-choice) skip', () => {
@@ -226,7 +227,7 @@ describe('ClarifyTool settled view', () => {
       />
     )
 
-    expect(document.querySelector('[data-clarify-late-choices]')).toBeNull()
+    expect(testDocument.querySelector('[data-clarify-late-choices]')).toBeNull()
   })
 })
 
@@ -277,11 +278,11 @@ describe('ClarifyTool keyboard navigation', () => {
     const other = screen.getByPlaceholderText(/Other/)
 
     fireEvent.keyDown(window, { key: '3' })
-    expect(document.activeElement).toBe(other)
+    expect(testDocument.activeElement).toBe(other)
 
     fireEvent.change(other, { target: { value: 'canary' } })
     fireEvent.keyDown(window, { key: 'ArrowUp' })
-    expect(document.activeElement).toBe(other)
+    expect(testDocument.activeElement).toBe(other)
     expect((other as HTMLTextAreaElement).value).toBe('canary')
   })
 
@@ -304,7 +305,7 @@ describe('ClarifyTool pending marker', () => {
     // `clarifyCardOwnsKey` reads the count off this marker to yield only the
     // shortcuts the card renders (A..N + "Other", 1-9, Enter) and let every
     // other printable through to the composer.
-    const card = document.querySelector('[data-clarify-choices]')
+    const card = testDocument.querySelector('[data-clarify-choices]')
 
     expect(card).toBeTruthy()
     expect(Number(card?.getAttribute('data-clarify-choices'))).toBeGreaterThan(0)
@@ -338,6 +339,6 @@ describe('ClarifyTool pending marker', () => {
     )
 
     // No shortcuts → nothing to protect → composer type-to-focus stays live.
-    expect(document.querySelector('[data-clarify-choices]')).toBeNull()
+    expect(testDocument.querySelector('[data-clarify-choices]')).toBeNull()
   })
 })
