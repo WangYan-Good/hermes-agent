@@ -171,7 +171,7 @@ export default function SkillsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedProfile]);
+  }, [selectedProfile, showToast, t.common.loading]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
@@ -1149,6 +1149,7 @@ function HubBrowser({
       {/* ── Detail dialog: preview + scan ── */}
       {detail && (
         <SkillDetailDialog
+          key={detail.identifier}
           result={detail}
           installed={isInstalled(detail.identifier)}
           onClose={() => setDetail(null)}
@@ -1357,7 +1358,6 @@ function SkillDetailDialog({
 
   useEffect(() => {
     let cancelled = false;
-    setPreviewLoading(true);
     api
       .previewSkillFromHub(result.identifier)
       .then((p) => !cancelled && setPreview(p))

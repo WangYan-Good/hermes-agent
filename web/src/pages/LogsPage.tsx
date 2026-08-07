@@ -53,28 +53,37 @@ export default function LogsPage() {
   const [lineCount, setLineCount] = useState<(typeof LINE_COUNTS)[number]>(100);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lines, setLines] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
+  const requestLogs = useCallback(
+    () => api.getLogs({ file, lines: lineCount, level, component }),
+    [component, file, level, lineCount],
+  );
+  const applyLogs = useCallback((nextLines: string[]) => {
+    setLines(nextLines);
+    setTimeout(() => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      }
+    }, 50);
+  }, []);
   const fetchLogs = useCallback(() => {
     setLoading(true);
     setError(null);
-    api
-      .getLogs({ file, lines: lineCount, level, component })
-      .then((resp) => {
-        setLines(resp.lines);
-        setTimeout(() => {
-          if (scrollRef.current) {
-            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-          }
-        }, 50);
-      })
+    requestLogs()
+      .then((resp) => applyLogs(resp.lines))
       .catch((err) => setError(String(err)))
       .finally(() => setLoading(false));
-  }, [file, lineCount, level, component]);
+  }, [applyLogs, requestLogs]);
+
+  const startFilterRequest = () => {
+    setLoading(true);
+    setError(null);
+  };
 
   useLayoutEffect(() => {
     setAfterTitle(
@@ -135,8 +144,21 @@ export default function LogsPage() {
   ]);
 
   useEffect(() => {
-    fetchLogs();
-  }, [fetchLogs]);
+    let cancelled = false;
+    requestLogs()
+      .then((response) => {
+        if (!cancelled) applyLogs(response.lines);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyLogs, requestLogs]);
 
   useEffect(() => {
     if (!autoRefresh) return;
@@ -156,7 +178,11 @@ export default function LogsPage() {
           <Segmented
             className={segmentedClass}
             value={file}
-            onChange={setFile}
+            onChange={(value) => {
+              if (value === file) return;
+              startFilterRequest();
+              setFile(value);
+            }}
             options={toSegmentOptions(FILES)}
           />
         </FilterGroup>
@@ -165,7 +191,11 @@ export default function LogsPage() {
           <Segmented
             className={segmentedClass}
             value={level}
-            onChange={setLevel}
+            onChange={(value) => {
+              if (value === level) return;
+              startFilterRequest();
+              setLevel(value);
+            }}
             options={toSegmentOptions(LEVELS)}
           />
         </FilterGroup>
@@ -174,7 +204,11 @@ export default function LogsPage() {
           <Segmented
             className={segmentedClass}
             value={component}
-            onChange={setComponent}
+            onChange={(value) => {
+              if (value === component) return;
+              startFilterRequest();
+              setComponent(value);
+            }}
             options={toSegmentOptions(COMPONENTS)}
           />
         </FilterGroup>
@@ -183,9 +217,12 @@ export default function LogsPage() {
           <Segmented
             className={segmentedClass}
             value={String(lineCount)}
-            onChange={(v) =>
-              setLineCount(Number(v) as (typeof LINE_COUNTS)[number])
-            }
+            onChange={(v) => {
+              const nextLineCount = Number(v) as (typeof LINE_COUNTS)[number];
+              if (nextLineCount === lineCount) return;
+              startFilterRequest();
+              setLineCount(nextLineCount);
+            }}
             options={LINE_COUNTS.map((n) => ({
               value: String(n),
               label: String(n),

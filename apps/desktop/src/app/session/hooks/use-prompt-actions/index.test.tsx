@@ -219,6 +219,7 @@ function Harness({
         act(async () => actions.submitText(...args)) as Promise<boolean>
     })
   }, [
+    actions,
     actions.cancelRun,
     actions.editMessage,
     actions.reloadFromMessage,

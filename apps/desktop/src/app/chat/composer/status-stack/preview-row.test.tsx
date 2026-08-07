@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
+import { testDocument } from '@/test-utils/test-document'
 
 import { PreviewStatusRow } from './preview-row'
 
@@ -30,7 +31,7 @@ describe('PreviewStatusRow', () => {
     fireEvent.pointerMove(screen.getByText('preview.html'), { pointerType: 'mouse' })
     await screen.findByRole('tooltip')
 
-    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
+    const content = testDocument.querySelector<HTMLElement>('[data-slot="tooltip-content"]')
     const label = content?.firstElementChild?.firstElementChild
 
     expect(content).not.toBeNull()

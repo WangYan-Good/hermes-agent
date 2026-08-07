@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConfigRecord } from '@/hermes'
+import { testDocument } from '@/test-utils/test-document'
 
 import { type I18nConfigClient, I18nProvider, useI18n } from './context'
 import type { Locale } from './types'
@@ -217,14 +218,14 @@ describe('I18nProvider', () => {
     )
 
     expect(screen.getByTestId('locale').textContent).toBe('ar')
-    expect(document.documentElement.dir).toBe('rtl')
-    expect(document.documentElement.lang).toBe('ar')
+    expect(testDocument.documentElement.dir).toBe('rtl')
+    expect(testDocument.documentElement.lang).toBe('ar')
 
     fireEvent.click(screen.getByRole('button', { name: 'switch' }))
 
     await waitFor(() => expect(screen.getByTestId('locale').textContent).toBe('en'))
-    expect(document.documentElement.dir).toBe('ltr')
-    expect(document.documentElement.lang).toBe('en')
+    expect(testDocument.documentElement.dir).toBe('ltr')
+    expect(testDocument.documentElement.lang).toBe('en')
   })
 
   it('rolls back the visible locale when saving fails', async () => {

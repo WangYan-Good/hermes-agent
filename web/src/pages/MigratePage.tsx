@@ -206,8 +206,19 @@ export default function MigratePage() {
   }, []);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    let cancelled = false;
+    api
+      .listMigrationTargets()
+      .then((response) => {
+        if (!cancelled) setTargets(response.targets);
+      })
+      .catch((error) => {
+        if (!cancelled) setFormError(String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const target = targets.find((x) => x.id === selected) ?? null;
 

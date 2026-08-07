@@ -6,6 +6,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { useComposerTrigger } from './hooks/use-composer-trigger'
 import { composerPlainText, renderComposerContents, RICH_INPUT_SLOT } from './rich-editor'
 
+const testDocument = window.document
+
 /**
  * Folder navigation in the `@` popover, driven through the REAL hook against a
  * real contentEditable.
@@ -31,17 +33,17 @@ function folderItem(path: string): Unstable_TriggerItem {
 }
 
 function setup(initialText: string) {
-  const editor = document.createElement('div')
+  const editor = testDocument.createElement('div')
   editor.contentEditable = 'true'
   // The real composer marks its editor with this slot; `composerPlainText`
   // keys off it to decide whether a DIV contributes a trailing newline.
   // Without it the harness would silently diverge from production text.
   editor.dataset.slot = RICH_INPUT_SLOT
-  document.body.append(editor)
+  testDocument.body.append(editor)
   renderComposerContents(editor, initialText)
 
   // Caret at the end, which is where a typed trigger always leaves it.
-  const range = document.createRange()
+  const range = testDocument.createRange()
   range.selectNodeContents(editor)
   range.collapse(false)
   const sel = window.getSelection()

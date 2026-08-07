@@ -7,6 +7,7 @@ import { ComposerDirectiveActions } from './directive-actions'
 import { refChipElement } from './rich-editor'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
+const testDocument = window.document
 
 const openSession = vi.fn()
 
@@ -15,11 +16,11 @@ vi.mock('@/app/open-session', () => ({ openSession: (...args: unknown[]) => open
 /** A live contenteditable holding real chips, with the watcher bound to it —
  *  the same pair both composers mount. */
 function mountEditor(chips: { kind: string; value: string }[]) {
-  const editor = document.createElement('div')
+  const editor = testDocument.createElement('div')
 
   editor.contentEditable = 'true'
   editor.append(...chips.map(chip => refChipElement(chip.kind, `\`${chip.value}\``)))
-  document.body.append(editor)
+  testDocument.body.append(editor)
 
   render(
     <I18nProvider configClient={null} initialLocale="en">
@@ -40,12 +41,12 @@ function hover(node: Element) {
 
 /** The reference the visible action pill points at, or null when there is none. */
 function pillValue() {
-  return document.querySelector('[data-slot="composer-directive-action"]')?.getAttribute('data-value') ?? null
+  return testDocument.querySelector('[data-slot="composer-directive-action"]')?.getAttribute('data-value') ?? null
 }
 
 afterEach(() => {
   cleanup()
-  document.body.replaceChildren()
+  testDocument.body.replaceChildren()
   delete desktopWindow.hermesDesktop
   openSession.mockReset()
   vi.useRealTimers()
@@ -119,7 +120,7 @@ describe('ComposerDirectiveActions', () => {
     const chip = chips(editor, 'url')[0]!
 
     hover(chip)
-    fireEvent.pointerOut(chip, { relatedTarget: document.body })
+    fireEvent.pointerOut(chip, { relatedTarget: testDocument.body })
     fireEvent.mouseEnter(screen.getByRole('button').parentElement!)
     vi.advanceTimersByTime(500)
 
@@ -130,7 +131,7 @@ describe('ComposerDirectiveActions', () => {
     // The edit composer's editor isn't reliably in the DOM when the effect
     // first runs; a document listener that reads the editor lazily works
     // regardless — this is the whole reason it binds to document, not editor.
-    const editor = document.createElement('div')
+    const editor = testDocument.createElement('div')
 
     editor.contentEditable = 'true'
     editor.append(refChipElement('url', '`https://late.example`'))
@@ -142,7 +143,7 @@ describe('ComposerDirectiveActions', () => {
     )
 
     // Editor attached AFTER mount.
-    document.body.append(editor)
+    testDocument.body.append(editor)
     hover(editor.querySelector('[data-ref-kind="url"]')!)
 
     expect(pillValue()).toBe('https://late.example')

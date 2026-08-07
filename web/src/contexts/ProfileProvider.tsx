@@ -56,6 +56,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (urlProfile !== null && urlProfile !== profile) {
       setManagementProfile(urlProfile);
+      // An explicit deep-link profile must replace the state-first navigation scope.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setProfileState(urlProfile);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps

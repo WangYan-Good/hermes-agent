@@ -5,9 +5,9 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
-import { useI18n } from "@/i18n/context";
-import { LOCALE_META } from "@/i18n";
+import { LOCALE_META, useI18n } from "@/i18n";
 import type { Locale } from "@/i18n";
+import { useDropUpPosition } from "@/hooks/use-drop-up-position";
 import { cn } from "@/lib/utils";
 
 /**
@@ -34,6 +34,10 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
   const dropdownRef = useRef<HTMLDivElement>(null);
   const narrowViewport = useBelowBreakpoint(640);
   const useMobileSheet = Boolean(dropUp && narrowViewport);
+  const dropUpPosition = useDropUpPosition(
+    containerRef,
+    open && dropUp && !useMobileSheet,
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -58,6 +62,10 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [open, useMobileSheet]);
 
+  const toggleOpen = () => {
+    setOpen((current) => !current);
+  };
+
   const current = LOCALE_META[locale];
   const allLocales = Object.entries(LOCALE_META) as Array<[Locale, typeof current]>;
   const sheetTitle = t.language.switchTo;
@@ -66,7 +74,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
     <div ref={containerRef} className="relative inline-flex">
       <Button
         ghost
-        onClick={() => setOpen((v) => !v)}
+        onClick={toggleOpen}
         title={t.language.switchTo}
         aria-label={t.language.switchTo}
         aria-haspopup="listbox"
@@ -104,7 +112,6 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
       )}
 
       {open && !useMobileSheet && (() => {
-        const rect = containerRef.current?.getBoundingClientRect();
         const dropdown = (
           <div
             ref={dropdownRef}
@@ -115,8 +122,8 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
             )}
             role="listbox"
             style={
-              dropUp && rect
-                ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
+              dropUp && dropUpPosition
+                ? dropUpPosition
                 : undefined
             }
           >

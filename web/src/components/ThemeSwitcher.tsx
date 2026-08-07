@@ -9,6 +9,7 @@ import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint
 import { BUILTIN_THEMES, THEME_DEFAULT_FONT_ID, useTheme } from "@/themes";
 import type { DashboardTheme, FontChoice, ThemeListEntry } from "@/themes";
 import { useI18n } from "@/i18n";
+import { useDropUpPosition } from "@/hooks/use-drop-up-position";
 import { cn } from "@/lib/utils";
 
 /**
@@ -32,6 +33,10 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
   const dropdownRef = useRef<HTMLDivElement>(null);
   const narrowViewport = useBelowBreakpoint(640);
   const useMobileSheet = Boolean(dropUp && narrowViewport);
+  const dropUpPosition = useDropUpPosition(
+    wrapperRef,
+    open && dropUp && !useMobileSheet,
+  );
 
   const close = useCallback(() => setOpen(false), []);
 
@@ -56,6 +61,10 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
     return () => document.removeEventListener("mousedown", onMouseDown);
   }, [open, close, useMobileSheet]);
 
+  const toggleOpen = () => {
+    setOpen((current) => !current);
+  };
+
   const current = availableThemes.find((th) => th.name === themeName);
   const label = current?.label ?? themeName;
   const sheetTitle = t.theme?.title ?? "Theme";
@@ -65,7 +74,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
       <Button
         ghost
         size={collapsed ? "icon" : undefined}
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggleOpen}
         className={cn(
           collapsed
             ? "text-text-secondary hover:text-foreground hover:bg-transparent"
@@ -113,7 +122,6 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
       )}
 
       {open && !useMobileSheet && (() => {
-        const rect = wrapperRef.current?.getBoundingClientRect();
         const dropdown = (
           <div
             ref={dropdownRef}
@@ -126,8 +134,8 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
             )}
             role="listbox"
             style={
-              dropUp && rect
-                ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
+              dropUp && dropUpPosition
+                ? dropUpPosition
                 : undefined
             }
           >

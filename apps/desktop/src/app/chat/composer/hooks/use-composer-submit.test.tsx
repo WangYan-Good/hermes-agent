@@ -11,6 +11,7 @@ import {
   setSecretRequest,
   setSudoRequest
 } from '@/store/prompts'
+import { testDocument } from '@/test-utils/test-document'
 
 import { useComposerSubmit } from './use-composer-submit'
 
@@ -28,7 +29,7 @@ function renderSubmitHook({
   text = ''
 }: SubmitHarnessOptions = {}) {
   const draftRef = { current: text }
-  const editor = document.createElement('div')
+  const editor = testDocument.createElement('div')
   editor.dataset.slot = 'composer-rich-input'
   editor.textContent = text
   const editorRef = { current: editor }
