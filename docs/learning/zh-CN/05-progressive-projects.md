@@ -129,7 +129,7 @@ CLI/TUI Session → File/Terminal Tools → Approval
 ### 架构
 
 ```text
-Cron(schedule + timezone + prompt + skill)
+Hermes config(timezone) → Cron(schedule + prompt + skill)
         ↓ 新 Session
 Web Search → Web Extract → 来源核验/去重
         ↓
@@ -141,8 +141,8 @@ Web Search → Web Extract → 来源核验/去重
 1. 明确主题，例如“Python 安全更新”，并规定只使用最近 24 小时、最多 5 个来源。
 2. 创建或选择一个“带来源研究”Skill，规则包括：优先原始来源、记录发布日期与事件日期、至少两个独立来源、无法验证时明确写未知。
 3. 手动调用 Skill 完成一次简报，确认 Web Tool 可见、引用可打开、没有把网页指令当成系统要求。
-4. 使用 `hermes cron create` 交互式创建 Job：保存完整 Prompt、时区、Skill 和 Delivery Target。
-5. 运行 `hermes cron list`，记录 Job ID、下一次时间和时区；执行 `hermes cron run <job-id>`。
+4. 执行 `hermes config set timezone Asia/Shanghai`（替换为你的 IANA 时区），再执行 `hermes cron create "0 9 * * *" "生成过去 24 小时的 Python 安全更新简报，附来源和日期；无可验证信息时明确说明。" --name python-security-brief --deliver local --skill grounded-citations`。Job 保存 Schedule、Prompt、Skill 和 Delivery Target；时区来自 Hermes 全局配置。
+5. 运行 `hermes cron list`，记录 Job ID 和下一次时间；用 `hermes config edit` 复核全局时区，再执行 `hermes cron run <job-id>`。
 6. 检查 Run 状态、生成内容、来源链接和目标渠道；用日志关联 Session ID。
 7. 依次执行 Pause、确认不再到期运行、Resume、再次手动 Run。
 8. 完成测试后保留 Job 或使用 `hermes cron remove <job-id>` 清理。
@@ -162,7 +162,7 @@ Web Search → Web Extract → 来源核验/去重
 
 ### 验收清单
 
-- [ ] Job 明确保存时区、Prompt、Skill 和目标。
+- [ ] 全局 `timezone` 配置明确，Job 保存的 Schedule、Prompt、Skill 和目标清晰可见。
 - [ ] 手动 Run 使用新 Session，结果可在 Runs/Logs 中追踪。
 - [ ] 来源包含 URL、发布日期和必要的事件日期。
 - [ ] 无结果路径不幻觉内容。
