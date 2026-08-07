@@ -175,7 +175,7 @@ MCP 不是知识文件，而是连接外部工具服务的协议。Checkpoint �
 
 ### 核心原理
 
-Cron 到期时在**新 Session**运行，不能依赖创建任务时聊天里的隐式信息；Prompt、Skills、目标和时区必须显式保存。Gateway 把平台事件归一化后再进入同一个 Agent Core，平台差异主要出现在权限、线程、媒体和投递层。
+Cron 到期时在**新 Session**运行，不能依赖创建任务时聊天里的隐式信息；Prompt、Skills 和目标必须写入 Job，调度时区则在 Hermes 全局配置中显式设置。Gateway 把平台事件归一化后再进入同一个 Agent Core，平台差异主要出现在权限、线程、媒体和投递层。
 
 客户端边界：
 
@@ -195,7 +195,7 @@ Cron 到期时在**新 Session**运行，不能依赖创建任务时聊天里的
 
 ### 动手实验
 
-1. 选择一个无副作用任务，例如“每 15 分钟生成当前时间与一句固定文本”。用 `hermes cron create` 的交互式流程创建，明确时区、Prompt 和本地投递目标。
+1. 选择一个无副作用任务，例如“每 15 分钟生成当前时间与一句固定文本”。先执行 `hermes config set timezone Asia/Shanghai`（替换为你的 IANA 时区），再执行 `hermes cron create "every 15m" "输出当前时间和一句固定文本。" --name learning-smoke --deliver local`。时区属于 Hermes 全局配置，不是单个 Job 字段。
 2. 运行 `hermes cron list`，随后 `hermes cron run <job-id>`；检查 Runs 记录和结果。暂停、恢复后再删除测试 Job。
 3. 运行 `hermes gateway setup` 配置一个测试平台；用 `hermes gateway status` 检查服务。
 4. 从私聊和一个 Thread/频道分别发消息，运行 `/status`，确认 Session Origin 不同。
@@ -205,7 +205,7 @@ Cron 到期时在**新 Session**运行，不能依赖创建任务时聊天里的
 
 ### 验收标准
 
-- Cron Job 的时区、Prompt、附加 Skills 和目标清晰可见；立即运行产生预期结果。
+- 全局 `timezone` 配置明确，Cron Job 的 Prompt、附加 Skills 和目标清晰可见；立即运行产生预期结果。
 - 暂停 Job 后不会运行，恢复后可再次手动触发。
 - 能从两个不同 Origin 展示不同 Session ID，并说明管理员跨 Origin 权限。
 - 能解释 Dashboard 与 Desktop 的主聊天为什么不是同一个前端实现。

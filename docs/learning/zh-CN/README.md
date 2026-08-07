@@ -18,9 +18,9 @@ Hermes 不是单一的聊天 CLI，而是一套复用同一智能体核心的个
 
 | 你是谁 | 建议起点 | 先达到的目标 | 接下来 |
 |---|---|---|---|
-| 首次使用者 | [用户路线 L0](02-user-learning-path.md#l0安全启动并完成第一次对话) | 安全完成安装、Provider 配置和第一次对话 | L1：上下文、工具、会话、记忆与技能 |
+| 首次使用者 | [用户路线 L0](02-user-learning-path.md#l0安全启动并完成第一次对话) | 安全完成安装、模型提供商（Provider）配置和第一次对话 | L1：上下文、工具、会话、记忆与技能 |
 | 进阶用户 | [功能清单](01-feature-inventory.md) | 能为任务选择工具、技能、MCP、Cron 或消息渠道 | 用户路线 L2–L3 |
-| 部署运维人员 | [用户路线 L3](02-user-learning-path.md#l3运营多模型多身份和消息服务) | 能管理 Profile、Gateway、权限、日志、备份和恢复 | L4：可观测、可恢复运行 |
+| 部署运维人员 | [用户路线 L3](02-user-learning-path.md#l3运营多模型多身份和消息服务) | 能管理配置档案（Profile）、消息网关（Gateway）、权限、日志、备份和恢复 | L4：可观测、可恢复运行 |
 | 插件/集成开发者 | [开发者路线 L0](03-developer-learning-path.md#l0从入口追到-aiagent) | 能从任一入口追踪到 `AIAgent`，并选对扩展层级 | L2–L3：工具、Provider、Plugin 与 MCP |
 | 核心贡献者 | [核心原理](04-core-principles-and-labs.md) | 能维护提示词缓存、角色交替、安全与可靠性不变量 | 开发者路线 L4 和贡献前检查表 |
 
@@ -31,7 +31,7 @@ Hermes 不是单一的聊天 CLI，而是一套复用同一智能体核心的个
 可以用五句话建立正确心智模型：
 
 1. **一个核心，多种入口。** 经典 CLI、Ink TUI、Gateway、ACP、API Server、批处理和桌面端最终都把任务交给 [`AIAgent`](../../../run_agent.py)。
-2. **模型负责决策，工具负责行动。** 模型返回文本或工具调用；[工具注册表](../../../tools/registry.py)把结构化调用分发给具体 Handler，再把结果送回模型循环。
+2. **模型负责决策，工具负责行动。** 模型返回文本或工具调用；[工具注册表（Tool Registry）](../../../tools/registry.py)把结构化调用分发给具体 Handler，再把结果送回模型循环。
 3. **上下文不等于记忆。** 当前会话、项目上下文文件、`MEMORY.md`/`USER.md`、外部记忆提供商和压缩摘要承担不同职责。
 4. **核心保持窄，能力长在边缘。** 新能力优先复用现有代码，其次考虑 CLI + Skill、服务门控工具、Plugin 或 MCP，最后才新增核心工具。
 5. **长会话的缓存不变量是架构约束。** 系统提示词在会话生命周期中保持字节稳定，消息保持合法角色顺序；动态能力通过当前轮输入、工具结果或已注册扩展进入，而不是随意重写历史前缀。
@@ -67,7 +67,7 @@ Hermes 不是单一的聊天 CLI，而是一套复用同一智能体核心的个
                                ▼
 ┌───────────────────────────────────────────────────────────────┐
 │ AIAgent                                                       │
-│ Prompt Assembly · Agent Loop · Budget/Interrupt · Streaming   │
+│ Prompt Assembly · 智能体循环（Agent Loop）· Budget/Interrupt │
 ├──────────────────────┬─────────────────────┬──────────────────┤
 │ Provider Runtime     │ Tool Registry       │ Context Runtime  │
 │ model/API/fallback   │ schema/gate/handler │ cache/compress   │
