@@ -74,7 +74,11 @@ class TestFreshFinalForLongLivedPreviews:
             config=StreamConsumerConfig(fresh_final_after_seconds=60.0),
         )
         await consumer._send_or_edit("hello")
-        consumer._message_created_ts = 0.0
+        created_ts = consumer._message_created_ts
+        assert created_ts is not None
+        consumer._message_created_ts = (
+            created_ts - consumer.cfg.fresh_final_after_seconds - 1.0
+        )
         await consumer._send_or_edit("hello world", finalize=True)
         assert adapter.send.call_count == 2
         adapter.edit_message.assert_not_called()
@@ -337,4 +341,3 @@ class TestTelegramAdapterDeleteMessage:
         sig = inspect.signature(cls.delete_message)
         params = list(sig.parameters)
         assert params[:3] == ["self", "chat_id", "message_id"]
-
