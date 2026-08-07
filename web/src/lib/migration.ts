@@ -67,10 +67,11 @@ export function canStartMigration(
 }
 
 export function stageProgress(
-  stage: MigrationStage | null,
+  stage: MigrationStageOrNotice | null,
   status: "start" | "ok" | "fail",
 ): number {
   if (!stage) return 0;
+  if (stage === "cleanup") return 0;
   const idx = MIGRATION_STAGES.indexOf(stage);
   if (idx < 0) return 0;
   const total = MIGRATION_STAGES.length;
