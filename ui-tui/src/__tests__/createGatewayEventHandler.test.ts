@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { completeControlPrompt } from '../app/controlPromptQueue.js'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import { createOutputLifecycleCoordinator } from '../app/outputLifecycleCoordinator.js'
 import { createOutputStreamRouter } from '../app/outputStreamRouter.js'
 import { getOutputStreamsState, markOutputTransportDisconnected, resetOutputStreams } from '../app/outputStreamStore.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
@@ -21,8 +22,10 @@ vi.mock('../lib/openExternalUrl.js', () => ({
 
 const ref = <T>(current: T) => ({ current })
 
-const buildCtx = (appended: Msg[]) =>
-  ({
+const buildCtx = (appended: Msg[]) => {
+  const outputRouter = createOutputStreamRouter({ dashboardMode: false })
+
+  return ({
     composer: {
       dequeue: () => undefined,
       queueEditRef: ref<null | number>(null),
@@ -33,7 +36,8 @@ const buildCtx = (appended: Msg[]) =>
       gw: { request: vi.fn() },
       rpc: vi.fn(async () => null)
     },
-    outputRouter: createOutputStreamRouter({ dashboardMode: false }),
+    outputLifecycle: createOutputLifecycleCoordinator(outputRouter),
+    outputRouter,
     session: {
       STARTUP_RESUME_ID: '',
       colsRef: ref(80),
@@ -61,6 +65,7 @@ const buildCtx = (appended: Msg[]) =>
       setVoiceEnabled: vi.fn()
     }
   }) as any
+}
 
 describe('createGatewayEventHandler', () => {
   beforeEach(() => {
@@ -1055,7 +1060,7 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ payload: {}, type: 'gateway.ready' } as any)
 
-    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-crashed'))
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-crashed', 'recover'))
     expect(newSession).not.toHaveBeenCalled()
     // One-shot: the ref is consumed so a later ordinary restart forges/resumes
     // per config instead of re-resuming the recovered session.
