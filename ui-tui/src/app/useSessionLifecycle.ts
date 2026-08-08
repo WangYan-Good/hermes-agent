@@ -569,8 +569,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const resumeById = useCallback(
-    (id: string) => {
-      const isCurrent = sessionIntentRef.current.begin('resume')
+    (id: string, transitionKind: Extract<SessionTransitionKind, 'recover' | 'resume'> = 'resume') => {
+      const isCurrent = sessionIntentRef.current.begin(transitionKind)
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
@@ -616,7 +616,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             const running = Boolean(r.running || r.status === 'working' || r.status === 'waiting')
 
             const transition: SessionTransition = {
-              kind: 'resume',
+              kind: transitionKind,
               nextSessionId: r.session_id,
               previousSessionId: previousSid
             }

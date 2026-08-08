@@ -323,4 +323,55 @@ describe('output stream state', () => {
     expect(state.streams['sid-c']).toMatchObject({ producing: true, status: 'running' })
   })
 
+  it('keeps live fields when a stale active-list poll arrives after a delta', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'idle', title: 'Alpha' },
+        { id: 'sid-b', model: 'old-model', preview: 'old preview', status: 'idle', title: 'Beta' }
+      ],
+      'sid-a'
+    )
+    observeOutputEvent({ payload: { text: 'new live preview' }, type: 'message.delta' }, 'sid-b', {
+      buffer: true,
+      now: 10
+    })
+    const live = getOutputStreamsState().streams['sid-b']!
+
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'idle', title: 'Alpha' },
+        { id: 'sid-b', model: 'new-model', preview: 'stale preview', status: 'idle', title: 'Beta renamed' }
+      ],
+      'sid-a'
+    )
+
+    expect(getOutputStreamsState().streams['sid-b']).toMatchObject({
+      entries: live.entries,
+      model: 'new-model',
+      preview: 'new live preview',
+      producing: true,
+      status: 'running',
+      title: 'Beta renamed',
+      unreadCount: 1
+    })
+  })
+
+  it('keeps ordinary user resume semantics separate from recovery resume', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'idle', title: 'Alpha' },
+        { id: 'sid-b', status: 'idle', title: 'Beta' }
+      ],
+      'sid-a'
+    )
+    setSecondaryOutput('sid-b')
+
+    commitOutputPrimaryTransition({ kind: 'resume', nextSessionId: 'sid-a', previousSessionId: null })
+
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'single',
+      primarySessionId: 'sid-a',
+      secondarySessionId: null
+    })
+  })
 })

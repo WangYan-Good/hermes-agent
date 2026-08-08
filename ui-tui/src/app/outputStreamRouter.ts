@@ -58,6 +58,7 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
   const now = options.now ?? Date.now
   const pendingDeltas = new Map<string, PendingDelta>()
   let disposed = false
+  let disconnected = false
   let timer: null | ReturnType<typeof setTimeout> = null
 
   const clearTimer = () => {
@@ -103,8 +104,9 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
   const route = (event: GatewayEvent, activeSessionId: null | string): OutputRoute => {
     if (disposed) {return 'ignored'}
 
-    if (event.type === 'gateway.ready') {
+    if (event.type === 'gateway.ready' && disconnected) {
       clearPending()
+      disconnected = false
     }
 
     if (event.type.startsWith('gateway.')) {return 'active'}
@@ -149,7 +151,10 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
   }
 
   return {
-    disconnect: clearPending,
+    disconnect: () => {
+      disconnected = true
+      clearPending()
+    },
     dispose: () => {
       disposed = true
       clearPending()

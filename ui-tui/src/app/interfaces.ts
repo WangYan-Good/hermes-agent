@@ -33,6 +33,7 @@ import type {
 } from '../types.js'
 
 import type { ControlPrompt } from './controlPromptQueue.js'
+import type { OutputLifecycleCoordinator } from './outputLifecycleCoordinator.js'
 import type { OutputStreamRouter } from './outputStreamRouter.js'
 import type { OutputConflictDecision } from './outputStreamStore.js'
 
@@ -474,6 +475,7 @@ export interface GatewayEventHandlerContext {
   }
   gateway: GatewayServices
   outputRouter: OutputStreamRouter
+  outputLifecycle: OutputLifecycleCoordinator
   session: {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
@@ -483,7 +485,7 @@ export interface GatewayEventHandlerContext {
     // respawn resumes that session instead of forging a fresh one.
     recoverSidRef?: MutableRefObject<null | string>
     resetSession: () => void
-    resumeById: (id: string) => void
+    resumeById: (id: string, transitionKind?: 'recover' | 'resume') => void
     setCatalog: StateSetter<null | SlashCatalog>
   }
   submission: {

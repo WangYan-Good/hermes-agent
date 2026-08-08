@@ -50,7 +50,7 @@ export interface OutputStreamsState {
   layout: OutputLayout
   streams: Record<string, OutputStream>
 }
-export type SessionTransitionKind = 'activate-live' | 'new-live' | 'replace' | 'resume'
+export type SessionTransitionKind = 'activate-live' | 'new-live' | 'recover' | 'replace' | 'resume'
 export interface SessionTransition {
   kind: SessionTransitionKind
   nextSessionId: string
@@ -316,13 +316,15 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
 
     if (!details.sessionId) {continue}
     const stream = getOrCreateStream(details.sessionId)
-    const status = details.status ?? stream.status
+    const status = stream.producing ? stream.status : (details.status ?? stream.status)
     updateStream({
       ...stream,
       model: details.model ?? stream.model,
-      preview: details.preview ?? stream.preview,
+      preview: stream.producing ? stream.preview : (details.preview ?? stream.preview),
       status:
-        stream.status !== 'disconnected' && isTerminal(stream.status) && !isTerminal(status) ? stream.status : status,
+        !stream.producing && stream.status !== 'disconnected' && isTerminal(stream.status) && !isTerminal(status)
+          ? stream.status
+          : status,
       title: details.title ?? stream.title
     })
   }
@@ -410,8 +412,21 @@ export const commitOutputPrimaryTransition = (transition: SessionTransition) => 
   const next = getOrCreateStream(transition.nextSessionId)
   const previousSessionId = transition.previousSessionId
 
-  const preservesLivePair =
-    (transition.kind === 'activate-live' || transition.kind === 'new-live') &&
+  if (transition.kind === 'recover') {
+    updateStream({ ...next, unreadCount: 0 })
+    state = {
+      ...state,
+      conflict: null,
+      layout: state.layout.primarySessionId
+        ? state.layout
+        : { mode: 'single', primarySessionId: transition.nextSessionId, secondarySessionId: null }
+    }
+    publish()
+
+    return
+  }
+
+  const preservesLivePair = (transition.kind === 'activate-live' || transition.kind === 'new-live') &&
     Boolean(previousSessionId && previousSessionId !== transition.nextSessionId)
 
   updateStream({ ...next, unreadCount: 0 })

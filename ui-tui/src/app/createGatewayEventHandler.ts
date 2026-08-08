@@ -25,10 +25,9 @@ import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { ClarifyReq, Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
-import { clearControlPrompts, completeControlPrompt, controlPromptFromEvent, enqueueControlPrompt, expireControlPrompt } from './controlPromptQueue.js'
+import { completeControlPrompt, controlPromptFromEvent, enqueueControlPrompt, expireControlPrompt } from './controlPromptQueue.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
-import { markOutputTransportReady } from './outputStreamStore.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
@@ -654,9 +653,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
   const handleReady = (skin?: GatewaySkin) => {
-    if (markOutputTransportReady()) {
-      clearControlPrompts()
-    }
+    ctx.outputLifecycle.ready()
 
     if (skin) {
       applySkin(skin)
@@ -704,7 +701,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
 
     if (recoverSidRef && recoverSid) {
       recoverSidRef.current = null
-      resumeById(recoverSid)
+      resumeById(recoverSid, 'recover')
       // After resumeById: it synchronously sets status to 'resuming…' on entry,
       // so override it here to keep the distinct "recovering" label visible for
       // the duration of the resume RPC (which later flips status to 'ready').

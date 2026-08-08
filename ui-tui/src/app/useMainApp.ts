@@ -43,24 +43,21 @@ import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
-import { clearControlPrompts, completeControlPrompt, removeControlPromptsForSession } from './controlPromptQueue.js'
+import { completeControlPrompt } from './controlPromptQueue.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
+import { createOutputLifecycleCoordinator } from './outputLifecycleCoordinator.js'
 import { createOutputStreamRouter } from './outputStreamRouter.js'
 import {
   capturePrimaryOutputSnapshot,
-  commitOutputPrimaryTransition,
   getOutputStreamsState,
-  markOutputTransportDisconnected,
   type OutputConflict,
   type OutputConflictDecision,
-  removeOutputSession,
   resolveOutputConflict,
-  type SessionTransitionHooks,
-  syncOutputSessions
+  type SessionTransitionHooks
 } from './outputStreamStore.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
@@ -584,6 +581,8 @@ export function useMainApp(gw: GatewayClient) {
     [exit, gw]
   )
 
+  const outputRouter = useMemo(() => createOutputStreamRouter(), [])
+  const outputLifecycle = useMemo(() => createOutputLifecycleCoordinator(outputRouter), [outputRouter])
 
   const transitionHooks = useMemo<SessionTransitionHooks>(() => ({
     beforeCommit: transition => {
@@ -597,8 +596,8 @@ export function useMainApp(gw: GatewayClient) {
         )
       }
     },
-    afterCommit: commitOutputPrimaryTransition
-  }), [])
+    afterCommit: outputLifecycle.commitTransition
+  }), [outputLifecycle])
 
   const session = useSessionLifecycle({
     colsRef,
@@ -661,7 +660,7 @@ export function useMainApp(gw: GatewayClient) {
             // titlebar. The active_list poll already carries it, so no extra
             // round-trip is needed.
             const currentSid = getUiState().sid
-            syncOutputSessions(result.sessions, currentSid)
+            outputLifecycle.syncActiveSessions(result.sessions, currentSid)
 
             const sessionTitle = result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
 
@@ -686,7 +685,7 @@ export function useMainApp(gw: GatewayClient) {
       stopped = true
       clearInterval(timer)
     }
-  }, [gw, ui.sid])
+  }, [gw, outputLifecycle, ui.sid])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
@@ -880,8 +879,6 @@ export function useMainApp(gw: GatewayClient) {
     wheelStep: WHEEL_SCROLL_STEP
   })
 
-  const outputRouter = useMemo(() => createOutputStreamRouter(), [])
-
   useEffect(() => () => outputRouter.dispose(), [outputRouter])
 
   const onEvent = useMemo(
@@ -890,6 +887,7 @@ export function useMainApp(gw: GatewayClient) {
         composer: { setInput: composerActions.setInput },
         gateway,
         outputRouter,
+        outputLifecycle,
         session: {
           STARTUP_RESUME_ID,
           colsRef,
@@ -915,6 +913,7 @@ export function useMainApp(gw: GatewayClient) {
       composerActions.setInput,
       gateway,
       outputRouter,
+      outputLifecycle,
       panel,
       session.newSession,
       session.resetSession,
@@ -937,10 +936,7 @@ export function useMainApp(gw: GatewayClient) {
     const handler = (ev: GatewayEvent) => onEventRef.current(ev)
 
     const exitHandler = () => {
-      outputRouter.disconnect()
-      markOutputTransportDisconnected()
-      clearControlPrompts()
-      turnController.fullReset()
+      outputLifecycle.disconnect()
 
       // A still-owned child dying while the TUI is alive is an *unexpected*
       // death — a user /quit exits Node before this fires, and a replaced child
@@ -982,7 +978,7 @@ export function useMainApp(gw: GatewayClient) {
       gw.off('event', handler)
       gw.off('exit', exitHandler)
     }
-  }, [gw, outputRouter, sys])
+  }, [gw, outputLifecycle, sys])
 
   useLongRunToolCharms()
 
@@ -1099,10 +1095,7 @@ export function useMainApp(gw: GatewayClient) {
       try {
         const result = (await session.closeSession(id)) as null | SessionCloseResponse
 
-        if (result?.closed || result?.ok) {
-          removeOutputSession(id)
-          removeControlPromptsForSession(id)
-        }
+        outputLifecycle.applyCloseResult(id, result)
 
         patchUiState({ status: 'ready' })
 
@@ -1115,7 +1108,7 @@ export function useMainApp(gw: GatewayClient) {
         throw e
       }
     },
-    [session, sys]
+    [outputLifecycle, session, sys]
   )
 
   const newPromptSession = useCallback(

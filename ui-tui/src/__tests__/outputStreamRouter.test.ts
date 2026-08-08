@@ -77,11 +77,24 @@ describe('output stream router', () => {
 
     expect(getOutputStreamsState().streams['sid-b']).toBeUndefined()
   })
-  it('drops pre-reconnect deltas on gateway ready and remains reusable', () => {
+  it('keeps a pending batch across an ordinary gateway ready event', () => {
+    vi.useFakeTimers()
+    const router = createOutputStreamRouter({ batchMs: 20, dashboardMode: true })
+
+    router.route(delta('sid-b', 'still live'), 'sid-a')
+    expect(router.route({ payload: {}, type: 'gateway.ready' }, 'sid-a')).toBe('active')
+    vi.advanceTimersByTime(20)
+
+    expect(getOutputStreamsState().streams['sid-b']?.preview).toBe('still live')
+  })
+
+  it('drops disconnected transport deltas on reconnect ready and remains reusable', () => {
     vi.useFakeTimers()
     const router = createOutputStreamRouter({ batchMs: 20, dashboardMode: true })
 
     router.route(delta('sid-b', 'stale'), 'sid-a')
+    router.disconnect()
+    router.route(delta('sid-b', 'late stale'), 'sid-a')
     expect(router.route({ payload: {}, type: 'gateway.ready' }, 'sid-a')).toBe('active')
     vi.advanceTimersByTime(20)
     expect(getOutputStreamsState().streams['sid-b']).toBeUndefined()
