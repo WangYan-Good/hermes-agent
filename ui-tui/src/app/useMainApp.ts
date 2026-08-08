@@ -836,10 +836,27 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued])
 
+  const cycleOutputFocus = (direction: -1 | 1) => {
+    const layout = getOutputStreamsState().layout
+    const visible = [layout.primarySessionId, layout.secondarySessionId].filter((id): id is string => Boolean(id))
+
+    if (visible.length < 2) {
+      return
+    }
+
+    const index = visible.indexOf(getUiState().sid ?? '')
+    const next = visible[(index + direction + visible.length) % visible.length]!
+
+    if (next !== getUiState().sid) {
+      void session.activateLiveSession(next)
+    }
+  }
+
   const { pagerPageSize } = useInputHandlers({
     actions: {
       answerClarify,
       appendMessage,
+      cycleOutputFocus,
       die,
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,

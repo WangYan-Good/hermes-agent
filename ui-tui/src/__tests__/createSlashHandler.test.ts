@@ -40,9 +40,19 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().sessions).toBe(true)
   })
 
-  it('resumes a prior session by id when /resume has an argument', () => {
+
+  it('opens output manager locally in dashboard mode', () => {
+    envState.dashboardTuiMode = true
     const ctx = buildCtx()
 
+    expect(createSlashHandler(ctx)('/outputs')).toBe(true)
+    expect(getOverlayState().outputs).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('resumes a prior session by id when /resume has an argument', () => {
+
+    const ctx = buildCtx()
     expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
     expect(ctx.session.resumeById).toHaveBeenCalledWith('sid-old')
     expect(getOverlayState().sessions).toBe(false)

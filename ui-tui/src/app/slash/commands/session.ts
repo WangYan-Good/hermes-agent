@@ -1,4 +1,5 @@
 import { usageBarsText } from '../../../components/overlayPrimitives.js'
+import { DASHBOARD_TUI_MODE } from '../../../config/env.js'
 import { introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import { sessionScopedModelArg, TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
@@ -77,6 +78,19 @@ const reasoningConfigPayload = (arg: string, sid: string) => {
 }
 
 export const sessionCommands: SlashCommand[] = [
+  {
+    dashboardOnly: true,
+    help: 'manage competing output streams',
+    name: 'outputs',
+    run: (_arg, ctx) => {
+      if (!DASHBOARD_TUI_MODE) {
+        return ctx.transcript.sys('outputs are available in Dashboard chat')
+      }
+
+      patchOverlayState({ outputs: true })
+    }
+  },
+
   {
     aliases: ['bg', 'btw'],
     help: 'launch a background prompt',

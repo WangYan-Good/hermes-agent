@@ -2,6 +2,7 @@ import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
+import { outputFocusDirection } from '../components/outputManager.js'
 import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
@@ -473,6 +474,29 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
 
+      const hasGlobalControl = Boolean(
+        overlay.approval ||
+          overlay.billing ||
+          overlay.clarify ||
+          overlay.confirm ||
+          overlay.secret ||
+          overlay.subscription ||
+          overlay.sudo
+      )
+
+      if (overlay.outputs && !hasGlobalControl) {
+        const direction = outputFocusDirection(key)
+
+        if (direction) {
+          actions.cycleOutputFocus(direction)
+        } else if (key.escape) {
+          patchOverlayState({ outputs: false })
+        }
+
+        return
+      }
+
+
       if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo))) {
         cancelOverlayFromCtrlC()
       } else if (key.escape && overlay.sessions) {
@@ -486,6 +510,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (!fallThroughForScroll) {
         return
       }
+    }
+
+
+    const outputDirection = outputFocusDirection(key)
+
+    if (outputDirection) {
+      return actions.cycleOutputFocus(outputDirection)
     }
 
     if (cState.completions.length && cState.input && cState.historyIdx === null && (key.upArrow || key.downArrow)) {

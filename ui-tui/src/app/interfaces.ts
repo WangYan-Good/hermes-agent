@@ -302,6 +302,7 @@ export interface OverlayState {
   petPicker: boolean
   pluginsHub: boolean
   secret: null | SecretReq
+  outputs: boolean
   sessions: boolean
   skillsHub: boolean
   subscription: SubscriptionOverlayState | null
@@ -432,6 +433,7 @@ export interface UseComposerStateResult {
 export interface InputHandlerActions {
   answerClarify: (answer: string) => void
   appendMessage: (msg: Msg) => void
+  cycleOutputFocus: (direction: -1 | 1) => void
   die: () => void
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean
@@ -628,7 +630,7 @@ export interface AppOverlaysProps {
   completions: CompletionItem[]
   onApprovalChoice: (choice: string) => void
   onClarifyAnswer: (value: string) => void
-  onActiveSessionSelect: (sessionId: string) => void
+  onActiveSessionSelect: (sessionId: string) => Promise<boolean>
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
