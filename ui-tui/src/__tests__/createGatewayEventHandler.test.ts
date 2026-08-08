@@ -1600,20 +1600,20 @@ describe('createGatewayEventHandler', () => {
   })
 
 
-  it('cleans an inactive abandoned clarify without appending it to the active transcript', () => {
-    const appended: Msg[] = []
-    const ctx = buildCtx(appended)
+  it('expires only the matching queued clarify and ignores delayed tool completion without request identity', () => {
+    const ctx = buildCtx([])
     ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
     patchUiState({ sid: 'sid-a' })
     const onEvent = createGatewayEventHandler(ctx)
 
-    onEvent({ payload: { choices: null, question: 'B?', request_id: 'clarify-b' }, session_id: 'sid-b', type: 'clarify.request' })
     onEvent({ payload: { command: 'deploy', description: 'A?' }, session_id: 'sid-a', type: 'approval.request' })
-    onEvent({ payload: { env_var: 'TOKEN', prompt: 'C?', request_id: 'secret-c' }, session_id: 'sid-c', type: 'secret.request' })
-    onEvent({ payload: { name: 'clarify', tool_id: 'clarify-tool-b' }, session_id: 'sid-b', type: 'tool.complete' } as any)
+    onEvent({ payload: { choices: null, question: 'B1?', request_id: 'clarify-b1' }, session_id: 'sid-b', type: 'clarify.request' })
+    onEvent({ payload: { choices: null, question: 'B2?', request_id: 'clarify-b2' }, session_id: 'sid-b', type: 'clarify.request' })
+    onEvent({ payload: { request_id: 'clarify-b1' }, session_id: 'sid-b', type: 'clarify.expire' } as any)
 
-    expect(appended).toEqual([])
-    expect(getOverlayState().controlQueue).toEqual([expect.objectContaining({ kind: 'secret' })])
+    expect(getOverlayState().controlQueue).toEqual([expect.objectContaining({ kind: 'clarify', request: expect.objectContaining({ requestId: 'clarify-b2' }) })])
+    onEvent({ payload: { name: 'clarify', tool_id: 'old-b1' }, session_id: 'sid-b', type: 'tool.complete' } as any)
+    expect(getOverlayState().controlQueue).toEqual([expect.objectContaining({ kind: 'clarify', request: expect.objectContaining({ requestId: 'clarify-b2' }) })])
   })
 
   it('does not clear another session clarify when the active session clarify tool completes', () => {
