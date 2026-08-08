@@ -382,7 +382,12 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
   return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
 }
 
-export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
+export interface GatewayEventHandler {
+  (ev: GatewayEvent): void
+  dispose(): void
+}
+
+export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): GatewayEventHandler {
   syncThemeToTerminalBackground()
 
   const { rpc } = ctx.gateway
@@ -397,36 +402,21 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
   let startupPromptSubmitted = false
 
-  // Request IDs of clarify prompts we've already flushed to the transcript as
-  // an abandoned-prompt record, so the tool.complete and message.complete
-  // paths can't both persist the same prompt twice.
-  const persistedAbandonedClarify = new Set<string>()
-
   type AbandonedClarify = Pick<ClarifyReq, 'choices' | 'question' | 'requestId'>
+  interface ClarifyLifecycle {
+    expired?: Readonly<AbandonedClarify>
+    requestId?: string
+    sessionId: string
+  }
+
   const MAX_CLARIFY_LIFECYCLE_ENTRIES = 32
-  const pendingClarifyToolIdsBySession = new Map<string, string[]>()
-  const clarifyToolIdByRequestId = new Map<string, string>()
-  const clarifyRequestIdByToolId = new Map<string, string>()
-  const expiredClarifyByToolId = new Map<string, Readonly<AbandonedClarify>>()
-  const completedExpiredClarifyToolIds = new Set<string>()
-  const expiredClarifyWithoutToolId = new Set<string>()
+  const clarifyLifecycleByToolId = new Map<string, ClarifyLifecycle>()
 
   const clearClarifyLifecycle = () => {
-    pendingClarifyToolIdsBySession.clear()
-    clarifyToolIdByRequestId.clear()
-    clarifyRequestIdByToolId.clear()
-    expiredClarifyByToolId.clear()
-    completedExpiredClarifyToolIds.clear()
-    expiredClarifyWithoutToolId.clear()
+    clarifyLifecycleByToolId.clear()
   }
 
   const persistAbandonedClarify = (clarify: AbandonedClarify, persist: boolean) => {
-    if (persistedAbandonedClarify.has(clarify.requestId)) {
-      return
-    }
-
-    persistedAbandonedClarify.add(clarify.requestId)
-
     if (persist) {
       appendMessage({
         role: 'system',
@@ -444,16 +434,34 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // still set on a timeout, but already cleared by answerClarify() on a real
   // answer (so this no-ops there).  Flush the question + options into the
   // transcript as a persistent system line, then clear the overlay.
-  const flushAbandonedClarify = (sessionId: string, persist: boolean) => {
+  const flushAbandonedClarify = (requestId: string, persist: boolean) => {
     const { clarify } = getOverlayState()
 
-    if (!clarify || (clarify.sessionId && clarify.sessionId !== sessionId) || persistedAbandonedClarify.has(clarify.requestId)) {
+    if (!clarify || clarify.requestId !== requestId) {
       return
     }
 
     persistAbandonedClarify(clarify, persist)
 
     completeControlPrompt('clarify', clarify.requestId)
+  }
+
+  const completeClarifyLifecycle = (toolId: string, persist: boolean) => {
+    const lifecycle = clarifyLifecycleByToolId.get(toolId)
+
+    // Completion consumes the lifecycle even when the tool never produced a
+    // request, so a later request cannot bind to an orphaned tool.
+    clarifyLifecycleByToolId.delete(toolId)
+
+    if (lifecycle?.expired) {
+      persistAbandonedClarify(lifecycle.expired, persist)
+
+      return
+    }
+
+    if (lifecycle?.requestId) {
+      flushAbandonedClarify(lifecycle.requestId, persist)
+    }
   }
 
   // Inject the disk-save callback into turnController so recordMessageComplete
@@ -745,17 +753,23 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
   }
 
-  return (ev: GatewayEvent) => {
+  const handler: GatewayEventHandler = ev => {
     const sid = getUiState().sid
 
     const eventSessionId = ev.session_id ?? sid ?? 'default'
 
     if (ev.type === 'tool.start' && ev.payload.name === 'clarify') {
-      const pendingToolIds = pendingClarifyToolIdsBySession.get(eventSessionId) ?? []
+      clarifyLifecycleByToolId.delete(ev.payload.tool_id)
 
-      if (pendingToolIds.length >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {pendingToolIds.shift()}
-      pendingToolIds.push(ev.payload.tool_id)
-      pendingClarifyToolIdsBySession.set(eventSessionId, pendingToolIds)
+      if (clarifyLifecycleByToolId.size >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {
+        const oldestToolId = clarifyLifecycleByToolId.keys().next().value
+
+        if (oldestToolId) {
+          clarifyLifecycleByToolId.delete(oldestToolId)
+        }
+      }
+
+      clarifyLifecycleByToolId.set(ev.payload.tool_id, { sessionId: eventSessionId })
     }
 
     const route = ctx.outputRouter.route(ev, sid)
@@ -766,23 +780,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       enqueueControlPrompt(control.prompt)
 
       if (control.prompt.kind === 'clarify') {
-        const pendingToolIds = pendingClarifyToolIdsBySession.get(eventSessionId)
-        const toolId = pendingToolIds?.shift()
+        for (const lifecycle of clarifyLifecycleByToolId.values()) {
+          if (lifecycle.sessionId === eventSessionId && !lifecycle.requestId) {
+            lifecycle.requestId = control.prompt.request.requestId
 
-        if (!pendingToolIds?.length) {pendingClarifyToolIdsBySession.delete(eventSessionId)}
-
-        if (toolId) {
-          if (clarifyToolIdByRequestId.size >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {
-            const stale = clarifyToolIdByRequestId.entries().next().value
-
-            if (stale) {
-              clarifyToolIdByRequestId.delete(stale[0])
-              clarifyRequestIdByToolId.delete(stale[1])
-            }
+            break
           }
-
-          clarifyToolIdByRequestId.set(control.prompt.request.requestId, toolId)
-          clarifyRequestIdByToolId.set(toolId, control.prompt.request.requestId)
         }
       }
 
@@ -803,34 +806,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       expireControlPrompt(control.promptKind, control.requestId)
 
       if (activeClarify) {
-        const toolId = clarifyToolIdByRequestId.get(control.requestId)
+        for (const lifecycle of clarifyLifecycleByToolId.values()) {
+          if (lifecycle.requestId === control.requestId) {
+            lifecycle.expired = Object.freeze({
+              choices: activeClarify.choices ? [...activeClarify.choices] : null,
+              question: activeClarify.question,
+              requestId: activeClarify.requestId
+            })
 
-        if (toolId) {
-          if (expiredClarifyByToolId.size >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {
-            const staleToolId = expiredClarifyByToolId.keys().next().value
-
-            if (staleToolId) {expiredClarifyByToolId.delete(staleToolId)}
+            break
           }
-
-          expiredClarifyByToolId.set(toolId, Object.freeze({
-            choices: activeClarify.choices ? [...activeClarify.choices] : null,
-            question: activeClarify.question,
-            requestId: activeClarify.requestId
-          }))
-          clarifyToolIdByRequestId.delete(control.requestId)
-          clarifyRequestIdByToolId.delete(toolId)
-        } else {
-          if (expiredClarifyWithoutToolId.size >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {
-            const staleRequestId = expiredClarifyWithoutToolId.values().next().value
-
-            if (staleRequestId) {expiredClarifyWithoutToolId.delete(staleRequestId)}
-          }
-
-          expiredClarifyWithoutToolId.add(control.requestId)
         }
       }
 
       return
+    }
+
+    if (ev.type === 'tool.complete' && ev.payload.name === 'clarify') {
+      completeClarifyLifecycle(ev.payload.tool_id, route === 'active')
     }
 
     if (route !== 'active') {
@@ -1239,34 +1232,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'tool.complete': {
-        // The clarify tool finishing with its overlay still live means it was
-        // abandoned (backend _block timed out, empty answer). A real answer
-        // clears the overlay in answerClarify() before this fires, so this
-        // no-ops there. Persist the question + options so they don't vanish.
-        if (ev.payload.name === 'clarify') {
-          const expiredClarify = expiredClarifyByToolId.get(ev.payload.tool_id)
-          const requestId = clarifyRequestIdByToolId.get(ev.payload.tool_id)
-
-          if (expiredClarify) {
-            expiredClarifyByToolId.delete(ev.payload.tool_id)
-
-            if (completedExpiredClarifyToolIds.size >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {
-              const staleToolId = completedExpiredClarifyToolIds.values().next().value
-
-              if (staleToolId) {completedExpiredClarifyToolIds.delete(staleToolId)}
-            }
-
-            completedExpiredClarifyToolIds.add(ev.payload.tool_id)
-            persistAbandonedClarify(expiredClarify, true)
-          } else if (!completedExpiredClarifyToolIds.has(ev.payload.tool_id) && expiredClarifyWithoutToolId.size === 0) {
-            flushAbandonedClarify(eventSessionId, true)
-          }
-
-          if (requestId) {
-            clarifyRequestIdByToolId.delete(ev.payload.tool_id)
-            clarifyToolIdByRequestId.delete(requestId)
-          }
-        }
 
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
@@ -1505,4 +1470,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
     }
   }
+
+  handler.dispose = clearClarifyLifecycle
+
+  return handler
 }
