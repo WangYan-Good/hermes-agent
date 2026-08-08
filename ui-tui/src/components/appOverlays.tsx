@@ -55,6 +55,10 @@ function PromptCell({ children, cols, id }: { children: ReactNode; cols: number;
   )
 }
 
+function PromptSource({ title }: { title: string }) {
+  return title ? <Text dimColor>{`from: ${title}`}</Text> : null
+}
+
 export function PromptZone({
   cols,
   onApprovalChoice,
@@ -68,7 +72,10 @@ export function PromptZone({
   if (overlay.approval) {
     return (
       <PromptCell cols={cols} id="approval">
-        <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+        <>
+          <PromptSource title={overlay.approval.sessionTitle} />
+          <ApprovalPrompt cols={cols} onChoice={onApprovalChoice} req={overlay.approval} t={theme} />
+        </>
       </PromptCell>
     )
   }
@@ -125,13 +132,16 @@ export function PromptZone({
   if (overlay.clarify) {
     return (
       <PromptCell cols={cols} id="clarify">
-        <ClarifyPrompt
-          cols={cols}
-          onAnswer={onClarifyAnswer}
-          onCancel={() => onClarifyAnswer('')}
-          req={overlay.clarify}
-          t={theme}
-        />
+        <>
+          <PromptSource title={overlay.clarify.sessionTitle} />
+          <ClarifyPrompt
+            cols={cols}
+            onAnswer={onClarifyAnswer}
+            onCancel={() => onClarifyAnswer('')}
+            req={overlay.clarify}
+            t={theme}
+          />
+        </>
       </PromptCell>
     )
   }
@@ -139,7 +149,10 @@ export function PromptZone({
   if (overlay.sudo) {
     return (
       <PromptCell cols={cols} id="sudo">
-        <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={theme} />
+        <>
+          <PromptSource title={overlay.sudo.sessionTitle} />
+          <MaskedPrompt cols={cols} icon="🔐" label="sudo password required" onSubmit={onSudoSubmit} t={theme} />
+        </>
       </PromptCell>
     )
   }
@@ -147,14 +160,17 @@ export function PromptZone({
   if (overlay.secret) {
     return (
       <PromptCell cols={cols} id="secret">
-        <MaskedPrompt
-          cols={cols}
-          icon="🔑"
-          label={overlay.secret.prompt}
-          onSubmit={onSecretSubmit}
-          sub={`for ${overlay.secret.envVar}`}
-          t={theme}
-        />
+        <>
+          <PromptSource title={overlay.secret.sessionTitle} />
+          <MaskedPrompt
+            cols={cols}
+            icon="🔑"
+            label={overlay.secret.prompt}
+            onSubmit={onSecretSubmit}
+            sub={`for ${overlay.secret.envVar}`}
+            t={theme}
+          />
+        </>
       </PromptCell>
     )
   }

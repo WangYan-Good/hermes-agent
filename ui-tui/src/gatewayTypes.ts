@@ -344,18 +344,22 @@ export interface BackgroundStartResponse {
 
 export interface ClarifyRespondResponse {
   ok?: boolean
+  status?: 'expired' | 'ok'
 }
 
 export interface ApprovalRespondResponse {
   ok?: boolean
+  status?: 'expired' | 'ok'
 }
 
 export interface SudoRespondResponse {
   ok?: boolean
+  status?: 'expired' | 'ok'
 }
 
 export interface SecretRespondResponse {
   ok?: boolean
+  status?: 'expired' | 'ok'
 }
 
 // ── Shell / clipboard / input ────────────────────────────────────────
