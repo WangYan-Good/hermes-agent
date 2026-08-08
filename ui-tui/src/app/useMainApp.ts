@@ -45,6 +45,7 @@ import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
+import { createOutputStreamRouter } from './outputStreamRouter.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -771,11 +772,16 @@ export function useMainApp(gw: GatewayClient) {
     wheelStep: WHEEL_SCROLL_STEP
   })
 
+  const outputRouter = useMemo(() => createOutputStreamRouter(), [])
+
+  useEffect(() => () => outputRouter.dispose(), [outputRouter])
+
   const onEvent = useMemo(
     () =>
       createGatewayEventHandler({
         composer: { setInput: composerActions.setInput },
         gateway,
+        outputRouter,
         session: {
           STARTUP_RESUME_ID,
           colsRef,
@@ -800,6 +806,7 @@ export function useMainApp(gw: GatewayClient) {
       bellOnComplete,
       composerActions.setInput,
       gateway,
+      outputRouter,
       panel,
       session.newSession,
       session.resetSession,

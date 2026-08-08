@@ -32,6 +32,8 @@ import type {
   Usage
 } from '../types.js'
 
+import type { OutputStreamRouter } from './outputStreamRouter.js'
+
 export interface StateSetter<T> {
   (value: SetStateAction<T>): void
 }
@@ -466,6 +468,7 @@ export interface GatewayEventHandlerContext {
     setInput: StateSetter<string>
   }
   gateway: GatewayServices
+  outputRouter: OutputStreamRouter
   session: {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>

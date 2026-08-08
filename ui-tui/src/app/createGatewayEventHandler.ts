@@ -717,7 +717,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   return (ev: GatewayEvent) => {
     const sid = getUiState().sid
 
-    if (ev.session_id && sid && ev.session_id !== sid && !ev.type.startsWith('gateway.')) {
+    const route = ctx.outputRouter.route(ev, sid)
+
+    if (route !== 'active') {
       return
     }
 
