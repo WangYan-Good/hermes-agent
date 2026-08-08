@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import { enqueueControlPrompt } from '../app/controlPromptQueue.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import {
   applyVoiceRecordResponse,
+  dismissApprovalPrompt,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
   shouldAllowIdleHotkeyExit,
@@ -142,5 +144,27 @@ describe('dismissSensitivePrompt', () => {
     expect(sys).toHaveBeenCalledWith('secret entry cancelled')
     expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', session_id: 'sid-b', value: '' })
     await pending
+  })
+})
+
+describe('dismissApprovalPrompt', () => {
+  it('denies the approval source session and promotes the next queued prompt', async () => {
+    resetOverlayState()
+    enqueueControlPrompt({
+      kind: 'approval',
+      request: { command: 'deploy', description: 'approve deploy', sessionId: 'sid-a', sessionTitle: 'Alpha' }
+    })
+    enqueueControlPrompt({
+      kind: 'secret',
+      request: { envVar: 'TOKEN', prompt: 'Enter TOKEN', requestId: 'secret-b', sessionId: 'sid-b', sessionTitle: 'Beta' }
+    })
+    const rpc = vi.fn().mockResolvedValue({ ok: true })
+
+    const pending = dismissApprovalPrompt(getOverlayState(), rpc)
+
+    expect(rpc).toHaveBeenCalledWith('approval.respond', { choice: 'deny', session_id: 'sid-a' })
+    expect(getOverlayState().approval).not.toBeNull()
+    await pending
+    expect(getOverlayState().secret?.sessionId).toBe('sid-b')
   })
 })

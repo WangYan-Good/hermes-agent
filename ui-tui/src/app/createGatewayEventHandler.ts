@@ -411,18 +411,22 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // still set on a timeout, but already cleared by answerClarify() on a real
   // answer (so this no-ops there).  Flush the question + options into the
   // transcript as a persistent system line, then clear the overlay.
-  const flushAbandonedClarify = () => {
+  const flushAbandonedClarify = (sessionId: string, persist: boolean) => {
     const { clarify } = getOverlayState()
 
-    if (!clarify || persistedAbandonedClarify.has(clarify.requestId)) {
+    if (!clarify || (clarify.sessionId && clarify.sessionId !== sessionId) || persistedAbandonedClarify.has(clarify.requestId)) {
       return
     }
 
     persistedAbandonedClarify.add(clarify.requestId)
+
+    if (persist) {
     appendMessage({
       role: 'system',
       text: formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
     })
+    }
+
     completeControlPrompt('clarify', clarify.requestId)
   }
 
@@ -719,6 +723,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     const sid = getUiState().sid
 
     const route = ctx.outputRouter.route(ev, sid)
+
+    if (ev.type === 'tool.complete' && ev.payload.name === 'clarify' && route !== 'active') {
+      flushAbandonedClarify(ev.session_id ?? sid ?? 'default', false)
+
+      return
+    }
+
 
     const control = controlPromptFromEvent(ev, sid, ctx.outputRouter.titleForSession)
 
@@ -1149,7 +1160,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // clears the overlay in answerClarify() before this fires, so this
         // no-ops there. Persist the question + options so they don't vanish.
         if (ev.payload.name === 'clarify') {
-          flushAbandonedClarify()
+          flushAbandonedClarify(ev.session_id ?? sid ?? 'default', true)
         }
 
         const inlineDiffText =

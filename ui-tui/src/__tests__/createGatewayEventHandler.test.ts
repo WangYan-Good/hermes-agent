@@ -1599,7 +1599,36 @@ describe('createGatewayEventHandler', () => {
     expect(getOverlayState().sudo).toBeNull()
   })
 
+
+  it('cleans an inactive abandoned clarify without appending it to the active transcript', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    patchUiState({ sid: 'sid-a' })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { choices: null, question: 'B?', request_id: 'clarify-b' }, session_id: 'sid-b', type: 'clarify.request' })
+    onEvent({ payload: { env_var: 'TOKEN', prompt: 'C?', request_id: 'secret-c' }, session_id: 'sid-c', type: 'secret.request' })
+    onEvent({ payload: { name: 'clarify', tool_id: 'clarify-tool-b' }, session_id: 'sid-b', type: 'tool.complete' } as any)
+
+    expect(appended).toEqual([])
+    expect(getOverlayState().secret?.sessionId).toBe('sid-c')
+  })
+
+  it('does not clear another session clarify when the active session clarify tool completes', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    patchUiState({ sid: 'sid-a' })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { choices: null, question: 'B?', request_id: 'clarify-b' }, session_id: 'sid-b', type: 'clarify.request' })
+    onEvent({ payload: { name: 'clarify', tool_id: 'clarify-tool-a' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+
+    expect(getOverlayState().clarify?.sessionId).toBe('sid-b')
+    expect(appended).toEqual([])
   // ── Credits notice (Strategy B) ──────────────────────────────────────
+  })
   describe('credits notice', () => {
     it('shows a notice immediately when idle (no turn in flight)', () => {
       const onEvent = createGatewayEventHandler(buildCtx([]))

@@ -132,6 +132,22 @@ export function dismissSensitivePrompt(
   }
 }
 
+export function dismissApprovalPrompt(overlay: Pick<OverlayState, 'approval'>, rpc: GatewayRpc) {
+  const approval = overlay.approval
+
+  if (!approval) {
+    return
+  }
+
+  return rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: approval.sessionId }).then(response => {
+    if (response?.ok || response?.status === 'expired') {
+      completeControlPrompt('approval')
+    }
+
+    return response
+  })
+}
+
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
 
 export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
@@ -181,9 +197,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (overlay.approval) {
-      return gateway
-        .rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: getUiState().sid })
-        .then(r => r && (patchOverlayState({ approval: null }), patchTurnState({ outcome: 'denied' })))
+      const response = dismissApprovalPrompt(overlay, gateway.rpc)
+
+      return response?.then(result => result && patchTurnState({ outcome: 'denied' }))
     }
 
     if (overlay.sudo || overlay.secret) {
