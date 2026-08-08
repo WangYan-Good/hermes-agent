@@ -115,7 +115,7 @@ export function dismissSensitivePrompt(
     const requestId = overlay.sudo.requestId
     const sessionId = overlay.sudo.sessionId
 
-    completeControlPrompt('sudo', requestId)
+    completeControlPrompt('sudo', requestId, sessionId)
     sys('sudo cancelled')
 
     return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId, session_id: sessionId })
@@ -125,7 +125,7 @@ export function dismissSensitivePrompt(
     const requestId = overlay.secret.requestId
 
     const sessionId = overlay.secret.sessionId
-    completeControlPrompt('secret', requestId)
+    completeControlPrompt('secret', requestId, sessionId)
     sys('secret entry cancelled')
 
     return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, session_id: sessionId, value: '' })
@@ -141,7 +141,7 @@ export function dismissApprovalPrompt(overlay: Pick<OverlayState, 'approval'>, r
 
   return rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: approval.sessionId }).then(response => {
     if (response?.resolved || response?.status === 'expired') {
-      completeControlPrompt('approval')
+      completeControlPrompt('approval', undefined, approval.sessionId)
     }
 
     return response

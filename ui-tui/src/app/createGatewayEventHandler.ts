@@ -435,16 +435,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
   // still set on a timeout, but already cleared by answerClarify() on a real
   // answer (so this no-ops there).  Flush the question + options into the
   // transcript as a persistent system line, then clear the overlay.
-  const flushAbandonedClarify = (requestId: string, persist: boolean) => {
+  const flushAbandonedClarify = (sessionId: string, requestId: string, persist: boolean) => {
     const { clarify } = getOverlayState()
 
-    if (!clarify || clarify.requestId !== requestId) {
+    if (!clarify || clarify.sessionId !== sessionId || clarify.requestId !== requestId) {
       return
     }
 
     persistAbandonedClarify(clarify, persist)
 
-    completeControlPrompt('clarify', clarify.requestId)
+    completeControlPrompt('clarify', clarify.requestId, clarify.sessionId)
   }
 
   const completeClarifyLifecycle = (sessionId: string, toolId: string, persist: boolean) => {
@@ -462,7 +462,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
     }
 
     if (lifecycle?.requestId) {
-      flushAbandonedClarify(lifecycle.requestId, persist)
+      flushAbandonedClarify(lifecycle.sessionId, lifecycle.requestId, persist)
     }
   }
 
@@ -803,11 +803,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
     }
 
     if (control?.kind === 'expire') {
-      const activeClarify = control.promptKind === 'clarify' && getOverlayState().clarify?.requestId === control.requestId
+      const activeClarify = control.promptKind === 'clarify' && getOverlayState().clarify?.sessionId === eventSessionId && getOverlayState().clarify?.requestId === control.requestId
         ? getOverlayState().clarify
         : null
 
-      expireControlPrompt(control.promptKind, control.requestId)
+      expireControlPrompt(control.promptKind, control.requestId, eventSessionId)
 
       if (activeClarify) {
         for (const lifecycle of clarifyLifecycleByIdentity.values()) {

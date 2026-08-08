@@ -33,8 +33,8 @@ const current = (): ControlPrompt | null => {
 
 const idOf = (prompt: ControlPrompt) => ('requestId' in prompt.request ? prompt.request.requestId : undefined)
 
-const matches = (prompt: ControlPrompt, kind: ControlKind, requestId?: string) =>
-  prompt.kind === kind && (requestId === undefined || idOf(prompt) === requestId)
+const matches = (prompt: ControlPrompt, kind: ControlKind, requestId: string | undefined, sessionId: string) =>
+  prompt.kind === kind && prompt.request.sessionId === sessionId && (requestId === undefined || idOf(prompt) === requestId)
 
 const promote = () => {
   const state = getOverlayState()
@@ -55,20 +55,21 @@ export const enqueueControlPrompt = (prompt: ControlPrompt) => {
   patchOverlayState({ [prompt.kind]: prompt.request })
 }
 
-export const completeControlPrompt = (kind: ControlKind, requestId?: string) => {
+export const completeControlPrompt = (kind: ControlKind, requestId: string | undefined, sessionId: string) => {
   const active = current()
 
-  if (active && matches(active, kind, requestId)) {
+  if (active && matches(active, kind, requestId, sessionId)) {
     patchOverlayState({ [kind]: null })
     promote()
 
     return
   }
 
-  patchOverlayState(state => ({ ...state, controlQueue: state.controlQueue.filter(prompt => !matches(prompt, kind, requestId)) }))
+  patchOverlayState(state => ({ ...state, controlQueue: state.controlQueue.filter(prompt => !matches(prompt, kind, requestId, sessionId)) }))
 }
 
-export const expireControlPrompt = (kind: 'clarify' | 'secret' | 'sudo', requestId: string) => completeControlPrompt(kind, requestId)
+export const expireControlPrompt = (kind: 'clarify' | 'secret' | 'sudo', requestId: string, sessionId: string) =>
+  completeControlPrompt(kind, requestId, sessionId)
 
 export const controlPromptFromEvent = (
   event: GatewayEvent,

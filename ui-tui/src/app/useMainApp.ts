@@ -671,8 +671,8 @@ export function useMainApp(gw: GatewayClient) {
   }, [rpc, stdout, ui.sid])
 
   const finishControlPrompt = useCallback(
-    (kind: 'approval' | 'clarify' | 'secret' | 'sudo', requestId: string | undefined, sessionTitle: string, response: { status?: string }) => {
-      completeControlPrompt(kind, requestId)
+    (kind: 'approval' | 'clarify' | 'secret' | 'sudo', requestId: string | undefined, sessionId: string, sessionTitle: string, response: { status?: string }) => {
+      completeControlPrompt(kind, requestId, sessionId)
 
       if (response.status === 'expired') {
         sys(`request expired for ${sessionTitle}`)
@@ -704,7 +704,7 @@ export function useMainApp(gw: GatewayClient) {
           return
         }
 
-        if (finishControlPrompt('clarify', clarify.requestId, clarify.sessionTitle, r)) {
+        if (finishControlPrompt('clarify', clarify.requestId, clarify.sessionId, clarify.sessionTitle, r)) {
           return
         }
 
@@ -963,7 +963,7 @@ export function useMainApp(gw: GatewayClient) {
       if (!approval) {return}
 
       return rpc<ApprovalRespondResponse>('approval.respond', { choice, session_id: approval.sessionId }).then(response => {
-        if (!response || finishControlPrompt('approval', undefined, approval.sessionTitle, response)) {return}
+        if (!response || finishControlPrompt('approval', undefined, approval.sessionId, approval.sessionTitle, response)) {return}
         patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
         patchUiState({ status: 'running…' })
       })
@@ -978,7 +978,7 @@ export function useMainApp(gw: GatewayClient) {
       if (!sudo) {return}
 
       return rpc<SudoRespondResponse>('sudo.respond', { password, request_id: sudo.requestId, session_id: sudo.sessionId }).then(response => {
-        if (!response || finishControlPrompt('sudo', sudo.requestId, sudo.sessionTitle, response)) {return}
+        if (!response || finishControlPrompt('sudo', sudo.requestId, sudo.sessionId, sudo.sessionTitle, response)) {return}
         patchUiState({ status: 'running…' })
       })
     },
@@ -992,7 +992,7 @@ export function useMainApp(gw: GatewayClient) {
       if (!secret) {return}
 
       return rpc<SecretRespondResponse>('secret.respond', { request_id: secret.requestId, session_id: secret.sessionId, value }).then(response => {
-        if (!response || finishControlPrompt('secret', secret.requestId, secret.sessionTitle, response)) {return}
+        if (!response || finishControlPrompt('secret', secret.requestId, secret.sessionId, secret.sessionTitle, response)) {return}
         patchUiState({ status: 'running…' })
       })
     },
