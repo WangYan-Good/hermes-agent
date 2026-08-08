@@ -158,7 +158,7 @@ describe('dismissApprovalPrompt', () => {
       kind: 'secret',
       request: { envVar: 'TOKEN', prompt: 'Enter TOKEN', requestId: 'secret-b', sessionId: 'sid-b', sessionTitle: 'Beta' }
     })
-    const rpc = vi.fn().mockResolvedValue({ ok: true })
+    const rpc = vi.fn().mockResolvedValue({ resolved: true })
 
     const pending = dismissApprovalPrompt(getOverlayState(), rpc)
 
