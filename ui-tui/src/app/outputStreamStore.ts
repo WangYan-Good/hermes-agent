@@ -80,8 +80,8 @@ const EVENT_RULES: Record<string, EventRule> = {
   error: { complete: true, kind: 'system', paints: true, producing: false, status: 'error', terminal: true },
   'message.complete': { complete: true, kind: 'message', paints: true, producing: false, status: 'completed', terminal: true },
   'message.delta': { complete: false, kind: 'message', paints: true, producing: true, status: 'running', terminal: false },
-  'message.interim': { complete: false, kind: 'message', paints: true, producing: true, status: 'running', terminal: false },
-  'message.start': { complete: false, kind: 'status', paints: true, producing: true, status: 'running', terminal: false },
+  'message.interim': { complete: true, kind: 'message', paints: true, producing: true, status: 'running', terminal: false },
+  'message.start': { complete: false, kind: 'status', paints: false, producing: true, status: 'running', terminal: false },
   'status.update': { complete: false, kind: 'status', paints: true, producing: true, status: 'running', terminal: false },
   'subagent.complete': { complete: true, kind: 'subagent', paints: true, producing: null, status: null, terminal: false },
   'subagent.progress': { complete: false, kind: 'subagent', paints: true, producing: null, status: null, terminal: false },
@@ -106,12 +106,14 @@ export const $outputLayout = atom<OutputLayout>(buildState().layout)
 
 let state = buildState()
 let entrySequence = 0
+let hadMultipleProducers = false
 
 export const getOutputStreamsState = (): OutputStreamsState => state
 
 export const resetOutputStreams = () => {
   state = buildState()
   entrySequence = 0
+  hadMultipleProducers = false
   publish()
 }
 
@@ -125,17 +127,18 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
     state = { ...state, layout: { ...state.layout, primarySessionId: sessionId } }
   }
 
-  const canRun = !isTerminal(stream.status) || event.type === 'message.start'
+  const terminal = isTerminal(stream.status)
+  const startsNewRound = event.type === 'message.start'
   const nextStatus = getStatus(event.payload, rule.status)
   let nextStream: OutputStream = {
     ...stream,
     hasDisplayOutput: stream.hasDisplayOutput || rule.paints,
     lastOutputAt: rule.paints ? now : stream.lastOutputAt,
-    producing: rule.producing == null ? stream.producing : (canRun ? rule.producing : stream.producing),
-    status: nextStatus != null && (rule.terminal || canRun) ? nextStatus : stream.status
+    producing: rule.producing == null ? stream.producing : (!terminal || startsNewRound ? rule.producing : stream.producing),
+    status: nextStatus != null && (rule.terminal || !terminal) ? nextStatus : stream.status
   }
 
-  if (rule.paints && options.buffer) nextStream = appendEntry(nextStream, makeEntry(event, rule, now))
+  if (rule.paints && options.buffer) nextStream = appendEntry(nextStream, makeEntry(event, rule, now), event.type)
   if (rule.paints && sessionId !== state.layout.primarySessionId) {
     nextStream = { ...nextStream, unreadCount: nextStream.unreadCount + 1 }
   }
@@ -174,7 +177,7 @@ export const resolveOutputConflict = (decision: OutputConflictDecision) => {
   } else if (decision === 'split') {
     layout = { mode: 'split', primarySessionId: conflict.primarySessionId, secondarySessionId: conflict.candidateSessionId }
   }
-  state = { ...state, conflict: null, conflictHandled: true, layout }
+  state = { ...state, conflict: null, conflictHandled: hadMultipleProducers, layout }
   publish()
 }
 
@@ -182,9 +185,10 @@ export const setSecondaryOutput = (sessionId: string) => {
   if (!sessionId) return
   getOrCreateStream(sessionId)
   const primarySessionId = state.layout.primarySessionId ?? sessionId
-  state = {
-    ...state,
-    layout: { mode: 'split', primarySessionId, secondarySessionId: primarySessionId === sessionId ? null : sessionId }
+  if (primarySessionId === sessionId) {
+    state = { ...state, layout: { mode: 'single', primarySessionId, secondarySessionId: null } }
+  } else {
+    state = { ...state, layout: { mode: 'split', primarySessionId, secondarySessionId: sessionId } }
   }
   publish()
 }
@@ -221,9 +225,14 @@ function updateStream(stream: OutputStream) {
 function updateConflict(sessionId: string, paints: boolean) {
   const producing = Object.values(state.streams).filter(stream => stream.producing)
   if (producing.length < 2) {
-    if (state.conflictHandled) state = { ...state, conflictHandled: false }
+    if (hadMultipleProducers) {
+      state = { ...state, conflict: null, conflictHandled: false }
+      hadMultipleProducers = false
+    }
     return
   }
+
+  hadMultipleProducers = true
   if (!paints || state.conflict || state.conflictHandled) return
 
   const primarySessionId = state.layout.primarySessionId
@@ -233,11 +242,13 @@ function updateConflict(sessionId: string, paints: boolean) {
   state = { ...state, conflict: { candidateSessionId: sessionId, episode, primarySessionId }, episode }
 }
 
-function appendEntry(stream: OutputStream, entry: OutputEntry): OutputStream {
+function appendEntry(stream: OutputStream, entry: OutputEntry, eventType: string): OutputStream {
   const entries = [...stream.entries]
   const last = entries.at(-1)
-  if (entry.kind === 'message' && !entry.complete && last?.kind === 'message' && !last.complete) {
+  if (eventType === 'message.delta' && last?.kind === 'message' && !last.complete) {
     entries[entries.length - 1] = { ...last, text: `${last.text}${entry.text}`, timestamp: entry.timestamp }
+  } else if (eventType === 'message.interim' && last?.kind === 'message' && !last.complete) {
+    entries[entries.length - 1] = { ...last, complete: true, text: entry.text, timestamp: entry.timestamp }
   } else {
     entries.push(entry)
   }
