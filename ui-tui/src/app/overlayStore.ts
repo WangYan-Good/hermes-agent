@@ -12,6 +12,12 @@ export const outputConflictBlocksComposer = (
 ) => Boolean(dashboardMode && conflict)
 
 
+
+export const hasGlobalControlPrompt = (overlay: OverlayState) =>
+  Boolean(
+    overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.secret || overlay.subscription || overlay.sudo
+  )
+
 const buildOverlayState = (): OverlayState => ({
   agents: false,
   agentsInitialHistoryIndex: 0,

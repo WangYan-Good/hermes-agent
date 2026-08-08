@@ -5,7 +5,7 @@ import type { ReactNode } from 'react'
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
 import { $outputConflict, exitOutputSplit, setSecondaryOutput } from '../app/outputStreamStore.js'
-import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
+import { $overlayState, hasFloatingPanel, hasGlobalControlPrompt, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
@@ -268,7 +268,7 @@ export function FloatingOverlays({
     })
   }
 
-  if (overlay.outputs && !overlay.approval && !overlay.billing && !overlay.clarify && !overlay.secret && !overlay.sudo) {
+  if (overlay.outputs && !hasGlobalControlPrompt(overlay)) {
     widgets.push({
       id: 'outputs',
       render: () => (
