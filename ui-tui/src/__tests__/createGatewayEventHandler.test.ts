@@ -1647,7 +1647,7 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { name: 'clarify', tool_id: 'tool-b' }, session_id: 'sid-a', type: 'tool.start' } as any)
     onEvent({ payload: { choices: null, question: 'B?', request_id: 'request-b' }, session_id: 'sid-a', type: 'clarify.request' } as any)
 
-    completeControlPrompt('clarify', 'request-a')
+    completeControlPrompt('clarify', 'request-a', 'sid-a')
     expect(getOverlayState().clarify?.requestId).toBe('request-b')
 
     onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.complete' } as any)
@@ -1708,6 +1708,45 @@ describe('createGatewayEventHandler', () => {
     expect(appended.filter(msg => msg.role === 'system' && msg.text.startsWith('ask Question B?'))).toHaveLength(1)
   })
 
+  it('expires a queued same-ID clarify without clearing or writing the active session prompt', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    patchUiState({ sid: 'sid-a' })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'tool-b' }, session_id: 'sid-b', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: ['B1'], question: 'Question B?', request_id: 'shared-request' }, session_id: 'sid-b', type: 'clarify.request' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: ['A1'], question: 'Question A?', request_id: 'shared-request' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+
+    onEvent({ payload: { request_id: 'shared-request' }, session_id: 'sid-a', type: 'clarify.expire' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+
+    expect(getOverlayState().clarify?.sessionId).toBe('sid-b')
+    expect(getOverlayState().controlQueue).toEqual([])
+    expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask Question B?'))).toBe(false)
+  })
+
+  it('keeps a promoted same-ID clarify after the answered source tool completes late', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: null, question: 'Question A?', request_id: 'shared-request' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'tool-b' }, session_id: 'sid-b', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: null, question: 'Question B?', request_id: 'shared-request' }, session_id: 'sid-b', type: 'clarify.request' } as any)
+
+    completeControlPrompt('clarify', 'shared-request', 'sid-a')
+    onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+
+    expect(getOverlayState().clarify?.sessionId).toBe('sid-b')
+    expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask Question B?'))).toBe(false)
+
+    completeControlPrompt('clarify', 'shared-request', 'sid-b')
+    expect(getOverlayState().clarify).toBeNull()
+  })
+
   it('globally evicts the oldest clarify lifecycle across sessions without touching the promoted prompt', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
@@ -1761,8 +1800,8 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
     patchOverlayState({
-      secret: { envVar: 'NEW_KEY', prompt: 'Enter new key', requestId: 'secret-new' },
-      sudo: { requestId: 'sudo-1' }
+      secret: { envVar: 'NEW_KEY', prompt: 'Enter new key', requestId: 'secret-new', sessionId: 'default', sessionTitle: 'Default' },
+      sudo: { requestId: 'sudo-1', sessionId: 'default', sessionTitle: 'Default' }
     })
 
     onEvent({ payload: { request_id: 'secret-old' }, type: 'secret.expire' } as any)

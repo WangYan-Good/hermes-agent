@@ -58,11 +58,11 @@ describe('control prompt queue', () => {
     expect(getOverlayState().controlQueue).toHaveLength(3)
     expect($isBlocked.get()).toBe(true)
 
-    completeControlPrompt('clarify', 'clarify-a')
+    completeControlPrompt('clarify', 'clarify-a', 'sid-a')
     expect(getOverlayState().approval?.sessionId).toBe('sid-b')
-    completeControlPrompt('approval')
+    completeControlPrompt('approval', undefined, 'sid-b')
     expect(getOverlayState().sudo?.sessionId).toBe('sid-c')
-    completeControlPrompt('sudo', 'sudo-c')
+    completeControlPrompt('sudo', 'sudo-c', 'sid-c')
     expect(getOverlayState().secret?.sessionId).toBe('sid-d')
   })
 
@@ -70,9 +70,29 @@ describe('control prompt queue', () => {
     enqueueControlPrompt(sudoPrompt('sid-a'))
     enqueueControlPrompt(secretPrompt('sid-b'))
 
-    expireControlPrompt('secret', 'secret-d')
+    expireControlPrompt('secret', 'secret-d', 'sid-b')
 
     expect(getOverlayState().sudo?.sessionId).toBe('sid-a')
     expect(getOverlayState().controlQueue).toEqual([])
   })
+  it('completes an active clarify by source when request IDs collide', () => {
+    enqueueControlPrompt(clarifyPrompt('sid-a'))
+    enqueueControlPrompt(clarifyPrompt('sid-b'))
+
+    completeControlPrompt('clarify', 'clarify-a', 'sid-a')
+
+    expect(getOverlayState().clarify?.sessionId).toBe('sid-b')
+    expect(getOverlayState().controlQueue).toEqual([])
+  })
+
+  it('expires a queued clarify by source without clearing the same-ID active prompt', () => {
+    enqueueControlPrompt(clarifyPrompt('sid-b'))
+    enqueueControlPrompt(clarifyPrompt('sid-a'))
+
+    expireControlPrompt('clarify', 'clarify-a', 'sid-a')
+
+    expect(getOverlayState().clarify?.sessionId).toBe('sid-b')
+    expect(getOverlayState().controlQueue).toEqual([])
+  })
+
 })
