@@ -7,10 +7,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { GatewayProvider } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import {
+  $outputLayout,
   commitOutputPrimaryTransition,
   getOutputStreamsState,
   observeOutputEvent,
   resetOutputStreams,
+  resolveOutputConflict,
   setSecondaryOutput,
   syncOutputSessions
 } from '../app/outputStreamStore.js'
@@ -25,7 +27,12 @@ import { decideOutputConflictWithActivation } from '../app/useMainApp.js'
 import { AppLayout } from '../components/appLayout.js'
 import { PromptZone } from '../components/appOverlays.js'
 import { outputConflictAction, OutputConflictPrompt } from '../components/outputConflictPrompt.js'
-import { outputPaneMode, outputPaneWidths, SplitOutputPane } from '../components/splitOutputPane.js'
+import {
+  outputPaneMode,
+  outputPaneWidths,
+  ReadonlyOutputPane,
+  SplitOutputPane
+} from '../components/splitOutputPane.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
 import { stripAnsi } from '../lib/text.js'
@@ -156,22 +163,28 @@ describe('dashboard output pane layout', () => {
     expect(output).toContain('waiting: Gamma')
   })
 
-  it('keeps the newest readonly output visible inside the bounded pane', () => {
+  it('renders a bounded readonly tail while preserving older entries in the store', () => {
     seedThreeStreamsAndSplit()
 
-    for (let index = 0; index < 30; index += 1) {
-      observeOutputEvent({ payload: { text: `row ${index}` }, type: 'message.interim' }, 'sid-b', {
+    for (let index = 0; index < 80; index += 1) {
+      observeOutputEvent({ payload: { text: `TAIL-ROW-${String(index).padStart(3, '0')}` }, type: 'message.interim' }, 'sid-b', {
         buffer: true,
         now: 10 + index
       })
     }
 
+    const stream = getOutputStreamsState().streams['sid-b']!
+
     const output = renderToText(
-      <SplitOutputPane cols={120} onFocusSession={vi.fn()} renderPrimary={() => <Text>PRIMARY</Text>} />
+      <ReadonlyOutputPane onFocus={vi.fn()} stream={stream} t={DEFAULT_THEME} width={60} />
     )
 
-    expect(output).toContain('row 29')
-    expect(output).toContain('click to focus')
+    const renderedRows = new Set(output.match(/TAIL-ROW-\d+/g) ?? [])
+
+    expect(renderedRows.size).toBeLessThanOrEqual(40)
+    expect(output).toContain('TAIL-ROW-079')
+    expect(output).not.toContain('TAIL-ROW-000')
+    expect(stream.entries.some(entry => entry.text === 'TAIL-ROW-000')).toBe(true)
   })
 
   it('renders tab labels but only the focused transcript below the threshold', () => {
@@ -200,6 +213,32 @@ describe('dashboard output pane layout', () => {
 
     expect(output).toContain('FINAL RESULT')
     expect(output).toContain('still running: Beta')
+    expect(getOutputStreamsState().layout.primarySessionId).toBe('sid-a')
+  })
+
+  it('shows running and waiting output after keeping a completed primary in single mode', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working', title: 'Alpha' },
+        { id: 'sid-b', status: 'working', title: 'Beta' }
+      ],
+      'sid-a'
+    )
+    observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: false, now: 1 })
+    observeOutputEvent({ payload: { text: 'B is live' }, type: 'message.delta' }, 'sid-b', { buffer: true, now: 2 })
+    resolveOutputConflict('keep-primary')
+    observeOutputEvent({ payload: { text: 'A done' }, type: 'message.complete' }, 'sid-a', {
+      buffer: false,
+      now: 3
+    })
+
+    const output = renderToText(
+      <SplitOutputPane cols={120} onFocusSession={vi.fn()} renderPrimary={() => <Text>FINAL PRIMARY</Text>} />
+    )
+
+    expect(output).toContain('FINAL PRIMARY')
+    expect(output).toContain('still running: Beta')
+    expect(output).toContain('waiting: Beta')
     expect(getOutputStreamsState().layout.primarySessionId).toBe('sid-a')
   })
 
@@ -318,6 +357,81 @@ describe('output conflict prompt', () => {
     expect(ok).toBe(false)
     expect(getOutputStreamsState().layout).toEqual(before.layout)
     expect(getOutputStreamsState().conflict).toEqual(before.conflict)
+  })
+
+  it('leaves split layout, focus, and episode unchanged when primary activation fails', async () => {
+    observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: false, now: 1 })
+    observeOutputEvent({ payload: { text: 'B' }, type: 'message.delta' }, 'sid-b', { buffer: true, now: 2 })
+    const before = structuredClone(getOutputStreamsState())
+    const activated: string[] = []
+
+    const ok = await decideOutputConflictWithActivation({
+      activate: async sessionId => {
+        activated.push(sessionId)
+
+        return false
+      },
+      conflict: before.conflict!,
+      decision: 'split'
+    })
+
+    expect(ok).toBe(false)
+    expect(activated).toEqual(['sid-a'])
+    expect(getOutputStreamsState()).toEqual(before)
+  })
+
+  it('leaves split layout, focus, and episode unchanged when primary activation rejects', async () => {
+    observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: false, now: 1 })
+    observeOutputEvent({ payload: { text: 'B' }, type: 'message.delta' }, 'sid-b', { buffer: true, now: 2 })
+    const before = structuredClone(getOutputStreamsState())
+
+    const ok = await decideOutputConflictWithActivation({
+      activate: async () => {
+        throw new Error('activation failed')
+      },
+      conflict: before.conflict!,
+      decision: 'split'
+    })
+
+    expect(ok).toBe(false)
+    expect(getOutputStreamsState()).toEqual(before)
+  })
+
+  it('commits split once only after primary activation succeeds', async () => {
+    observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: false, now: 1 })
+    observeOutputEvent({ payload: { text: 'B' }, type: 'message.delta' }, 'sid-b', { buffer: true, now: 2 })
+    const before = structuredClone(getOutputStreamsState())
+    const activated: string[] = []
+    const layouts: unknown[] = []
+
+    const unsubscribe = $outputLayout.subscribe(layout => {
+      layouts.push(layout)
+    })
+
+    const ok = await decideOutputConflictWithActivation({
+      activate: async sessionId => {
+        activated.push(sessionId)
+
+        return true
+      },
+      conflict: before.conflict!,
+      decision: 'split'
+    })
+
+    const after = getOutputStreamsState()
+    unsubscribe()
+
+    expect(ok).toBe(true)
+    expect(activated).toEqual(['sid-a'])
+    expect(after.layout).toEqual({
+      mode: 'split',
+      primarySessionId: 'sid-a',
+      secondarySessionId: 'sid-b'
+    })
+    expect(after.conflict).toBeNull()
+    expect(after.conflictHandled).toBe(true)
+    expect(after.episode).toBe(before.episode)
+    expect(layouts).toEqual([before.layout, after.layout])
   })
 
   it('commits candidate priority only after a successful activation', async () => {

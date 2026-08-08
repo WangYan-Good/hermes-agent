@@ -104,19 +104,24 @@ export async function decideOutputConflictWithActivation({
   conflict,
   decision
 }: DecideOutputConflictWithActivationOptions): Promise<boolean> {
-  if (decision === 'prioritize-candidate') {
-    const activated = await activate(conflict.candidateSessionId)
+  const activationTarget =
+    decision === 'prioritize-candidate'
+      ? conflict.candidateSessionId
+      : decision === 'split'
+        ? conflict.primarySessionId
+        : null
 
-    if (!activated) {
+  if (activationTarget) {
+    try {
+      if (!(await activate(activationTarget))) {
+        return false
+      }
+    } catch {
       return false
     }
-
-    resolveOutputConflict(decision, conflict)
-
-    return true
   }
 
-  resolveOutputConflict(decision)
+  resolveOutputConflict(decision, conflict)
 
   return true
 }
