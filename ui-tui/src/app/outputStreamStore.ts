@@ -134,7 +134,7 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
     ...stream,
     hasDisplayOutput: stream.hasDisplayOutput || rule.paints,
     lastOutputAt: rule.paints ? now : stream.lastOutputAt,
-    producing: rule.producing == null ? stream.producing : (!terminal || startsNewRound ? rule.producing : stream.producing),
+    producing: rule.producing == null ? stream.producing : (rule.terminal || !terminal || startsNewRound ? rule.producing : stream.producing),
     status: nextStatus != null && (rule.terminal || !terminal) ? nextStatus : stream.status
   }
 
@@ -247,7 +247,7 @@ function appendEntry(stream: OutputStream, entry: OutputEntry, eventType: string
   const last = entries.at(-1)
   if (eventType === 'message.delta' && last?.kind === 'message' && !last.complete) {
     entries[entries.length - 1] = { ...last, text: `${last.text}${entry.text}`, timestamp: entry.timestamp }
-  } else if (eventType === 'message.interim' && last?.kind === 'message' && !last.complete) {
+  } else if ((eventType === 'message.interim' || eventType === 'message.complete') && last?.kind === 'message' && !last.complete) {
     entries[entries.length - 1] = { ...last, complete: true, text: entry.text, timestamp: entry.timestamp }
   } else {
     entries.push(entry)

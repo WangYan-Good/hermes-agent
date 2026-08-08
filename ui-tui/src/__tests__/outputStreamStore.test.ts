@@ -76,6 +76,17 @@ describe('output stream state', () => {
     ])
   })
 
+  it('seals a delta with its matching completion without duplicate text', () => {
+    observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: true, now: 1 })
+    observeOutputEvent({ payload: { text: 'same' }, type: 'message.delta' }, 'sid-a', { buffer: true, now: 2 })
+    observeOutputEvent({ payload: { text: 'same' }, type: 'message.complete' }, 'sid-a', { buffer: true, now: 3 })
+
+    const messages = getOutputStreamsState().streams['sid-a']!.entries.filter(entry => entry.kind === 'message')
+    expect(messages).toEqual([
+      expect.objectContaining({ complete: true, text: 'same' })
+    ])
+  })
+
   it('merges deltas and caps by entries and bytes with an omission marker', () => {
     for (let i = 0; i < 220; i += 1) {
       observeOutputEvent({ payload: { text: `row-${i}-${'x'.repeat(400)}` }, type: 'message.interim' }, 'sid-b', {
@@ -100,6 +111,16 @@ describe('output stream state', () => {
     observeOutputEvent({ payload: { message: 'failed' }, type: 'error' }, 'sid-b', { buffer: true, now: 1 })
     observeOutputEvent({ type: 'message.start' }, 'sid-b', { buffer: true, now: 2 })
     expect(getOutputStreamsState().streams['sid-b']?.status).toBe('error')
+  })
+
+  it('ends a new round after an error without leaving a false competing producer', () => {
+    observeOutputEvent({ payload: { message: 'failed' }, type: 'error' }, 'sid-a', { buffer: true, now: 1 })
+    observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: true, now: 2 })
+    observeOutputEvent({ payload: { text: 'done' }, type: 'message.complete' }, 'sid-a', { buffer: true, now: 3 })
+    observeOutputEvent({ payload: { text: 'other' }, type: 'message.delta' }, 'sid-b', { buffer: true, now: 4 })
+
+    expect(getOutputStreamsState().streams['sid-a']).toMatchObject({ producing: false, status: 'completed' })
+    expect(getOutputStreamsState().conflict).toBeNull()
   })
 
   it('syncs session titles and exits a manually selected split view', () => {
