@@ -44,49 +44,92 @@ const statusFromLiveSession = (status?: string, running = false) => {
 export interface ActivateLiveSessionAtomicOptions {
   afterCommit: (transition: SessionTransition) => void
   beforeCommit: (transition: SessionTransition) => void
+  capture?: () => unknown
   commit: (response: SessionActivateResponse) => void
   fail: (message: string) => void
   id: string
   isCurrent?: () => boolean
   previousSessionId: null | string
+  reportPostCommitError?: (message: string) => void
   request: (id: string) => Promise<unknown>
+  restore?: (snapshot: unknown) => void
+}
+
+export const sessionErrorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error))
+
+export const settleSessionIntentFailure = (
+  isCurrent: () => boolean,
+  fail: (message: string) => void,
+  error: unknown
+) => {
+  if (!isCurrent()) {
+    return false
+  }
+
+  fail(sessionErrorMessage(error))
+
+  return true
 }
 
 export async function activateLiveSessionAtomic(options: ActivateLiveSessionAtomicOptions): Promise<boolean> {
+  const isCurrent = options.isCurrent ?? (() => true)
   let raw: unknown
 
   try {
     raw = await options.request(options.id)
-
   } catch (error) {
-    options.fail(error instanceof Error ? error.message : String(error))
+    settleSessionIntentFailure(isCurrent, options.fail, error)
 
     return false
   }
 
-    if (options.isCurrent && !options.isCurrent()) {
-      return false
-    }
+  if (!isCurrent()) {
+    return false
+  }
 
-    const response = asRpcResult<SessionActivateResponse>(raw)
+  const response = asRpcResult<SessionActivateResponse>(raw)
 
-    if (!response || typeof response.session_id !== 'string' || !Array.isArray(response.messages)) {
-      options.fail('invalid response: session.activate')
+  if (!response || typeof response.session_id !== 'string' || !Array.isArray(response.messages)) {
+    settleSessionIntentFailure(isCurrent, options.fail, 'invalid response: session.activate')
 
-      return false
-    }
+    return false
+  }
 
-    const transition: SessionTransition = {
-      kind: 'activate-live',
-      nextSessionId: response.session_id,
-      previousSessionId: options.previousSessionId
-    }
+  const transition: SessionTransition = {
+    kind: 'activate-live',
+    nextSessionId: response.session_id,
+    previousSessionId: options.previousSessionId
+  }
 
+  const snapshot = options.capture?.()
+
+  try {
     options.beforeCommit(transition)
     options.commit(response)
-    options.afterCommit(transition)
+  } catch (error) {
+    options.restore?.(snapshot)
+    settleSessionIntentFailure(isCurrent, options.fail, error)
 
-    return true
+    return false
+  }
+
+  if (!isCurrent()) {
+    options.restore?.(snapshot)
+
+    return false
+  }
+
+  try {
+    options.afterCommit(transition)
+  } catch (error) {
+    try {
+      options.reportPostCommitError?.(sessionErrorMessage(error))
+    } catch {
+      // A post-commit notification must never undo a confirmed session switch.
+    }
+  }
+
+  return true
 }
 
 export const createSessionIntentGeneration = () => {
@@ -195,6 +238,7 @@ export interface UseSessionLifecycleOptions {
   colsRef: { current: number }
   composerActions: ComposerActions
   gw: GatewayClient
+  getHistoryItems: () => Msg[]
   transitionHooks?: SessionTransitionHooks
   onFreshSessionStarted?: (sessionId: string) => void
   panel: (title: string, sections: PanelSection[]) => void
@@ -214,6 +258,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     colsRef,
     composerActions,
     gw,
+    getHistoryItems,
     onFreshSessionStarted,
     panel,
     rpc,
@@ -329,7 +374,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       transitionHooks.beforeCommit(transition)
 
-
       resetSession()
       setSessionStartedAt(Date.now())
 
@@ -386,7 +430,18 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
       return r.session_id
     },
-    [closeSession, colsRef, onFreshSessionStarted, panel, resetSession, rpc, setHistoryItems, setSessionStartedAt, sys, transitionHooks]
+    [
+      closeSession,
+      colsRef,
+      onFreshSessionStarted,
+      panel,
+      resetSession,
+      rpc,
+      setHistoryItems,
+      setSessionStartedAt,
+      sys,
+      transitionHooks
+    ]
   )
 
   const newSession = useCallback(
@@ -411,6 +466,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       return activateLiveSessionAtomic({
         afterCommit: transitionHooks.afterCommit,
         beforeCommit: transitionHooks.beforeCommit,
+        capture: () => ({ history: getHistoryItems(), ui: getUiState() }),
         commit: r => {
           patchOverlayState({ sessions: false })
           const info = r.info ?? null
@@ -436,10 +492,16 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         id,
         isCurrent,
         previousSessionId,
+        reportPostCommitError: message => sys('warning: output transition failed: ' + message),
+        restore: snapshot => {
+          const visible = snapshot as { history: Msg[]; ui: ReturnType<typeof getUiState> }
+          setHistoryItems(visible.history)
+          patchUiState(visible.ui)
+        },
         request: sessionId => gw.request<SessionActivateResponse>('session.activate', { session_id: sessionId })
       })
     },
-    [gw, resetSession, scrollRef, setHistoryItems, setSessionStartedAt, sys, transitionHooks]
+    [getHistoryItems, gw, resetSession, scrollRef, setHistoryItems, setSessionStartedAt, sys, transitionHooks]
   )
 
   const resumeById = useCallback(
@@ -462,14 +524,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
-          .then(raw => {
+        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id }).then(
+          raw => {
             const r = asRpcResult<SessionResumeResponse>(raw)
 
             if (!isCurrent()) {
               return
             }
-
 
             if (!r) {
               sys('error: invalid response: session.resume')
@@ -487,7 +548,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             }
 
             transitionHooks.beforeCommit(transition)
-
 
             resetSession()
             setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())
@@ -511,13 +571,30 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             if (previousSid && previousSid !== r.session_id) {
               void closeSession(previousSid)
             }
-          }, (e: Error) => {
-            sys(`error: ${e.message}`)
+          },
+          (error: unknown) => {
+            if (!settleSessionIntentFailure(isCurrent, message => sys('error: ' + message), error)) {
+              return
+            }
+
             patchUiState({ status: 'ready' })
-          })
+          }
+        )
       })
     },
-    [closeSession, colsRef, gw, panel, resetSession, rpc, scrollRef, setHistoryItems, setSessionStartedAt, sys, transitionHooks]
+    [
+      closeSession,
+      colsRef,
+      gw,
+      panel,
+      resetSession,
+      rpc,
+      scrollRef,
+      setHistoryItems,
+      setSessionStartedAt,
+      sys,
+      transitionHooks
+    ]
   )
 
   const guardBusySessionSwitch = useCallback(
