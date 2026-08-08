@@ -64,16 +64,13 @@ describe('output stream state', () => {
   it('seals an already streamed interim without duplicating its delta text', () => {
     observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: true, now: 1 })
     observeOutputEvent({ payload: { text: 'same' }, type: 'message.delta' }, 'sid-a', { buffer: true, now: 2 })
-    observeOutputEvent(
-      { payload: { already_streamed: true, text: 'same' }, type: 'message.interim' },
-      'sid-a',
-      { buffer: true, now: 3 }
-    )
+    observeOutputEvent({ payload: { already_streamed: true, text: 'same' }, type: 'message.interim' }, 'sid-a', {
+      buffer: true,
+      now: 3
+    })
 
     const messages = getOutputStreamsState().streams['sid-a']!.entries.filter(entry => entry.kind === 'message')
-    expect(messages).toEqual([
-      expect.objectContaining({ complete: true, text: 'same' })
-    ])
+    expect(messages).toEqual([expect.objectContaining({ complete: true, text: 'same' })])
   })
 
   it('seals a delta with its matching completion without duplicate text', () => {
@@ -82,9 +79,25 @@ describe('output stream state', () => {
     observeOutputEvent({ payload: { text: 'same' }, type: 'message.complete' }, 'sid-a', { buffer: true, now: 3 })
 
     const messages = getOutputStreamsState().streams['sid-a']!.entries.filter(entry => entry.kind === 'message')
-    expect(messages).toEqual([
-      expect.objectContaining({ complete: true, text: 'same' })
-    ])
+    expect(messages).toEqual([expect.objectContaining({ complete: true, text: 'same' })])
+  })
+
+  it('seals an empty completion without replacing accumulated deltas with an event name', () => {
+    observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: true, now: 1 })
+    observeOutputEvent({ payload: { text: 'First. ' }, type: 'message.delta' }, 'sid-a', { buffer: true, now: 2 })
+    observeOutputEvent({ payload: { text: 'second.' }, type: 'message.delta' }, 'sid-a', { buffer: true, now: 3 })
+    observeOutputEvent({ payload: {}, type: 'message.complete' }, 'sid-a', { buffer: true, now: 4 })
+
+    const messages = getOutputStreamsState().streams['sid-a']!.entries.filter(entry => entry.kind === 'message')
+    expect(messages).toEqual([expect.objectContaining({ complete: true, text: 'First. second.' })])
+  })
+
+  it('uses rendered completion text when text is unavailable', () => {
+    observeOutputEvent({ payload: { text: 'draft' }, type: 'message.delta' }, 'sid-a', { buffer: true, now: 1 })
+    observeOutputEvent({ payload: { rendered: 'final' }, type: 'message.complete' }, 'sid-a', { buffer: true, now: 2 })
+
+    const messages = getOutputStreamsState().streams['sid-a']!.entries.filter(entry => entry.kind === 'message')
+    expect(messages).toEqual([expect.objectContaining({ complete: true, text: 'final' })])
   })
 
   it('merges deltas and caps by entries and bytes with an omission marker', () => {
@@ -124,7 +137,13 @@ describe('output stream state', () => {
   })
 
   it('syncs session titles and exits a manually selected split view', () => {
-    syncOutputSessions([{ id: 'sid-a', title: 'Primary' }, { id: 'sid-b', title: 'Secondary' }], 'sid-a')
+    syncOutputSessions(
+      [
+        { id: 'sid-a', title: 'Primary' },
+        { id: 'sid-b', title: 'Secondary' }
+      ],
+      'sid-a'
+    )
     setSecondaryOutput('sid-b')
     expect(getOutputStreamsState().layout).toEqual({
       mode: 'split',

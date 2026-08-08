@@ -17,7 +17,6 @@ export interface OutputEntry {
   timestamp: number
   tone?: 'error' | 'info' | 'warn'
 }
-
 export interface OutputStream {
   bytes: number
   entries: OutputEntry[]
@@ -31,19 +30,16 @@ export interface OutputStream {
   title: string
   unreadCount: number
 }
-
 export interface OutputConflict {
   candidateSessionId: string
   episode: number
   primarySessionId: string
 }
-
 export interface OutputLayout {
   mode: 'single' | 'split'
   primarySessionId: null | string
   secondarySessionId: null | string
 }
-
 export interface OutputStreamsState {
   conflict: null | OutputConflict
   conflictHandled: boolean
@@ -51,12 +47,10 @@ export interface OutputStreamsState {
   layout: OutputLayout
   streams: Record<string, OutputStream>
 }
-
 export interface OutputEvent {
   payload?: Record<string, unknown>
   type: string
 }
-
 export interface ObserveOutputOptions {
   buffer: boolean
   now?: number
@@ -74,18 +68,80 @@ interface EventRule {
 const TERMINAL_STATUSES = new Set<OutputTerminalStatus>(['closed', 'completed', 'disconnected', 'error'])
 const OMITTED_ENTRY_ID = 'omitted'
 const OMITTED_TEXT = '[Earlier output omitted]'
-
 const EVENT_RULES: Record<string, EventRule> = {
-  'background.complete': { complete: true, kind: 'system', paints: true, producing: null, status: null, terminal: false },
+  'background.complete': {
+    complete: true,
+    kind: 'system',
+    paints: true,
+    producing: null,
+    status: null,
+    terminal: false
+  },
   error: { complete: true, kind: 'system', paints: true, producing: false, status: 'error', terminal: true },
-  'message.complete': { complete: true, kind: 'message', paints: true, producing: false, status: 'completed', terminal: true },
-  'message.delta': { complete: false, kind: 'message', paints: true, producing: true, status: 'running', terminal: false },
-  'message.interim': { complete: true, kind: 'message', paints: true, producing: true, status: 'running', terminal: false },
-  'message.start': { complete: false, kind: 'status', paints: false, producing: true, status: 'running', terminal: false },
-  'status.update': { complete: false, kind: 'status', paints: true, producing: true, status: 'running', terminal: false },
-  'subagent.complete': { complete: true, kind: 'subagent', paints: true, producing: null, status: null, terminal: false },
-  'subagent.progress': { complete: false, kind: 'subagent', paints: true, producing: null, status: null, terminal: false },
-  'subagent.spawn_requested': { complete: false, kind: 'subagent', paints: true, producing: null, status: null, terminal: false },
+  'message.complete': {
+    complete: true,
+    kind: 'message',
+    paints: true,
+    producing: false,
+    status: 'completed',
+    terminal: true
+  },
+  'message.delta': {
+    complete: false,
+    kind: 'message',
+    paints: true,
+    producing: true,
+    status: 'running',
+    terminal: false
+  },
+  'message.interim': {
+    complete: true,
+    kind: 'message',
+    paints: true,
+    producing: true,
+    status: 'running',
+    terminal: false
+  },
+  'message.start': {
+    complete: false,
+    kind: 'status',
+    paints: false,
+    producing: true,
+    status: 'running',
+    terminal: false
+  },
+  'status.update': {
+    complete: false,
+    kind: 'status',
+    paints: true,
+    producing: true,
+    status: 'running',
+    terminal: false
+  },
+  'subagent.complete': {
+    complete: true,
+    kind: 'subagent',
+    paints: true,
+    producing: null,
+    status: null,
+    terminal: false
+  },
+  'subagent.progress': {
+    complete: false,
+    kind: 'subagent',
+    paints: true,
+    producing: null,
+    status: null,
+    terminal: false
+  },
+  'subagent.spawn_requested': {
+    complete: false,
+    kind: 'subagent',
+    paints: true,
+    producing: null,
+    status: null,
+    terminal: false
+  },
   'subagent.start': { complete: false, kind: 'subagent', paints: true, producing: null, status: null, terminal: false },
   'tool.complete': { complete: true, kind: 'tool', paints: true, producing: null, status: null, terminal: false },
   'tool.progress': { complete: false, kind: 'tool', paints: true, producing: true, status: 'running', terminal: false },
@@ -99,7 +155,6 @@ const buildState = (): OutputStreamsState => ({
   layout: { mode: 'single', primarySessionId: null, secondarySessionId: null },
   streams: {}
 })
-
 export const $outputStreams = atom<Record<string, OutputStream>>({})
 export const $outputConflict = atom<null | OutputConflict>(null)
 export const $outputLayout = atom<OutputLayout>(buildState().layout)
@@ -109,7 +164,6 @@ let entrySequence = 0
 let hadMultipleProducers = false
 
 export const getOutputStreamsState = (): OutputStreamsState => state
-
 export const resetOutputStreams = () => {
   state = buildState()
   entrySequence = 0
@@ -123,9 +177,8 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
 
   const now = options.now ?? Date.now()
   const stream = getOrCreateStream(sessionId)
-  if (state.layout.primarySessionId == null) {
+  if (state.layout.primarySessionId == null)
     state = { ...state, layout: { ...state.layout, primarySessionId: sessionId } }
-  }
 
   const terminal = isTerminal(stream.status)
   const startsNewRound = event.type === 'message.start'
@@ -134,14 +187,20 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
     ...stream,
     hasDisplayOutput: stream.hasDisplayOutput || rule.paints,
     lastOutputAt: rule.paints ? now : stream.lastOutputAt,
-    producing: rule.producing == null ? stream.producing : (rule.terminal || !terminal || startsNewRound ? rule.producing : stream.producing),
+    producing:
+      rule.producing == null
+        ? stream.producing
+        : rule.terminal || !terminal || startsNewRound
+          ? rule.producing
+          : stream.producing,
     status: nextStatus != null && (rule.terminal || !terminal) ? nextStatus : stream.status
   }
 
-  if (rule.paints && options.buffer) nextStream = appendEntry(nextStream, makeEntry(event, rule, now), event.type)
-  if (rule.paints && sessionId !== state.layout.primarySessionId) {
-    nextStream = { ...nextStream, unreadCount: nextStream.unreadCount + 1 }
+  if (rule.paints && options.buffer) {
+    nextStream = appendEntry(nextStream, makeEntry(event, rule, now), event.type, hasCompletionText(event.payload))
   }
+  if (rule.paints && sessionId !== state.layout.primarySessionId)
+    nextStream = { ...nextStream, unreadCount: nextStream.unreadCount + 1 }
 
   updateStream(nextStream)
   updateConflict(sessionId, rule.paints)
@@ -170,13 +229,15 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
 export const resolveOutputConflict = (decision: OutputConflictDecision) => {
   const conflict = state.conflict
   if (!conflict) return
-
   let layout = state.layout
-  if (decision === 'prioritize-candidate') {
+  if (decision === 'prioritize-candidate')
     layout = { mode: 'single', primarySessionId: conflict.candidateSessionId, secondarySessionId: null }
-  } else if (decision === 'split') {
-    layout = { mode: 'split', primarySessionId: conflict.primarySessionId, secondarySessionId: conflict.candidateSessionId }
-  }
+  else if (decision === 'split')
+    layout = {
+      mode: 'split',
+      primarySessionId: conflict.primarySessionId,
+      secondarySessionId: conflict.candidateSessionId
+    }
   state = { ...state, conflict: null, conflictHandled: hadMultipleProducers, layout }
   publish()
 }
@@ -185,16 +246,18 @@ export const setSecondaryOutput = (sessionId: string) => {
   if (!sessionId) return
   getOrCreateStream(sessionId)
   const primarySessionId = state.layout.primarySessionId ?? sessionId
-  if (primarySessionId === sessionId) {
-    state = { ...state, layout: { mode: 'single', primarySessionId, secondarySessionId: null } }
-  } else {
-    state = { ...state, layout: { mode: 'split', primarySessionId, secondarySessionId: sessionId } }
-  }
+  state =
+    primarySessionId === sessionId
+      ? { ...state, layout: { mode: 'single', primarySessionId, secondarySessionId: null } }
+      : { ...state, layout: { mode: 'split', primarySessionId, secondarySessionId: sessionId } }
   publish()
 }
 
 export const exitOutputSplit = () => {
-  state = { ...state, layout: { mode: 'single', primarySessionId: state.layout.primarySessionId, secondarySessionId: null } }
+  state = {
+    ...state,
+    layout: { mode: 'single', primarySessionId: state.layout.primarySessionId, secondarySessionId: null }
+  }
   publish()
 }
 
@@ -231,28 +294,43 @@ function updateConflict(sessionId: string, paints: boolean) {
     }
     return
   }
-
   hadMultipleProducers = true
   if (!paints || state.conflict || state.conflictHandled) return
-
   const primarySessionId = state.layout.primarySessionId
   if (!primarySessionId || primarySessionId === sessionId) return
-
   const episode = state.episode + 1
   state = { ...state, conflict: { candidateSessionId: sessionId, episode, primarySessionId }, episode }
 }
 
-function appendEntry(stream: OutputStream, entry: OutputEntry, eventType: string): OutputStream {
+function appendEntry(
+  stream: OutputStream,
+  entry: OutputEntry,
+  eventType: string,
+  completionHasText: boolean
+): OutputStream {
   const entries = [...stream.entries]
   const last = entries.at(-1)
   if (eventType === 'message.delta' && last?.kind === 'message' && !last.complete) {
     entries[entries.length - 1] = { ...last, text: `${last.text}${entry.text}`, timestamp: entry.timestamp }
-  } else if ((eventType === 'message.interim' || eventType === 'message.complete') && last?.kind === 'message' && !last.complete) {
-    entries[entries.length - 1] = { ...last, complete: true, text: entry.text, timestamp: entry.timestamp }
-  } else {
+  } else if (
+    (eventType === 'message.interim' || eventType === 'message.complete') &&
+    last?.kind === 'message' &&
+    !last.complete
+  ) {
+    entries[entries.length - 1] = {
+      ...last,
+      complete: true,
+      text: eventType === 'message.complete' && !completionHasText ? last.text : entry.text,
+      timestamp: entry.timestamp
+    }
+  } else if (eventType !== 'message.complete' || completionHasText) {
     entries.push(entry)
   }
-  return limitEntries({ ...stream, entries, preview: entry.text || stream.preview })
+  return limitEntries({
+    ...stream,
+    entries,
+    preview: completionHasText || eventType !== 'message.complete' ? entry.text || stream.preview : stream.preview
+  })
 }
 
 function limitEntries(stream: OutputStream): OutputStream {
@@ -265,7 +343,6 @@ function limitEntries(stream: OutputStream): OutputStream {
     bytes -= entryBytes(removed)
     omitted = true
   }
-
   if (omitted) {
     const marker: OutputEntry = {
       complete: true,
@@ -304,11 +381,14 @@ function makeEntry(event: OutputEvent, rule: EventRule, timestamp: number): Outp
 function getStatus(payload: Record<string, unknown> | undefined, fallback: null | string): null | string {
   return getString(payload, ['status']) ?? fallback
 }
-
 function getText(payload: Record<string, unknown>, fallback: string): string {
-  return getString(payload, ['text', 'message', 'preview', 'summary', 'status', 'name', 'title']) ?? fallback
+  return (
+    getString(payload, ['text', 'rendered', 'message', 'preview', 'summary', 'status', 'name', 'title']) ?? fallback
+  )
 }
-
+function hasCompletionText(payload: Record<string, unknown> | undefined): boolean {
+  return Boolean(getString(payload, ['text', 'rendered']))
+}
 function getString(payload: Record<string, unknown> | undefined, keys: readonly string[]): string | undefined {
   if (!payload) return undefined
   for (const key of keys) {
@@ -317,15 +397,12 @@ function getString(payload: Record<string, unknown> | undefined, keys: readonly 
   }
   return undefined
 }
-
 function entryBytes(entry: OutputEntry): number {
   return new TextEncoder().encode(`${entry.label ?? ''}${entry.text}`).byteLength
 }
-
 function isTerminal(status: string): status is OutputTerminalStatus {
   return TERMINAL_STATUSES.has(status as OutputTerminalStatus)
 }
-
 function readSession(item: unknown): { sessionId?: string; status?: string; title?: string } {
   if (!item || typeof item !== 'object') return {}
   const record = item as Record<string, unknown>
@@ -335,7 +412,6 @@ function readSession(item: unknown): { sessionId?: string; status?: string; titl
     title: getString(record, ['title', 'name', 'label'])
   }
 }
-
 function publish() {
   $outputStreams.set(state.streams)
   $outputConflict.set(state.conflict)
