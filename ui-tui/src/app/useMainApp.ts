@@ -852,6 +852,8 @@ export function useMainApp(gw: GatewayClient) {
 
   onEventRef.current = onEvent
 
+  useEffect(() => () => onEvent.dispose(), [onEvent])
+
   useEffect(() => {
     const handler = (ev: GatewayEvent) => onEventRef.current(ev)
 

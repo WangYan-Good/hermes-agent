@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { completeControlPrompt } from '../app/controlPromptQueue.js'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { createOutputStreamRouter } from '../app/outputStreamRouter.js'
 import { getOutputStreamsState, resetOutputStreams } from '../app/outputStreamStore.js'
@@ -1555,13 +1556,13 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    // Backend clarify timed out: the overlay is still live (Python returned an
-    // empty answer), and the clarify tool's own tool.complete then fires.
-    patchOverlayState({
-      clarify: { choices: ['Scope A', 'Scope B'], question: 'How do you want to scope?', requestId: 'req-1' }
-    })
-
-    onEvent({ payload: { duration_s: 300, name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, session_id: 'sid-a', type: 'tool.start' } as any)
+    onEvent({
+      payload: { choices: ['Scope A', 'Scope B'], question: 'How do you want to scope?', request_id: 'req-1' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    } as any)
+    onEvent({ payload: { duration_s: 300, name: 'clarify', tool_id: 'clar-1' }, session_id: 'sid-a', type: 'tool.complete' } as any)
 
     const record = appended.find(msg => msg.role === 'system' && msg.text.startsWith('ask How do you want to scope?'))
     expect(record).toBeDefined()
@@ -1576,13 +1577,11 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    patchOverlayState({
-      clarify: { choices: ['A'], question: 'Pick?', requestId: 'req-3' }
-    })
-
-    onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, session_id: 'sid-a', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: ['A'], question: 'Pick?', request_id: 'req-3' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, session_id: 'sid-a', type: 'tool.complete' } as any)
     // A duplicate clarify tool.complete must not re-persist the same prompt.
-    onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, type: 'tool.complete' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, session_id: 'sid-a', type: 'tool.complete' } as any)
 
     const records = appended.filter(msg => msg.role === 'system' && msg.text.startsWith('ask Pick?'))
     expect(records).toHaveLength(1)
@@ -1637,6 +1636,99 @@ describe('createGatewayEventHandler', () => {
     expect(records[0]?.text).toContain('timed out — no selection')
     expect(getOverlayState().clarify?.requestId).toBe('clarify-b')
     expect(getOverlayState().controlQueue).toEqual([])
+  })
+
+  it('leaves a promoted same-session clarify active when the answered request completes late', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: null, question: 'A?', request_id: 'request-a' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'tool-b' }, session_id: 'sid-a', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: null, question: 'B?', request_id: 'request-b' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+
+    completeControlPrompt('clarify', 'request-a')
+    expect(getOverlayState().clarify?.requestId).toBe('request-b')
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+
+    expect(getOverlayState().clarify?.requestId).toBe('request-b')
+    expect(appended).toEqual([])
+  })
+
+  it('leaves the active clarify untouched for an unknown same-session completion', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { choices: null, question: 'Current?', request_id: 'current' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'unknown-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+
+    expect(getOverlayState().clarify?.requestId).toBe('current')
+    expect(appended).toEqual([])
+  })
+
+  it('drops an orphan completed tool before binding the next clarify request', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'orphan-tool' }, session_id: 'sid-a', type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'orphan-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'real-tool' }, session_id: 'sid-a', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: ['Yes'], question: 'Real?', request_id: 'real-request' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({ payload: { request_id: 'real-request' }, session_id: 'sid-a', type: 'clarify.expire' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'real-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+
+    const records = appended.filter(msg => msg.role === 'system' && msg.text.startsWith('ask Real?'))
+    expect(records).toHaveLength(1)
+  })
+
+  it('globally evicts the oldest clarify lifecycle across sessions without touching the promoted prompt', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    for (let index = 0; index < 33; index += 1) {
+      onEvent({
+        payload: { name: 'clarify', tool_id: `tool-${index}` },
+        session_id: `sid-${index}`,
+        type: 'tool.start'
+      } as any)
+    }
+
+    onEvent({ payload: { choices: ['A'], question: 'Evicted?', request_id: 'evicted-request' }, session_id: 'sid-0', type: 'clarify.request' } as any)
+    onEvent({ payload: { choices: ['B'], question: 'Promoted?', request_id: 'promoted-request' }, session_id: 'sid-0', type: 'clarify.request' } as any)
+    onEvent({ payload: { request_id: 'evicted-request' }, session_id: 'sid-0', type: 'clarify.expire' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'tool-0' }, session_id: 'sid-0', type: 'tool.complete' } as any)
+
+    expect(getOverlayState().clarify?.requestId).toBe('promoted-request')
+    expect(appended).toEqual([])
+  })
+
+  it('resets clarify lifecycle on gateway.ready before accepting late completions', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    patchUiState({ sid: 'sid-a' })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'old-tool' }, session_id: 'sid-a', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: null, question: 'Still active?', request_id: 'old-request' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'old-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+
+    expect(getOverlayState().clarify?.requestId).toBe('old-request')
+    expect(appended).toEqual([])
+  })
+
+  it('resets clarify lifecycle when the event handler is disposed', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'old-tool' }, session_id: 'sid-a', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: null, question: 'Still active?', request_id: 'old-request' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent.dispose()
+    onEvent({ payload: { name: 'clarify', tool_id: 'old-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+
+    expect(getOverlayState().clarify?.requestId).toBe('old-request')
+    expect(appended).toEqual([])
   })
 
   it('clears only the matching sensitive prompt when the gateway expires it', () => {
