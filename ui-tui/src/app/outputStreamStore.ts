@@ -450,14 +450,8 @@ function snapshotEntries(history: readonly Msg[], streamingText: string, timesta
     return entries
   }
 
-  const last = entries.at(-1)
-
-  if (last?.kind === 'message') {
-    entries[entries.length - 1] = { ...last, complete: false, text: `${last.text} ${tail}`.trim() }
-  } else {
-    sequence += 1
-    entries.push({ complete: false, id: `snapshot-${timestamp}-${sequence}`, kind: 'message', text: tail, timestamp })
-  }
+  sequence += 1
+  entries.push({ complete: false, id: `snapshot-${timestamp}-${sequence}`, kind: 'message', text: tail, timestamp })
 
   return entries
 }

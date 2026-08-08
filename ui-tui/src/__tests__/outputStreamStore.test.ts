@@ -193,4 +193,14 @@ describe('output stream state', () => {
     expect(state.layout.secondarySessionId).toBe('sid-a')
     expect(state.streams['sid-a']?.entries.map(entry => entry.text).join(' ')).toContain('partial tail')
   })
+
+  it('keeps a persisted user tail separate from the streaming assistant snapshot', () => {
+    capturePrimaryOutputSnapshot('sid-a', 'Alpha', 'working', [{ role: 'user', text: 'question' }], 'partial answer')
+
+    const entries = getOutputStreamsState().streams['sid-a']?.entries
+    expect(entries).toEqual([
+      expect.objectContaining({ complete: true, kind: 'message', text: 'question' }),
+      expect.objectContaining({ complete: false, kind: 'message', text: 'partial answer' })
+    ])
+  })
 })

@@ -4,11 +4,13 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { getOutputStreamsState, resetOutputStreams, setSecondaryOutput, syncOutputSessions } from '../app/outputStreamStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
-import { patchUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   activateLiveSessionAtomic,
+  createSessionIntentGeneration,
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
   scheduleResumeScrollToBottom,
@@ -22,6 +24,38 @@ const activation = (sessionId = 'sid-b') => ({
   session_id: sessionId,
   status: 'idle' as const
 })
+
+const deferred = <T>() => {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(res => {
+    resolve = res
+  })
+
+  return { promise, resolve }
+}
+
+const staleActivationAfter = async (nextIntent: 'new-live' | 'resume') => {
+  const intents = createSessionIntentGeneration()
+  const pending = deferred<ReturnType<typeof activation>>()
+  const commit = vi.fn()
+
+  const result = activateLiveSessionAtomic({
+    afterCommit: vi.fn(),
+    beforeCommit: vi.fn(),
+    commit,
+    fail: vi.fn(),
+    id: 'sid-b',
+    isCurrent: intents.begin('activate-live'),
+    previousSessionId: 'sid-a',
+    request: () => pending.promise
+  })
+
+  intents.begin(nextIntent)
+  pending.resolve(activation())
+
+  return { commit, ok: await result }
+}
 
 describe('fresh session boundary', () => {
   it('signals only when a live session is replaced by a different session', () => {
@@ -150,8 +184,64 @@ describe('atomic live session activation', () => {
     expect(ok).toBe(true)
     expect(events).toEqual(['before', 'commit', 'after'])
   })
-})
 
+  it('does not let a deferred activation overwrite a new live intent', async () => {
+    const { commit, ok } = await staleActivationAfter('new-live')
+    expect(ok).toBe(false)
+    expect(commit).not.toHaveBeenCalled()
+  })
+
+  it('does not let a deferred activation overwrite a resume intent', async () => {
+    const { commit, ok } = await staleActivationAfter('resume')
+    expect(ok).toBe(false)
+    expect(commit).not.toHaveBeenCalled()
+  })
+
+
+  it('propagates a throwing before hook without changing layout or focus', async () => {
+    resetOutputStreams()
+    syncOutputSessions([{ id: 'sid-a', title: 'Alpha' }, { id: 'sid-b', title: 'Beta' }], 'sid-a')
+    setSecondaryOutput('sid-b')
+    patchUiState({ sid: 'sid-a' })
+    const afterCommit = vi.fn()
+
+    await expect(activateLiveSessionAtomic({
+      afterCommit,
+      beforeCommit: () => { throw new Error('before') },
+      commit: () => patchUiState({ sid: 'sid-b' }),
+      fail: vi.fn(),
+      id: 'sid-b',
+      previousSessionId: 'sid-a',
+      request: vi.fn().mockResolvedValue(activation())
+    })).rejects.toThrow('before')
+
+    expect(getUiState().sid).toBe('sid-a')
+    expect(getOutputStreamsState().layout).toEqual({ mode: 'split', primarySessionId: 'sid-a', secondarySessionId: 'sid-b' })
+    expect(afterCommit).not.toHaveBeenCalled()
+  })
+
+  it('propagates a throwing commit without changing layout or focus', async () => {
+    resetOutputStreams()
+    syncOutputSessions([{ id: 'sid-a', title: 'Alpha' }, { id: 'sid-b', title: 'Beta' }], 'sid-a')
+    setSecondaryOutput('sid-b')
+    patchUiState({ sid: 'sid-a' })
+    const afterCommit = vi.fn()
+
+    await expect(activateLiveSessionAtomic({
+      afterCommit,
+      beforeCommit: vi.fn(),
+      commit: () => { throw new Error('commit') },
+      fail: vi.fn(),
+      id: 'sid-b',
+      previousSessionId: 'sid-a',
+      request: vi.fn().mockResolvedValue(activation())
+    })).rejects.toThrow('commit')
+
+    expect(getUiState().sid).toBe('sid-a')
+    expect(getOutputStreamsState().layout).toEqual({ mode: 'split', primarySessionId: 'sid-a', secondarySessionId: 'sid-b' })
+    expect(afterCommit).not.toHaveBeenCalled()
+  })
+})
 describe('resume scroll settle', () => {
   afterEach(() => {
     vi.useRealTimers()

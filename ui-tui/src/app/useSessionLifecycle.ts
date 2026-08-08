@@ -53,8 +53,16 @@ export interface ActivateLiveSessionAtomicOptions {
 }
 
 export async function activateLiveSessionAtomic(options: ActivateLiveSessionAtomicOptions): Promise<boolean> {
+  let raw: unknown
+
   try {
-    const raw = await options.request(options.id)
+    raw = await options.request(options.id)
+
+  } catch (error) {
+    options.fail(error instanceof Error ? error.message : String(error))
+
+    return false
+  }
 
     if (options.isCurrent && !options.isCurrent()) {
       return false
@@ -79,10 +87,17 @@ export async function activateLiveSessionAtomic(options: ActivateLiveSessionAtom
     options.afterCommit(transition)
 
     return true
-  } catch (error) {
-    options.fail(error instanceof Error ? error.message : String(error))
+}
 
-    return false
+export const createSessionIntentGeneration = () => {
+  let generation = 0
+
+  return {
+    begin: (_kind: SessionTransitionKind) => {
+      const current = ++generation
+
+      return () => current === generation
+    }
   }
 }
 
@@ -222,7 +237,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
   )
 
   const cancelResumeScrollRef = useRef<null | (() => void)>(null)
-  const activateLiveSessionRequestRef = useRef(0)
+  const sessionIntentRef = useRef(createSessionIntentGeneration())
 
   const resetSession = useCallback(() => {
     cancelResumeScrollRef.current?.()
@@ -267,7 +282,12 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const startNewSession = useCallback(
     async (msg?: string, title?: string, keepCurrent = false, transitionKind: SessionTransitionKind = 'replace') => {
+      const isCurrent = sessionIntentRef.current.begin(transitionKind)
       const setup = await rpc<SetupStatusResponse>('setup.status', {})
+
+      if (!isCurrent()) {
+        return null
+      }
 
       if (setup?.provider_configured === false) {
         panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
@@ -282,7 +302,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         await closeSession(previousSid)
       }
 
+      if (!isCurrent()) {
+        return null
+      }
+
       const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+
+      if (!isCurrent()) {
+        return null
+      }
 
       if (!r) {
         patchUiState({ status: 'ready' })
@@ -377,7 +405,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const activateLiveSession = useCallback(
     async (id: string): Promise<boolean> => {
-      const requestSequence = ++activateLiveSessionRequestRef.current
+      const isCurrent = sessionIntentRef.current.begin('activate-live')
       const previousSessionId = getUiState().sid
 
       return activateLiveSessionAtomic({
@@ -406,7 +434,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         },
         fail: message => sys(`error: ${message}`),
         id,
-        isCurrent: () => requestSequence === activateLiveSessionRequestRef.current,
+        isCurrent,
         previousSessionId,
         request: sessionId => gw.request<SessionActivateResponse>('session.activate', { session_id: sessionId })
       })
@@ -416,10 +444,15 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
   const resumeById = useCallback(
     (id: string) => {
+      const isCurrent = sessionIntentRef.current.begin('resume')
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
       rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+        if (!isCurrent()) {
+          return
+        }
+
         if (setup?.provider_configured === false) {
           panel(SETUP_REQUIRED_TITLE, buildSetupRequiredSections())
           patchUiState({ status: 'setup required' })
@@ -432,6 +465,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
             const r = asRpcResult<SessionResumeResponse>(raw)
+
+            if (!isCurrent()) {
+              return
+            }
+
 
             if (!r) {
               sys('error: invalid response: session.resume')
@@ -473,8 +511,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             if (previousSid && previousSid !== r.session_id) {
               void closeSession(previousSid)
             }
-          })
-          .catch((e: Error) => {
+          }, (e: Error) => {
             sys(`error: ${e.message}`)
             patchUiState({ status: 'ready' })
           })
