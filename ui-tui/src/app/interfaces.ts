@@ -34,6 +34,7 @@ import type {
 
 import type { ControlPrompt } from './controlPromptQueue.js'
 import type { OutputStreamRouter } from './outputStreamRouter.js'
+import type { OutputConflictDecision } from './outputStreamStore.js'
 
 export interface StateSetter<T> {
   (value: SetStateAction<T>): void
@@ -558,6 +559,8 @@ export interface AppLayoutActions {
   clearSelection: () => void
   activateLiveSession: (id: string) => Promise<boolean>
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
+  decideOutputConflict: (decision: OutputConflictDecision) => Promise<boolean> | void
+  focusOutputSession: (sessionId: string) => Promise<boolean>
   newLiveSession: () => void
   newPromptSession: (prompt: string, modelArg?: string) => void
   onModelSelect: (value: string) => void
@@ -607,6 +610,7 @@ export interface AppLayoutTranscriptProps {
 export interface AppLayoutProps {
   actions: AppLayoutActions
   composer: AppLayoutComposerProps
+  dashboardMode?: boolean
   mouseTracking: MouseTrackingMode
   progress: AppLayoutProgressProps
   status: AppLayoutStatusProps
@@ -624,10 +628,12 @@ export interface AppOverlaysProps {
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void
+  onOutputConflictDecision: (decision: OutputConflictDecision) => Promise<boolean> | void
   onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
   pagerPageSize: number
+  showOutputConflict: boolean
 }
 
 /**

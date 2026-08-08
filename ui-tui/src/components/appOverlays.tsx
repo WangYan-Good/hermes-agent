@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
+import { $outputConflict } from '../app/outputStreamStore.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
@@ -12,6 +13,7 @@ import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
+import { OutputConflictPrompt } from './outputConflictPrompt.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
@@ -63,10 +65,16 @@ export function PromptZone({
   cols,
   onApprovalChoice,
   onClarifyAnswer,
+  onOutputConflictDecision,
   onSecretSubmit,
-  onSudoSubmit
-}: Pick<AppOverlaysProps, 'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onSecretSubmit' | 'onSudoSubmit'>) {
+  onSudoSubmit,
+  showOutputConflict
+}: Pick<
+  AppOverlaysProps,
+  'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onOutputConflictDecision' | 'onSecretSubmit' | 'onSudoSubmit' | 'showOutputConflict'
+>) {
   const overlay = useStore($overlayState)
+  const conflict = useStore($outputConflict)
   const theme = useStore($uiTheme)
 
   if (overlay.approval) {
@@ -171,6 +179,14 @@ export function PromptZone({
             t={theme}
           />
         </>
+      </PromptCell>
+    )
+  }
+
+  if (showOutputConflict && conflict) {
+    return (
+      <PromptCell cols={cols} id="output-conflict">
+        <OutputConflictPrompt conflict={conflict} onDecision={onOutputConflictDecision} t={theme} />
       </PromptCell>
     )
   }

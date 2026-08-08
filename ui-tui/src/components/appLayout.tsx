@@ -11,7 +11,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
-import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
+import { DASHBOARD_TUI_MODE, INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
 import {
@@ -34,6 +34,7 @@ import { Journey } from './journey.js'
 import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
+import { SplitOutputPane } from './splitOutputPane.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
 
@@ -516,6 +517,7 @@ const StatusRulePane = memo(function StatusRulePane({
 export const AppLayout = memo(function AppLayout({
   actions,
   composer,
+  dashboardMode = DASHBOARD_TUI_MODE,
   mouseTracking,
   progress,
   status,
@@ -545,7 +547,22 @@ export const AppLayout = memo(function AppLayout({
             </PerfPane>
           ) : (
             <PerfPane id="transcript">
-              <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+              {dashboardMode ? (
+                <SplitOutputPane
+                  cols={composer.cols}
+                  onFocusSession={actions.focusOutputSession}
+                  renderPrimary={paneCols => (
+                    <TranscriptPane
+                      actions={actions}
+                      composer={{ ...composer, cols: paneCols }}
+                      progress={progress}
+                      transcript={transcript}
+                    />
+                  )}
+                />
+              ) : (
+                <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+              )}
             </PerfPane>
           )}
           {!overlay.agents && !overlay.journey && <AmbientRail side="right" />}
@@ -558,8 +575,10 @@ export const AppLayout = memo(function AppLayout({
                 cols={composer.cols}
                 onApprovalChoice={actions.answerApproval}
                 onClarifyAnswer={actions.answerClarify}
+                onOutputConflictDecision={actions.decideOutputConflict}
                 onSecretSubmit={actions.answerSecret}
                 onSudoSubmit={actions.answerSudo}
+                showOutputConflict={dashboardMode}
               />
             </PerfPane>
 
