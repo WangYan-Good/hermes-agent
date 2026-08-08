@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import { createOutputStreamRouter } from '../app/outputStreamRouter.js'
+import { getOutputStreamsState, resetOutputStreams } from '../app/outputStreamStore.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
@@ -30,6 +32,7 @@ const buildCtx = (appended: Msg[]) =>
       gw: { request: vi.fn() },
       rpc: vi.fn(async () => null)
     },
+    outputRouter: createOutputStreamRouter({ dashboardMode: false }),
     session: {
       STARTUP_RESUME_ID: '',
       colsRef: ref(80),
@@ -62,6 +65,7 @@ describe('createGatewayEventHandler', () => {
   beforeEach(() => {
     resetOverlayState()
     resetUiState()
+    resetOutputStreams()
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
@@ -93,6 +97,19 @@ describe('createGatewayEventHandler', () => {
     // doesn't visibly jump across the final answer at end-of-turn.
     expect(appended.indexOf(trail!)).toBeLessThan(appended.indexOf(finalText!))
     expect(getTurnState().todos).toEqual([])
+  })
+
+  it('routes an inactive dashboard display event to the bounded output stream without mutating the active turn', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    patchUiState({ sid: 'sid-a' })
+
+    createGatewayEventHandler(ctx)({ payload: { text: 'from B' }, session_id: 'sid-b', type: 'message.delta' })
+    ctx.outputRouter.flush()
+
+    expect(getOutputStreamsState().streams['sid-b']?.preview).toBe('from B')
+    expect(appended).toEqual([])
   })
 
   it('opens a billing confirm dialog routing Nous to /topup', () => {

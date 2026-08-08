@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import { createOutputStreamRouter } from '../app/outputStreamRouter.js'
 import { resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
@@ -21,6 +22,7 @@ const buildCtx = (appended: Msg[]) =>
       gw: { request: () => undefined },
       rpc: async () => null
     },
+    outputRouter: createOutputStreamRouter({ dashboardMode: false }),
     session: {
       STARTUP_RESUME_ID: '',
       colsRef: ref(80),
