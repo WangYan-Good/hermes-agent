@@ -942,7 +942,7 @@ export function useMainApp(gw: GatewayClient) {
     const handler = (ev: GatewayEvent) => onEventRef.current(ev)
 
     const exitHandler = () => {
-      outputLifecycle.disconnect()
+      const sessionKey = outputLifecycle.disconnect(getUiState().sid)
 
       // A still-owned child dying while the TUI is alive is an *unexpected*
       // death — a user /quit exits Node before this fires, and a replaced child
@@ -951,8 +951,8 @@ export function useMainApp(gw: GatewayClient) {
       // persisted session via the next gateway.ready, so a single crash / OOM /
       // signal doesn't lose their work. planGatewayRecovery bounds the attempts
       // so a gateway that crash-loops on startup can't spawn-storm, and falls
-      // back to recoverSidRef when sid was already cleared by a prior exit.
-      const plan = planGatewayRecovery(getUiState().sid, recoverSidRef.current, recoveryAtRef.current, Date.now())
+      // back to recoverSidRef when no fresh durable key is available.
+      const plan = planGatewayRecovery(sessionKey, recoverSidRef.current, recoveryAtRef.current, Date.now())
 
       // Clear sid immediately: while the gateway is down, sid-guarded effects
       // (session.active_list poll, queue drain) would otherwise fire RPCs at a

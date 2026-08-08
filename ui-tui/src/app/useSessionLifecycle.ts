@@ -167,7 +167,8 @@ export async function activateLiveSessionAtomic(options: ActivateLiveSessionAtom
   const transition: SessionTransition = {
     kind: 'activate-live',
     nextSessionId: response.session_id,
-    previousSessionId: options.previousSessionId
+    previousSessionId: options.previousSessionId,
+    sessionKey: response.session_key
   }
 
   const snapshot = options.capture?.()
@@ -409,7 +410,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const transition: SessionTransition = {
         kind: transitionKind,
         nextSessionId: r.session_id,
-        previousSessionId: previousSid
+        previousSessionId: previousSid,
+        sessionKey: r.stored_session_id
       }
 
       transitionHooks.beforeCommit(transition)
@@ -417,7 +419,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       resetSession()
       setSessionStartedAt(Date.now())
 
-      writeActiveSessionFile(r.session_id)
+      writeActiveSessionFile(r.stored_session_id ?? r.session_id)
       patchUiState({
         info,
         sid: r.session_id,
@@ -593,7 +595,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             const transition: SessionTransition = {
               kind: transitionKind,
               nextSessionId: r.session_id,
-              previousSessionId: previousSid
+              previousSessionId: previousSid,
+              sessionKey: r.session_key ?? r.resumed
             }
 
             transitionHooks.beforeCommit(transition)
@@ -604,7 +607,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             const resumed = [...toTranscriptMessages(r.messages), ...liveSessionInflightMessages(r.inflight)]
 
             setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
-            writeActiveSessionFile(r.resumed ?? r.session_id)
+            writeActiveSessionFile(r.session_key ?? r.resumed ?? r.session_id)
             patchUiState({
               busy: running,
               info,

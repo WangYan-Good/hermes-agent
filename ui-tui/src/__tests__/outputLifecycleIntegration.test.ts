@@ -5,11 +5,13 @@ import React, { useLayoutEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import type { GatewayRpc } from '../app/interfaces.js'
 import { createOutputLifecycleCoordinator } from '../app/outputLifecycleCoordinator.js'
 import { createOutputStreamRouter } from '../app/outputStreamRouter.js'
 import {
   commitOutputPrimaryTransition,
   getOutputStreamsState,
+  observeOutputEvent,
   resetOutputStreams,
   setSecondaryOutput,
   syncOutputSessions
@@ -45,7 +47,7 @@ const makeStreams = () => {
   return { stderr, stdin, stdout }
 }
 
-function LifecycleHarness({ expose, gw }: { expose: React.MutableRefObject<Lifecycle | null>; gw: GatewayClient }) {
+function LifecycleHarness({ expose, gw, rpc }: { expose: React.MutableRefObject<Lifecycle | null>; gw: GatewayClient; rpc?: GatewayRpc }) {
   const [history, setHistory] = useState<Msg[]>([])
 
   const lifecycle = useSessionLifecycle({
@@ -54,7 +56,7 @@ function LifecycleHarness({ expose, gw }: { expose: React.MutableRefObject<Lifec
     getHistoryItems: () => history,
     gw,
     panel: vi.fn(),
-    rpc: vi.fn(async () => null),
+    rpc: rpc ?? vi.fn(async () => null),
     scrollRef: ref(null),
     setHistoryItems: setHistory,
     setLastUserMsg: vi.fn(),
@@ -85,14 +87,23 @@ describe('dashboard output lifecycle integration', () => {
     turnController.fullReset()
   })
 
-  it('preserves split focus through exit, ready, and the real recovery resume commit', async () => {
+  it('resumes by durable key and atomically remaps the recovered runtime session', async () => {
     const request = vi.fn(async (method: string) => {
       if (method === 'setup.status') {
         return { provider_configured: true }
       }
 
       if (method === 'session.resume') {
-        return { messages: [], session_id: 'sid-a', status: 'idle' }
+        return {
+          message_count: 1,
+          messages: [],
+          resumed: 'stored-a',
+          running: false,
+          session_id: 'runtime-new-a',
+          session_key: 'stored-a',
+          started_at: 1,
+          status: 'idle'
+        }
       }
 
       return null
@@ -112,17 +123,21 @@ describe('dashboard output lifecycle integration', () => {
     expect(expose.current).not.toBeNull()
     syncOutputSessions(
       [
-        { id: 'sid-a', status: 'working', title: 'Alpha' },
-        { id: 'sid-b', status: 'working', title: 'Beta' }
+        { id: 'runtime-old-a', session_key: 'stored-a', status: 'working', title: 'Alpha' },
+        { id: 'runtime-old-b', session_key: 'stored-b', status: 'working', title: 'Beta' }
       ],
-      'sid-a'
+      'runtime-old-a'
     )
-    setSecondaryOutput('sid-b')
-    patchUiState({ sid: 'sid-a' })
+    observeOutputEvent({ payload: { text: 'preserved output' }, type: 'message.interim' }, 'runtime-old-a', {
+      buffer: true,
+      now: 10
+    })
+    setSecondaryOutput('runtime-old-b')
+    patchUiState({ sid: 'runtime-old-a' })
 
     const outputRouter = createOutputStreamRouter({ dashboardMode: true })
     const outputLifecycle = createOutputLifecycleCoordinator(outputRouter)
-    const recoverSidRef = ref<null | string>('sid-a')
+    const recoverSidRef = ref<null | string>('stored-a')
 
     const onEvent = createGatewayEventHandler({
       composer: { setInput: vi.fn() },
@@ -149,12 +164,137 @@ describe('dashboard output lifecycle integration', () => {
     onEvent({ payload: {}, type: 'gateway.ready' })
     await flushPromises()
 
-    expect(getUiState().sid).toBe('sid-a')
+    expect(request).toHaveBeenCalledWith('session.resume', { cols: 100, session_id: 'stored-a' })
+    expect(getUiState().sid).toBe('runtime-new-a')
     expect(getOutputStreamsState().layout).toEqual({
       mode: 'split',
-      primarySessionId: 'sid-a',
-      secondarySessionId: 'sid-b'
+      primarySessionId: 'runtime-new-a',
+      secondarySessionId: 'runtime-old-b'
     })
+    expect(getOutputStreamsState().streams['runtime-old-a']).toBeUndefined()
+    expect(getOutputStreamsState().streams['runtime-new-a']).toMatchObject({
+      entries: [expect.objectContaining({ text: 'preserved output' })],
+      sessionId: 'runtime-new-a',
+      sessionKey: 'stored-a',
+      title: 'Alpha'
+    })
+
+    onEvent.dispose()
+    outputRouter.dispose()
+    app.unmount()
+    app.cleanup()
+  })
+
+  it('records session.create stored_session_id as the new output stream durable key', async () => {
+    const request = vi.fn(async () => null)
+
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'setup.status') {
+        return { provider_configured: true }
+      }
+
+      if (method === 'session.create') {
+        return { session_id: 'runtime-created', stored_session_id: 'stored-created' }
+      }
+
+      return null
+    }) as unknown as GatewayRpc
+
+    const gw = { request } as unknown as GatewayClient
+    const expose = ref<Lifecycle | null>(null)
+    const streams = makeStreams()
+
+    const app = renderSync(React.createElement(LifecycleHarness, { expose, gw, rpc }), {
+      patchConsole: false,
+      stderr: streams.stderr as NodeJS.WriteStream,
+      stdin: streams.stdin as NodeJS.ReadStream,
+      stdout: streams.stdout as NodeJS.WriteStream
+    })
+
+    await expose.current!.newLiveSession()
+    await flushPromises()
+
+    expect(getUiState().sid).toBe('runtime-created')
+    expect(getOutputStreamsState().streams['runtime-created']).toMatchObject({
+      sessionId: 'runtime-created',
+      sessionKey: 'stored-created'
+    })
+
+    app.unmount()
+    app.cleanup()
+  })
+
+  it('keeps the disconnected layout unchanged when durable recovery fails', async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === 'setup.status') {
+        return { provider_configured: true }
+      }
+
+      if (method === 'session.resume') {
+        throw new Error('resume failed')
+      }
+
+      return null
+    })
+
+    const gw = { request } as unknown as GatewayClient
+    const expose = ref<Lifecycle | null>(null)
+    const streams = makeStreams()
+
+    const app = renderSync(React.createElement(LifecycleHarness, { expose, gw }), {
+      patchConsole: false,
+      stderr: streams.stderr as NodeJS.WriteStream,
+      stdin: streams.stdin as NodeJS.ReadStream,
+      stdout: streams.stdout as NodeJS.WriteStream
+    })
+
+    syncOutputSessions(
+      [
+        { id: 'runtime-old-a', session_key: 'stored-a', status: 'working' },
+        { id: 'runtime-old-b', session_key: 'stored-b', status: 'working' }
+      ],
+      'runtime-old-a'
+    )
+    setSecondaryOutput('runtime-old-b')
+    patchUiState({ sid: 'runtime-old-a' })
+
+    const outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    const outputLifecycle = createOutputLifecycleCoordinator(outputRouter)
+    const recoverSidRef = ref<null | string>('stored-a')
+
+    const onEvent = createGatewayEventHandler({
+      composer: { setInput: vi.fn() },
+      gateway: { gw, rpc: vi.fn(async () => null) },
+      outputRouter,
+      outputLifecycle,
+      session: {
+        STARTUP_RESUME_ID: '',
+        colsRef: ref(100),
+        newSession: vi.fn(),
+        recoverSidRef,
+        resetSession: expose.current!.resetSession,
+        resumeById: expose.current!.resumeById,
+        setCatalog: vi.fn()
+      },
+      submission: { submitRef: ref(vi.fn()) },
+      system: { bellOnComplete: false, sys: vi.fn() },
+      transcript: { appendMessage: vi.fn(), panel: vi.fn(), setHistoryItems: vi.fn() },
+      voice: { setProcessing: vi.fn(), setRecording: vi.fn(), setVoiceEnabled: vi.fn(), setVoiceTts: vi.fn() }
+    })
+
+    outputLifecycle.disconnect()
+    patchUiState({ busy: false, sid: null, status: 'gateway exited' })
+    onEvent({ payload: {}, type: 'gateway.ready' })
+    await flushPromises()
+
+    expect(request).toHaveBeenCalledWith('session.resume', { cols: 100, session_id: 'stored-a' })
+    expect(getUiState().sid).toBeNull()
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'split',
+      primarySessionId: 'runtime-old-a',
+      secondarySessionId: 'runtime-old-b'
+    })
+    expect(getOutputStreamsState().streams['runtime-old-a']).toBeDefined()
 
     onEvent.dispose()
     outputRouter.dispose()

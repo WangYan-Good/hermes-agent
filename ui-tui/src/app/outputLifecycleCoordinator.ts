@@ -7,6 +7,7 @@ import {
 import type { OutputStreamRouter } from './outputStreamRouter.js'
 import {
   commitOutputPrimaryTransition,
+  getOutputSessionKey,
   markOutputTransportDisconnected,
   markOutputTransportReady,
   removeOutputSession,
@@ -18,7 +19,7 @@ import { turnController } from './turnController.js'
 export interface OutputLifecycleCoordinator {
   applyCloseResult: (sessionId: string, result: null | SessionCloseResponse) => boolean
   commitTransition: (transition: SessionTransition) => void
-  disconnect: () => void
+  disconnect: (currentSessionId?: null | string) => null | string
   ready: () => boolean
   syncActiveSessions: (items: readonly unknown[], currentSessionId: null | string) => void
 }
@@ -37,11 +38,14 @@ export const createOutputLifecycleCoordinator = (
     return true
   },
   commitTransition: commitOutputPrimaryTransition,
-  disconnect: () => {
+  disconnect: currentSessionId => {
+    const sessionKey = getOutputSessionKey(currentSessionId ?? null)
     outputRouter.disconnect()
     markOutputTransportDisconnected()
     clearControlPrompts()
     turnController.fullReset()
+
+    return sessionKey
   },
   ready: () => {
     const reconnected = markOutputTransportReady()

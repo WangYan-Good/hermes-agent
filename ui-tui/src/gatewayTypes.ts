@@ -179,6 +179,7 @@ export interface SystemBatteryResponse {
 export interface SessionCreateResponse {
   info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
+  stored_session_id?: string
 }
 
 export interface SessionResumeResponse {
@@ -189,6 +190,7 @@ export interface SessionResumeResponse {
   resumed?: string
   running?: boolean
   session_id: string
+  session_key?: string
   started_at?: number
   status?: LiveSessionStatus
 }

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { enqueueControlPrompt } from '../app/controlPromptQueue.js'
 import { createOutputLifecycleCoordinator } from '../app/outputLifecycleCoordinator.js'
 import { createOutputStreamRouter } from '../app/outputStreamRouter.js'
-import { getOutputStreamsState, observeOutputEvent, resetOutputStreams } from '../app/outputStreamStore.js'
+import { getOutputStreamsState, observeOutputEvent, resetOutputStreams, setSecondaryOutput } from '../app/outputStreamStore.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { resetTurnState } from '../app/turnStore.js'
@@ -62,14 +62,15 @@ describe('output lifecycle coordinator', () => {
     const router = createOutputStreamRouter({ batchMs: 20, dashboardMode: true })
     const lifecycle = createOutputLifecycleCoordinator(router)
 
-    lifecycle.syncActiveSessions([{ id: 'sid-a', status: 'working', title: 'Alpha' }], 'sid-a')
+    lifecycle.syncActiveSessions([{ id: 'sid-a', session_key: 'stored-a', status: 'working', title: 'Alpha' }], 'sid-a')
     enqueueControlPrompt(sudo('sid-a'))
     turnController.hydrateStreamingText('stale active tail')
     router.route({ payload: { text: 'stale pending' }, session_id: 'sid-b', type: 'message.delta' }, 'sid-a')
 
-    lifecycle.disconnect()
+    const recoveryKey = lifecycle.disconnect('sid-a')
     vi.advanceTimersByTime(20)
 
+    expect(recoveryKey).toBe('stored-a')
     expect(getOutputStreamsState().streams['sid-a']).toMatchObject({ producing: false, status: 'disconnected' })
     expect(getOutputStreamsState().streams['sid-b']).toBeUndefined()
     expect(getOverlayState().sudo).toBeNull()
@@ -107,5 +108,82 @@ describe('output lifecycle coordinator', () => {
 
     expect(lifecycle.applyCloseResult('sid-c', { ok: true })).toBe(true)
     expect(getOutputStreamsState().streams['sid-c']?.status).toBe('closed')
+  })
+
+  it('remaps a secondary and its conflict reference when active-list reports a new runtime id', () => {
+    const router = createOutputStreamRouter({ dashboardMode: true })
+    const lifecycle = createOutputLifecycleCoordinator(router)
+
+    lifecycle.syncActiveSessions(
+      [
+        { id: 'runtime-old-a', session_key: 'stored-a', status: 'working', title: 'Alpha' },
+        { id: 'runtime-old-b', session_key: 'stored-b', status: 'working', title: 'Beta' }
+      ],
+      'runtime-old-a'
+    )
+    observeOutputEvent({ type: 'message.start' }, 'runtime-old-a', { buffer: true, now: 10 })
+    observeOutputEvent({ payload: { text: 'preserved B' }, type: 'message.interim' }, 'runtime-old-b', {
+      buffer: true,
+      now: 20
+    })
+    setSecondaryOutput('runtime-old-b')
+
+    lifecycle.syncActiveSessions(
+      [
+        { id: 'runtime-old-a', session_key: 'stored-a', status: 'working', title: 'Alpha live' },
+        { id: 'runtime-new-b', session_key: 'stored-b', status: 'working', title: 'Beta live' }
+      ],
+      'runtime-old-a'
+    )
+
+    const output = getOutputStreamsState()
+    expect(output.layout).toEqual({
+      mode: 'split',
+      primarySessionId: 'runtime-old-a',
+      secondarySessionId: 'runtime-new-b'
+    })
+    expect(output.conflict).toMatchObject({
+      candidateSessionId: 'runtime-new-b',
+      primarySessionId: 'runtime-old-a'
+    })
+    expect(output.streams['runtime-old-a']).toMatchObject({ sessionKey: 'stored-a', title: 'Alpha live' })
+    expect(output.streams['runtime-old-b']).toBeUndefined()
+    expect(output.streams['runtime-new-b']).toMatchObject({
+      entries: [expect.objectContaining({ text: 'preserved B' })],
+      sessionId: 'runtime-new-b',
+      sessionKey: 'stored-b',
+      title: 'Beta live',
+      unreadCount: 1
+    })
+  })
+
+  it('keeps the current primary runtime stable when active-list reports another id for its durable key', () => {
+    const router = createOutputStreamRouter({ dashboardMode: true })
+    const lifecycle = createOutputLifecycleCoordinator(router)
+
+    lifecycle.syncActiveSessions(
+      [{ id: 'runtime-current', session_key: 'stored-current', status: 'working', title: 'Current' }],
+      'runtime-current'
+    )
+    lifecycle.syncActiveSessions(
+      [{ id: 'runtime-other', session_key: 'stored-current', status: 'working', title: 'Still current' }],
+      'runtime-current'
+    )
+
+    expect(getOutputStreamsState().layout.primarySessionId).toBe('runtime-current')
+    expect(getOutputStreamsState().streams['runtime-current']).toMatchObject({
+      sessionKey: 'stored-current',
+      title: 'Still current'
+    })
+    expect(getOutputStreamsState().streams['runtime-other']).toBeUndefined()
+  })
+
+  it('does not promote a runtime id to a durable recovery key when none was reported', () => {
+    const router = createOutputStreamRouter({ dashboardMode: true })
+    const lifecycle = createOutputLifecycleCoordinator(router)
+
+    lifecycle.syncActiveSessions([{ id: 'runtime-only', status: 'working' }], 'runtime-only')
+
+    expect(lifecycle.disconnect('runtime-only')).toBeNull()
   })
 })
