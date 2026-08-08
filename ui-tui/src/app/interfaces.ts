@@ -32,6 +32,7 @@ import type {
   Usage
 } from '../types.js'
 
+import type { ControlPrompt } from './controlPromptQueue.js'
 import type { OutputStreamRouter } from './outputStreamRouter.js'
 
 export interface StateSetter<T> {
@@ -289,6 +290,7 @@ export interface OverlayState {
   billing: BillingOverlayState | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
+  controlQueue: ControlPrompt[]
   /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
   ambient: ActiveWidget[]
   /** Modal widget app — owns input, blocks the composer. */

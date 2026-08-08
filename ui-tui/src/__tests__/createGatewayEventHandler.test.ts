@@ -111,6 +111,25 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toEqual([])
   })
 
+  it('queues control prompts from every session with their source instead of replacing the active prompt', () => {
+    const ctx = buildCtx([])
+    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    patchUiState({ sid: 'sid-focus' })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { choices: null, question: 'A?', request_id: 'clarify-a' }, session_id: 'sid-a', type: 'clarify.request' })
+    onEvent({ payload: { command: 'deploy', description: 'B?' }, session_id: 'sid-b', type: 'approval.request' })
+    onEvent({ payload: { request_id: 'sudo-c' }, session_id: 'sid-c', type: 'sudo.request' })
+    onEvent({ payload: { env_var: 'TOKEN', prompt: 'D?', request_id: 'secret-d' }, session_id: 'sid-d', type: 'secret.request' })
+
+    expect(getOverlayState().clarify).toMatchObject({ requestId: 'clarify-a', sessionId: 'sid-a' })
+    expect(getOverlayState().controlQueue).toEqual([
+      expect.objectContaining({ kind: 'approval' }),
+      expect.objectContaining({ kind: 'sudo' }),
+      expect.objectContaining({ kind: 'secret' })
+    ])
+  })
+
   it('opens a billing confirm dialog routing Nous to /topup', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)

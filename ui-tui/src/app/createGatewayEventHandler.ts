@@ -25,6 +25,7 @@ import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
+import { completeControlPrompt, controlPromptFromEvent, enqueueControlPrompt, expireControlPrompt } from './controlPromptQueue.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
@@ -422,7 +423,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       role: 'system',
       text: formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
     })
-    patchOverlayState({ clarify: null })
+    completeControlPrompt('clarify', clarify.requestId)
   }
 
   // Inject the disk-save callback into turnController so recordMessageComplete
@@ -718,6 +719,25 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     const sid = getUiState().sid
 
     const route = ctx.outputRouter.route(ev, sid)
+
+    const control = controlPromptFromEvent(ev, sid, ctx.outputRouter.titleForSession)
+
+    if (control?.kind === 'request') {
+      enqueueControlPrompt(control.prompt)
+      setStatus(
+        ({ approval: 'approval needed', clarify: 'waiting for input…', secret: 'secret input needed', sudo: 'sudo password needed' } as const)[
+          control.prompt.kind
+        ]
+      )
+
+      return
+    }
+
+    if (control?.kind === 'expire') {
+      expireControlPrompt(control.promptKind, control.requestId)
+
+      return
+    }
 
     if (route !== 'active') {
       return
@@ -1161,55 +1181,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'clarify.request':
-        patchOverlayState({
-          clarify: { choices: ev.payload.choices, question: ev.payload.question, requestId: ev.payload.request_id }
-        })
-        setStatus('waiting for input…')
-
-        return
-      case 'approval.request': {
-        const description = String(ev.payload.description ?? 'dangerous command')
-        // Only an explicit false (tirith warning) drops the permanent-allow option.
-        const allowPermanent = ev.payload.allow_permanent !== false
-
-        patchOverlayState({
-          approval: {
-            allowPermanent,
-            choices: ev.payload.choices,
-            command: String(ev.payload.command ?? ''),
-            description,
-            smartDenied: ev.payload.smart_denied === true
-          }
-        })
-        setStatus('approval needed')
-
-        return
-      }
-
-      case 'sudo.request':
-        patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
-        setStatus('sudo password needed')
-
-        return
-
-      case 'secret.request':
-        patchOverlayState({
-          secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
-        })
-        setStatus('secret input needed')
-
-        return
-
-      case 'sudo.expire':
-        patchOverlayState(prev => (prev.sudo?.requestId === ev.payload.request_id ? { ...prev, sudo: null } : prev))
-
-        return
-
-      case 'secret.expire':
-        patchOverlayState(prev => (prev.secret?.requestId === ev.payload.request_id ? { ...prev, secret: null } : prev))
-
-        return
 
       case 'background.complete':
         dropBgTask(ev.payload.task_id)

@@ -10,6 +10,7 @@ const buildOverlayState = (): OverlayState => ({
   billing: null,
   clarify: null,
   confirm: null,
+  controlQueue: [],
   ambient: [],
   widget: null,
   journey: false,
@@ -159,5 +160,10 @@ export const resetFlowOverlays = () =>
     petPicker: $overlayState.get().petPicker,
     pluginsHub: $overlayState.get().pluginsHub,
     sessions: $overlayState.get().sessions,
+    approval: $overlayState.get().approval,
+    clarify: $overlayState.get().clarify,
+    controlQueue: $overlayState.get().controlQueue,
+    secret: $overlayState.get().secret,
+    sudo: $overlayState.get().sudo,
     skillsHub: $overlayState.get().skillsHub
   })

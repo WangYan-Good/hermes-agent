@@ -118,7 +118,7 @@ describe('applyVoiceRecordResponse', () => {
 describe('dismissSensitivePrompt', () => {
   it('clears a sudo overlay before a stale cancel RPC resolves', async () => {
     resetOverlayState()
-    patchOverlayState({ sudo: { requestId: 'sudo-1' } })
+    patchOverlayState({ sudo: { requestId: 'sudo-1', sessionId: 'sid-b', sessionTitle: 'Beta' } })
     const rpc = vi.fn().mockResolvedValue(null)
     const sys = vi.fn()
 
@@ -126,13 +126,13 @@ describe('dismissSensitivePrompt', () => {
 
     expect(getOverlayState().sudo).toBeNull()
     expect(sys).toHaveBeenCalledWith('sudo cancelled')
-    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1' })
+    expect(rpc).toHaveBeenCalledWith('sudo.respond', { password: '', request_id: 'sudo-1', session_id: 'sid-b' })
     await pending
   })
 
   it('clears a secret overlay before a stale cancel RPC resolves', async () => {
     resetOverlayState()
-    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'secret-1' } })
+    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'secret-1', sessionId: 'sid-b', sessionTitle: 'Beta' } })
     const rpc = vi.fn().mockResolvedValue(null)
     const sys = vi.fn()
 
@@ -140,7 +140,7 @@ describe('dismissSensitivePrompt', () => {
 
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalledWith('secret entry cancelled')
-    expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', value: '' })
+    expect(rpc).toHaveBeenCalledWith('secret.respond', { request_id: 'secret-1', session_id: 'sid-b', value: '' })
     await pending
   })
 })

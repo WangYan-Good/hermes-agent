@@ -17,6 +17,7 @@ import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionW
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
+import { completeControlPrompt } from './controlPromptQueue.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
   type GatewayRpc,
@@ -112,20 +113,22 @@ export function dismissSensitivePrompt(
 ) {
   if (overlay.sudo) {
     const requestId = overlay.sudo.requestId
+    const sessionId = overlay.sudo.sessionId
 
-    patchOverlayState({ sudo: null })
+    completeControlPrompt('sudo', requestId)
     sys('sudo cancelled')
 
-    return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId })
+    return rpc<SudoRespondResponse>('sudo.respond', { password: '', request_id: requestId, session_id: sessionId })
   }
 
   if (overlay.secret) {
     const requestId = overlay.secret.requestId
 
-    patchOverlayState({ secret: null })
+    const sessionId = overlay.secret.sessionId
+    completeControlPrompt('secret', requestId)
     sys('secret entry cancelled')
 
-    return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, value: '' })
+    return rpc<SecretRespondResponse>('secret.respond', { request_id: requestId, session_id: sessionId, value: '' })
   }
 }
 

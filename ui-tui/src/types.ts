@@ -95,6 +95,8 @@ export interface ApprovalReq {
   choices?: string[]
   command: string
   description: string
+  sessionId: string
+  sessionTitle: string
   smartDenied?: boolean
 }
 
@@ -111,6 +113,8 @@ export interface ClarifyReq {
   choices: string[] | null
   question: string
   requestId: string
+  sessionId: string
+  sessionTitle: string
 }
 
 export interface Msg {
@@ -200,12 +204,16 @@ export interface Usage {
 
 export interface SudoReq {
   requestId: string
+  sessionId: string
+  sessionTitle: string
 }
 
 export interface SecretReq {
   envVar: string
   prompt: string
   requestId: string
+  sessionId: string
+  sessionTitle: string
 }
 
 export interface PanelData {

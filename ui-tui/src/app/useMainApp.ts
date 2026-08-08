@@ -20,11 +20,14 @@ import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.
 import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
+  ApprovalRespondResponse,
   ClarifyRespondResponse,
   ConfigSetResponse,
   GatewayEvent,
+  SecretRespondResponse,
   SessionActiveListResponse,
   SessionCloseResponse,
+  SudoRespondResponse,
   TerminalResizeResponse
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
@@ -40,6 +43,7 @@ import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
+import { completeControlPrompt } from './controlPromptQueue.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
@@ -666,6 +670,22 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [rpc, stdout, ui.sid])
 
+  const finishControlPrompt = useCallback(
+    (kind: 'approval' | 'clarify' | 'secret' | 'sudo', requestId: string | undefined, sessionTitle: string, response: { status?: string }) => {
+      completeControlPrompt(kind, requestId)
+
+      if (response.status === 'expired') {
+        sys(`request expired for ${sessionTitle}`)
+
+        return true
+      }
+
+      return false
+    },
+    [sys]
+  )
+
+
   const answerClarify = useCallback(
     (answer: string) => {
       const clarify = overlay.clarify
@@ -679,8 +699,12 @@ export function useMainApp(gw: GatewayClient) {
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
-      rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId }).then(r => {
+      rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId, session_id: clarify.sessionId }).then(r => {
         if (!r) {
+          return
+        }
+
+        if (finishControlPrompt('clarify', clarify.requestId, clarify.sessionTitle, r)) {
           return
         }
 
@@ -704,10 +728,9 @@ export function useMainApp(gw: GatewayClient) {
           })
         }
 
-        patchOverlayState({ clarify: null })
       })
     },
-    [appendMessage, overlay.clarify, rpc]
+    [appendMessage, finishControlPrompt, overlay.clarify, rpc]
   )
 
   sysRef.current = sys
@@ -930,59 +953,48 @@ export function useMainApp(gw: GatewayClient) {
 
   slashRef.current = slash
 
-  const respondWith = useCallback(
-    (method: string, params: Record<string, unknown>, done: () => void) => rpc(method, params).then(r => r && done()),
-    [rpc]
-  )
 
   const answerApproval = useCallback(
-    (choice: string) =>
-      respondWith('approval.respond', { choice, session_id: ui.sid }, () => {
-        patchOverlayState({ approval: null })
+    (choice: string) => {
+      const approval = overlay.approval
+
+      if (!approval) {return}
+
+      return rpc<ApprovalRespondResponse>('approval.respond', { choice, session_id: approval.sessionId }).then(response => {
+        if (!response || finishControlPrompt('approval', undefined, approval.sessionTitle, response)) {return}
         patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
-        patchUiState({ status: 'running…' })
-      }),
-    [respondWith, ui.sid]
-  )
-
-  const answerSudo = useCallback(
-    (pw: string) => {
-      if (!overlay.sudo) {
-        return
-      }
-
-      const requestId = overlay.sudo.requestId
-
-      if (!pw) {
-        patchOverlayState({ sudo: null })
-      }
-
-      return respondWith('sudo.respond', { password: pw, request_id: requestId }, () => {
-        patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })
     },
-    [overlay.sudo, respondWith]
+    [finishControlPrompt, overlay.approval, rpc]
+  )
+
+  const answerSudo = useCallback(
+    (password: string) => {
+      const sudo = overlay.sudo
+
+      if (!sudo) {return}
+
+      return rpc<SudoRespondResponse>('sudo.respond', { password, request_id: sudo.requestId, session_id: sudo.sessionId }).then(response => {
+        if (!response || finishControlPrompt('sudo', sudo.requestId, sudo.sessionTitle, response)) {return}
+        patchUiState({ status: 'running…' })
+      })
+    },
+    [finishControlPrompt, overlay.sudo, rpc]
   )
 
   const answerSecret = useCallback(
     (value: string) => {
-      if (!overlay.secret) {
-        return
-      }
+      const secret = overlay.secret
 
-      const requestId = overlay.secret.requestId
+      if (!secret) {return}
 
-      if (!value) {
-        patchOverlayState({ secret: null })
-      }
-
-      return respondWith('secret.respond', { request_id: requestId, value }, () => {
-        patchOverlayState({ secret: null })
+      return rpc<SecretRespondResponse>('secret.respond', { request_id: secret.requestId, session_id: secret.sessionId, value }).then(response => {
+        if (!response || finishControlPrompt('secret', secret.requestId, secret.sessionTitle, response)) {return}
         patchUiState({ status: 'running…' })
       })
     },
-    [overlay.secret, respondWith]
+    [finishControlPrompt, overlay.secret, rpc]
   )
 
   const onModelSelect = useCallback((value: string) => {
