@@ -176,6 +176,7 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
   if (!rule || !sessionId) return
 
   const now = options.now ?? Date.now()
+  const paints = rule.paints && (event.type !== 'message.delta' || Boolean(getString(event.payload, ['text'])))
   const stream = getOrCreateStream(sessionId)
   if (state.layout.primarySessionId == null)
     state = { ...state, layout: { ...state.layout, primarySessionId: sessionId } }
@@ -185,8 +186,8 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
   const nextStatus = getStatus(event.payload, rule.status)
   let nextStream: OutputStream = {
     ...stream,
-    hasDisplayOutput: stream.hasDisplayOutput || rule.paints,
-    lastOutputAt: rule.paints ? now : stream.lastOutputAt,
+    hasDisplayOutput: stream.hasDisplayOutput || paints,
+    lastOutputAt: paints ? now : stream.lastOutputAt,
     producing:
       rule.producing == null
         ? stream.producing
@@ -196,14 +197,14 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
     status: nextStatus != null && (rule.terminal || !terminal) ? nextStatus : stream.status
   }
 
-  if (rule.paints && options.buffer) {
+  if (paints && options.buffer) {
     nextStream = appendEntry(nextStream, makeEntry(event, rule, now), event.type, hasCompletionText(event.payload))
   }
-  if (rule.paints && sessionId !== state.layout.primarySessionId)
+  if (paints && sessionId !== state.layout.primarySessionId)
     nextStream = { ...nextStream, unreadCount: nextStream.unreadCount + 1 }
 
   updateStream(nextStream)
-  updateConflict(sessionId, rule.paints)
+  updateConflict(sessionId, paints)
   publish()
 }
 
