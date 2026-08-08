@@ -951,6 +951,48 @@ class TurnController {
     resetTurnState()
   }
 
+  captureSessionState() {
+    return structuredClone({
+      activeReasoningText: this.activeReasoningText,
+      activeTools: this.activeTools,
+      activityId: this.activityId,
+      bufRef: this.bufRef,
+      interrupted: this.interrupted,
+      interimBoundaryIndex: this.interimBoundaryIndex,
+      lastStatusNote: this.lastStatusNote,
+      pendingSegmentTools: this.pendingSegmentTools,
+      persistedToolLabels: [...this.persistedToolLabels],
+      protocolWarned: this.protocolWarned,
+      reasoningSegmentIndex: this.reasoningSegmentIndex,
+      reasoningText: this.reasoningText,
+      segmentMessages: this.segmentMessages,
+      streamDelay: this.streamDelay,
+      toolTokenAcc: this.toolTokenAcc,
+      turnState: getTurnState(),
+      turnTools: this.turnTools
+    })
+  }
+
+  restoreSessionState(snapshot: ReturnType<TurnController['captureSessionState']>) {
+    this.activeReasoningText = snapshot.activeReasoningText
+    this.activeTools = snapshot.activeTools
+    this.activityId = snapshot.activityId
+    this.bufRef = snapshot.bufRef
+    this.interrupted = snapshot.interrupted
+    this.interimBoundaryIndex = snapshot.interimBoundaryIndex
+    this.lastStatusNote = snapshot.lastStatusNote
+    this.pendingSegmentTools = snapshot.pendingSegmentTools
+    this.persistedToolLabels = new Set(snapshot.persistedToolLabels)
+    this.protocolWarned = snapshot.protocolWarned
+    this.reasoningSegmentIndex = snapshot.reasoningSegmentIndex
+    this.reasoningText = snapshot.reasoningText
+    this.segmentMessages = snapshot.segmentMessages
+    this.streamDelay = snapshot.streamDelay
+    this.toolTokenAcc = snapshot.toolTokenAcc
+    this.turnTools = snapshot.turnTools
+    patchTurnState(snapshot.turnState)
+  }
+
   scheduleReasoning() {
     if (this.reasoningTimer) {
       return

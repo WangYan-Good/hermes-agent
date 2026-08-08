@@ -179,6 +179,13 @@ let hadMultipleProducers = false
 
 export const getOutputStreamsState = (): OutputStreamsState => state
 
+export const captureOutputStreamsState = (): OutputStreamsState => structuredClone(state)
+
+export const restoreOutputStreamsState = (snapshot: OutputStreamsState) => {
+  state = structuredClone(snapshot)
+  publish()
+}
+
 export const resetOutputStreams = () => {
   state = buildState()
   entrySequence = 0

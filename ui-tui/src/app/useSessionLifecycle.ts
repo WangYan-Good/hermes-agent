@@ -21,7 +21,7 @@ import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
-import type { SessionTransition, SessionTransitionHooks, SessionTransitionKind } from './outputStreamStore.js'
+import { captureOutputStreamsState, restoreOutputStreamsState, type SessionTransition, type SessionTransitionHooks, type SessionTransitionKind } from './outputStreamStore.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
 import { turnController } from './turnController.js'
@@ -43,6 +43,38 @@ const statusFromLiveSession = (status?: string, running = false) => {
 
   return running || status === 'working' ? 'running…' : 'ready'
 }
+
+export interface LiveSessionTransitionStateAdapterOptions {
+  getHistoryItems: () => Msg[]
+  setHistoryItems: (items: Msg[]) => void
+}
+
+interface LiveSessionTransitionSnapshot {
+  history: Msg[]
+  output: ReturnType<typeof captureOutputStreamsState>
+  turn: ReturnType<typeof turnController.captureSessionState>
+  ui: ReturnType<typeof getUiState>
+}
+
+export const createLiveSessionTransitionStateAdapter = ({
+  getHistoryItems,
+  setHistoryItems
+}: LiveSessionTransitionStateAdapterOptions) => ({
+  capture: (): LiveSessionTransitionSnapshot => ({
+    history: structuredClone(getHistoryItems()),
+    output: captureOutputStreamsState(),
+    turn: turnController.captureSessionState(),
+    ui: structuredClone(getUiState())
+  }),
+  restore: (value: unknown) => {
+    const snapshot = value as LiveSessionTransitionSnapshot
+
+    setHistoryItems(snapshot.history)
+    restoreOutputStreamsState(snapshot.output)
+    turnController.restoreSessionState(snapshot.turn)
+    patchUiState(snapshot.ui)
+  }
+})
 
 export interface ActivateLiveSessionAtomicOptions {
   afterCommit: (transition: SessionTransition) => void
@@ -72,6 +104,40 @@ export const settleSessionIntentFailure = (
   fail(sessionErrorMessage(error))
 
   return true
+}
+
+export interface SetupForSessionIntentOptions {
+  fail: (message: string) => void
+  isCurrent: () => boolean
+  request: () => Promise<unknown>
+}
+
+export const requestSetupForSessionIntent = async ({
+  fail,
+  isCurrent,
+  request
+}: SetupForSessionIntentOptions): Promise<null | SetupStatusResponse> => {
+  let raw: unknown
+
+  try {
+    raw = await request()
+  } catch (error) {
+    settleSessionIntentFailure(isCurrent, fail, error)
+
+    return null
+  }
+
+  if (!isCurrent()) {
+    return null
+  }
+
+  const setup = asRpcResult<SetupStatusResponse>(raw)
+
+  if (!setup) {
+    settleSessionIntentFailure(isCurrent, fail, 'invalid response: setup.status')
+  }
+
+  return setup
 }
 
 export async function activateLiveSessionAtomic(options: ActivateLiveSessionAtomicOptions): Promise<boolean> {
@@ -437,11 +503,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     async (id: string): Promise<boolean> => {
       const isCurrent = sessionIntentRef.current.begin('activate-live')
       const previousSessionId = getUiState().sid
+      const stateAdapter = createLiveSessionTransitionStateAdapter({ getHistoryItems, setHistoryItems })
+
 
       return activateLiveSessionAtomic({
         afterCommit: transitionHooks.afterCommit,
         beforeCommit: transitionHooks.beforeCommit,
-        capture: () => ({ history: getHistoryItems(), ui: getUiState() }),
+        capture: stateAdapter.capture,
         commit: r => {
           patchOverlayState({ sessions: false })
           const info = r.info ?? null
@@ -468,11 +536,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         isCurrent,
         previousSessionId,
         reportPostCommitError: message => sys('warning: output transition failed: ' + message),
-        restore: snapshot => {
-          const visible = snapshot as { history: Msg[]; ui: ReturnType<typeof getUiState> }
-          setHistoryItems(visible.history)
-          patchUiState(visible.ui)
-        },
+        restore: stateAdapter.restore,
         request: sessionId => gw.request<SessionActivateResponse>('session.activate', { session_id: sessionId })
       })
     },
@@ -485,8 +549,18 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'resuming…' })
 
-      rpc<SetupStatusResponse>('setup.status', {}).then(setup => {
+      requestSetupForSessionIntent({
+        fail: message => sys(`error: ${message}`),
+        isCurrent,
+        request: () => gw.request<SetupStatusResponse>('setup.status', {})
+      }).then(setup => {
         if (!isCurrent()) {
+          return
+        }
+
+        if (!setup) {
+          patchUiState({ status: 'ready' })
+
           return
         }
 
@@ -563,7 +637,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       gw,
       panel,
       resetSession,
-      rpc,
       scrollRef,
       setHistoryItems,
       setSessionStartedAt,
