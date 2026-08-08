@@ -15,7 +15,7 @@ export type ControlPrompt =
   | { kind: 'sudo'; request: SudoReq }
 
 type ControlKind = ControlPrompt['kind']
-type ControlResult = { kind: 'expire'; promptKind: 'secret' | 'sudo'; requestId: string } | { kind: 'request'; prompt: ControlPrompt }
+type ControlResult = { kind: 'expire'; promptKind: 'clarify' | 'secret' | 'sudo'; requestId: string } | { kind: 'request'; prompt: ControlPrompt }
 
 const current = (): ControlPrompt | null => {
   const state = getOverlayState()
@@ -68,7 +68,7 @@ export const completeControlPrompt = (kind: ControlKind, requestId?: string) => 
   patchOverlayState(state => ({ ...state, controlQueue: state.controlQueue.filter(prompt => !matches(prompt, kind, requestId)) }))
 }
 
-export const expireControlPrompt = (kind: 'secret' | 'sudo', requestId: string) => completeControlPrompt(kind, requestId)
+export const expireControlPrompt = (kind: 'clarify' | 'secret' | 'sudo', requestId: string) => completeControlPrompt(kind, requestId)
 
 export const controlPromptFromEvent = (
   event: GatewayEvent,
@@ -91,6 +91,9 @@ export const controlPromptFromEvent = (
     case 'sudo.request':
       return { kind: 'request', prompt: { kind: 'sudo', request: { requestId: event.payload.request_id, sessionId, sessionTitle } } }
 
+    case 'clarify.expire':
+      return { kind: 'expire', promptKind: 'clarify', requestId: event.payload.request_id }
+
     case 'secret.expire':
       return { kind: 'expire', promptKind: 'secret', requestId: event.payload.request_id }
 
@@ -100,19 +103,4 @@ export const controlPromptFromEvent = (
     default:
       return null
   }
-}
-
-export const expireControlPromptForSession = (kind: ControlKind, sessionId: string) => {
-  const active = current()
-
-  if (active?.kind === kind && active.request.sessionId === sessionId) {
-    completeControlPrompt(kind, idOf(active))
-
-    return
-  }
-
-  patchOverlayState(state => ({
-    ...state,
-    controlQueue: state.controlQueue.filter(prompt => prompt.kind !== kind || prompt.request.sessionId !== sessionId)
-  }))
 }
