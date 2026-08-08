@@ -1608,11 +1608,12 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(ctx)
 
     onEvent({ payload: { choices: null, question: 'B?', request_id: 'clarify-b' }, session_id: 'sid-b', type: 'clarify.request' })
+    onEvent({ payload: { command: 'deploy', description: 'A?' }, session_id: 'sid-a', type: 'approval.request' })
     onEvent({ payload: { env_var: 'TOKEN', prompt: 'C?', request_id: 'secret-c' }, session_id: 'sid-c', type: 'secret.request' })
     onEvent({ payload: { name: 'clarify', tool_id: 'clarify-tool-b' }, session_id: 'sid-b', type: 'tool.complete' } as any)
 
     expect(appended).toEqual([])
-    expect(getOverlayState().secret?.sessionId).toBe('sid-c')
+    expect(getOverlayState().controlQueue).toEqual([expect.objectContaining({ kind: 'secret' })])
   })
 
   it('does not clear another session clarify when the active session clarify tool completes', () => {

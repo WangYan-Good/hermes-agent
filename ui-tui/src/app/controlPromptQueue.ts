@@ -101,3 +101,18 @@ export const controlPromptFromEvent = (
       return null
   }
 }
+
+export const expireControlPromptForSession = (kind: ControlKind, sessionId: string) => {
+  const active = current()
+
+  if (active?.kind === kind && active.request.sessionId === sessionId) {
+    completeControlPrompt(kind, idOf(active))
+
+    return
+  }
+
+  patchOverlayState(state => ({
+    ...state,
+    controlQueue: state.controlQueue.filter(prompt => prompt.kind !== kind || prompt.request.sessionId !== sessionId)
+  }))
+}

@@ -25,7 +25,7 @@ import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
-import { completeControlPrompt, controlPromptFromEvent, enqueueControlPrompt, expireControlPrompt } from './controlPromptQueue.js'
+import { completeControlPrompt, controlPromptFromEvent, enqueueControlPrompt, expireControlPrompt, expireControlPromptForSession } from './controlPromptQueue.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
@@ -725,7 +725,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     const route = ctx.outputRouter.route(ev, sid)
 
     if (ev.type === 'tool.complete' && ev.payload.name === 'clarify' && route !== 'active') {
-      flushAbandonedClarify(ev.session_id ?? sid ?? 'default', false)
+      expireControlPromptForSession('clarify', ev.session_id ?? sid ?? 'default')
 
       return
     }

@@ -140,7 +140,7 @@ export function dismissApprovalPrompt(overlay: Pick<OverlayState, 'approval'>, r
   }
 
   return rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: approval.sessionId }).then(response => {
-    if (response?.ok || response?.status === 'expired') {
+    if (response?.resolved || response?.status === 'expired') {
       completeControlPrompt('approval')
     }
 

@@ -339,6 +339,7 @@ export interface ClarifyRespondResponse {
 
 export interface ApprovalRespondResponse {
   ok?: boolean
+  resolved?: boolean
   status?: 'expired' | 'ok'
 }
 
