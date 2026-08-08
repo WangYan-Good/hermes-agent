@@ -632,6 +632,7 @@ export interface AppOverlaysProps {
   onClarifyAnswer: (value: string) => void
   onActiveSessionSelect: (sessionId: string) => Promise<boolean>
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
+  onOutputFocus: (sessionId: string) => Promise<boolean>
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void

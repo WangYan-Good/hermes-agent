@@ -203,6 +203,7 @@ export function FloatingOverlays({
   onActiveSessionClose,
   onModelSelect,
   onNewLiveSession,
+  onOutputFocus,
   onNewPromptSession,
   onResumeSelect,
   pagerPageSize
@@ -218,6 +219,7 @@ export function FloatingOverlays({
   | 'onNewPromptSession'
   | 'onResumeSelect'
   | 'pagerPageSize'
+  | 'onOutputFocus'
 >) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
@@ -272,7 +274,7 @@ export function FloatingOverlays({
       render: () => (
         <FloatBox color={theme.color.border}>
           <OutputManager
-            onActivate={onActiveSessionSelect}
+            onActivate={onOutputFocus}
             onClose={() => patchOverlayState({ outputs: false })}
             onExitSplit={exitOutputSplit}
             onSetSecondary={setSecondaryOutput}
