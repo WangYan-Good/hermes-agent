@@ -444,10 +444,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
   }
 
   const MAX_CLARIFY_LIFECYCLE_ENTRIES = 32
-  const clarifyLifecycleByToolId = new Map<string, ClarifyLifecycle>()
+  const clarifyLifecycleKey = (sessionId: string, toolId: string) => JSON.stringify([sessionId, toolId])
+  const clarifyLifecycleByIdentity = new Map<string, ClarifyLifecycle>()
 
   const clearClarifyLifecycle = () => {
-    clarifyLifecycleByToolId.clear()
+    clarifyLifecycleByIdentity.clear()
   }
 
   const persistAbandonedClarify = (clarify: AbandonedClarify, persist: boolean) => {
@@ -480,12 +481,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
     completeControlPrompt('clarify', clarify.requestId)
   }
 
-  const completeClarifyLifecycle = (toolId: string, persist: boolean) => {
-    const lifecycle = clarifyLifecycleByToolId.get(toolId)
+  const completeClarifyLifecycle = (sessionId: string, toolId: string, persist: boolean) => {
+    const identity = clarifyLifecycleKey(sessionId, toolId)
+    const lifecycle = clarifyLifecycleByIdentity.get(identity)
 
     // Completion consumes the lifecycle even when the tool never produced a
     // request, so a later request cannot bind to an orphaned tool.
-    clarifyLifecycleByToolId.delete(toolId)
+    clarifyLifecycleByIdentity.delete(identity)
 
     if (lifecycle?.expired) {
       persistAbandonedClarify(lifecycle.expired, persist)
@@ -793,17 +795,19 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
     const eventSessionId = ev.session_id ?? sid ?? 'default'
 
     if (ev.type === 'tool.start' && ev.payload.name === 'clarify') {
-      clarifyLifecycleByToolId.delete(ev.payload.tool_id)
+      const identity = clarifyLifecycleKey(eventSessionId, ev.payload.tool_id)
 
-      if (clarifyLifecycleByToolId.size >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {
-        const oldestToolId = clarifyLifecycleByToolId.keys().next().value
+      clarifyLifecycleByIdentity.delete(identity)
 
-        if (oldestToolId) {
-          clarifyLifecycleByToolId.delete(oldestToolId)
+      if (clarifyLifecycleByIdentity.size >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {
+        const oldestIdentity = clarifyLifecycleByIdentity.keys().next().value
+
+        if (oldestIdentity) {
+          clarifyLifecycleByIdentity.delete(oldestIdentity)
         }
       }
 
-      clarifyLifecycleByToolId.set(ev.payload.tool_id, { sessionId: eventSessionId })
+      clarifyLifecycleByIdentity.set(identity, { sessionId: eventSessionId })
     }
 
     const route = ctx.outputRouter.route(ev, sid)
@@ -814,7 +818,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
       enqueueControlPrompt(control.prompt)
 
       if (control.prompt.kind === 'clarify') {
-        for (const lifecycle of clarifyLifecycleByToolId.values()) {
+        for (const lifecycle of clarifyLifecycleByIdentity.values()) {
           if (lifecycle.sessionId === eventSessionId && !lifecycle.requestId) {
             lifecycle.requestId = control.prompt.request.requestId
 
@@ -840,8 +844,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
       expireControlPrompt(control.promptKind, control.requestId)
 
       if (activeClarify) {
-        for (const lifecycle of clarifyLifecycleByToolId.values()) {
-          if (lifecycle.requestId === control.requestId) {
+        for (const lifecycle of clarifyLifecycleByIdentity.values()) {
+          if (lifecycle.sessionId === eventSessionId && lifecycle.requestId === control.requestId) {
             lifecycle.expired = Object.freeze({
               choices: activeClarify.choices ? [...activeClarify.choices] : null,
               question: activeClarify.question,
@@ -857,7 +861,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
     }
 
     if (ev.type === 'tool.complete' && ev.payload.name === 'clarify') {
-      completeClarifyLifecycle(ev.payload.tool_id, route === 'active')
+      completeClarifyLifecycle(eventSessionId, ev.payload.tool_id, route === 'active')
     }
 
     if (route !== 'active') {
