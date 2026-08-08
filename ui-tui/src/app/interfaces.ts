@@ -556,7 +556,7 @@ export interface AppLayoutActions {
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
   clearSelection: () => void
-  activateLiveSession: (id: string) => void
+  activateLiveSession: (id: string) => Promise<boolean>
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
   newLiveSession: () => void
   newPromptSession: (prompt: string, modelArg?: string) => void

@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  capturePrimaryOutputSnapshot,
+  commitOutputPrimaryTransition,
   exitOutputSplit,
   getOutputStreamsState,
   observeOutputEvent,
@@ -107,6 +109,7 @@ describe('output stream state', () => {
         now: i
       })
     }
+
     const stream = getOutputStreamsState().streams['sid-b']!
     expect(stream.entries.length).toBeLessThanOrEqual(200)
     expect(stream.bytes).toBeLessThanOrEqual(64 * 1024)
@@ -169,5 +172,25 @@ describe('output stream state', () => {
       primarySessionId: 'sid-a',
       secondarySessionId: null
     })
+  })
+
+  it('seeds the old primary transcript before promoting a live session', () => {
+    capturePrimaryOutputSnapshot(
+      'sid-a',
+      'Alpha',
+      'working',
+      [
+        { role: 'user', text: 'question' },
+        { role: 'assistant', text: 'partial' }
+      ],
+      ' tail'
+    )
+
+    commitOutputPrimaryTransition({ kind: 'activate-live', nextSessionId: 'sid-b', previousSessionId: 'sid-a' })
+
+    const state = getOutputStreamsState()
+    expect(state.layout.primarySessionId).toBe('sid-b')
+    expect(state.layout.secondarySessionId).toBe('sid-a')
+    expect(state.streams['sid-a']?.entries.map(entry => entry.text).join(' ')).toContain('partial tail')
   })
 })

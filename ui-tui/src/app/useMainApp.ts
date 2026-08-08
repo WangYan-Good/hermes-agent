@@ -50,11 +50,12 @@ import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
 import { createOutputStreamRouter } from './outputStreamRouter.js'
+import { capturePrimaryOutputSnapshot, commitOutputPrimaryTransition, type SessionTransitionHooks } from './outputStreamStore.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
-import { patchTurnState, useTurnSelector } from './turnStore.js'
+import { getTurnState, patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useBatteryPoll } from './useBatteryPoll.js'
 import { useComposerState } from './useComposerState.js'
@@ -535,6 +536,22 @@ export function useMainApp(gw: GatewayClient) {
     [exit, gw]
   )
 
+
+  const transitionHooks = useMemo<SessionTransitionHooks>(() => ({
+    beforeCommit: transition => {
+      if (transition.previousSessionId && (transition.kind === 'activate-live' || transition.kind === 'new-live')) {
+        capturePrimaryOutputSnapshot(
+          transition.previousSessionId,
+          getUiState().sessionTitle,
+          getUiState().status,
+          historyItemsRef.current,
+          getTurnState().streaming
+        )
+      }
+    },
+    afterCommit: commitOutputPrimaryTransition
+  }), [])
+
   const session = useSessionLifecycle({
     colsRef,
     composerActions,
@@ -543,6 +560,7 @@ export function useMainApp(gw: GatewayClient) {
     panel,
     rpc,
     scrollRef,
+    transitionHooks,
     setHistoryItems,
     setLastUserMsg,
     setSessionStartedAt,
