@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  capturePrimaryOutputSnapshot,
   getOutputStreamsState,
   resetOutputStreams,
   setSecondaryOutput,
@@ -15,9 +16,11 @@ import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import {
   activateLiveSessionAtomic,
+  createLiveSessionTransitionStateAdapter,
   createSessionIntentGeneration,
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
+  requestSetupForSessionIntent,
   scheduleResumeScrollToBottom,
   settleSessionIntentFailure,
   signalFreshSessionBoundary,
@@ -209,7 +212,6 @@ describe('atomic live session activation', () => {
     async nextIntent => {
       const intents = createSessionIntentGeneration()
       const pending = deferred<ReturnType<typeof activation>>()
-
       const fail = vi.fn()
 
       const result = activateLiveSessionAtomic({
@@ -235,15 +237,42 @@ describe('atomic live session activation', () => {
     'does not report a stale resume rejection after %s begins',
     nextIntent => {
       const intents = createSessionIntentGeneration()
-
       const fail = vi.fn()
-
       const isCurrent = intents.begin('resume')
 
       intents.begin(nextIntent)
 
       expect(settleSessionIntentFailure(isCurrent, fail, new Error('resume rejected'))).toBe(false)
       expect(fail).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['new-live', 'activate-live'] as const)(
+    'does not report a stale deferred resume setup rejection after %s begins',
+    async nextIntent => {
+      const intents = createSessionIntentGeneration()
+      const pending = deferred<unknown>()
+      resetOutputStreams()
+      syncOutputSessions([{ id: 'sid-b', title: 'Beta' }], 'sid-b')
+      patchUiState({ sid: 'sid-b', status: 'ready' })
+      const outputBefore = structuredClone(getOutputStreamsState())
+      const uiBefore = structuredClone(getUiState())
+      const transcript: string[] = []
+      const fail = (message: string) => transcript.push(`error: ${message}`)
+
+      const result = requestSetupForSessionIntent({
+        fail,
+        isCurrent: intents.begin('resume'),
+        request: () => pending.promise
+      })
+
+      intents.begin(nextIntent)
+      pending.reject(new Error('setup rejected'))
+
+      expect(await result).toBeNull()
+      expect(transcript).toEqual([])
+      expect(getUiState()).toEqual(uiBefore)
+      expect(getOutputStreamsState()).toEqual(outputBefore)
     }
   )
 
@@ -283,7 +312,7 @@ describe('atomic live session activation', () => {
     expect(afterCommit).not.toHaveBeenCalled()
   })
 
-  it('rolls back visible state when commit mutates then throws', async () => {
+  it('restores real output and turn state when commit resets then throws', async () => {
     resetOutputStreams()
     syncOutputSessions(
       [
@@ -294,48 +323,53 @@ describe('atomic live session activation', () => {
     )
     setSecondaryOutput('sid-b')
     patchUiState({ sid: 'sid-a' })
-    const afterCommit = vi.fn()
+    turnController.hydrateStreamingText('live tail')
+    turnController.recordToolStart('tool-1', 'shell', 'ls')
+    turnController.recordTodos([{ content: 'keep tail', id: 'todo-1', status: 'in_progress' }])
+    turnController.pendingSegmentTools = ['shell ls']
+    turnController.turnTools = ['shell ls']
+    let history = [{ role: 'assistant' as const, text: 'old transcript' }]
 
-    let visible: { focus: null | string; sessionId: null | string; transcript: string[] } = {
-      focus: 'sid-a',
-      sessionId: 'sid-a',
-      transcript: ['alpha']
+    const setHistoryItems = (value: typeof history) => { history = value }
+    const snapshot = createLiveSessionTransitionStateAdapter({ getHistoryItems: () => history, setHistoryItems })
+    const outputBefore = structuredClone(getOutputStreamsState())
+    const turnBefore = structuredClone(getTurnState())
+
+    const controllerBefore = {
+      bufRef: turnController.bufRef,
+      pendingSegmentTools: [...turnController.pendingSegmentTools],
+      turnTools: [...turnController.turnTools]
     }
 
-    const fail = vi.fn()
+    const afterCommit = vi.fn()
 
     await expect(
       activateLiveSessionAtomic({
         afterCommit,
-        beforeCommit: vi.fn(),
-        capture: () => ({ ...visible, transcript: [...visible.transcript], ui: getUiState() }),
+        beforeCommit: () => capturePrimaryOutputSnapshot('sid-a', 'Alpha', 'running…', history, turnController.bufRef),
+        capture: snapshot.capture,
         commit: () => {
+          turnController.fullReset()
+          history = []
           patchUiState({ sid: null })
-          visible = { focus: null, sessionId: null, transcript: [] }
           throw new Error('commit')
         },
-        fail,
+        fail: vi.fn(),
         id: 'sid-b',
         previousSessionId: 'sid-a',
         request: vi.fn().mockResolvedValue(activation()),
-        restore: snapshot => {
-          const prior = snapshot as typeof visible & { ui: ReturnType<typeof getUiState> }
-          const { ui, ...priorVisible } = prior
-          visible = priorVisible
-          patchUiState(ui)
-        }
+        restore: snapshot.restore
       })
     ).resolves.toBe(false)
 
     expect(getUiState().sid).toBe('sid-a')
-    expect(visible).toEqual({ focus: 'sid-a', sessionId: 'sid-a', transcript: ['alpha'] })
-    expect(getOutputStreamsState().layout).toEqual({
-      mode: 'split',
-      primarySessionId: 'sid-a',
-      secondarySessionId: 'sid-b'
-    })
+    expect(history).toEqual([{ role: 'assistant', text: 'old transcript' }])
+    expect(getOutputStreamsState()).toEqual(outputBefore)
+    expect(getTurnState()).toEqual(turnBefore)
+    expect(turnController.bufRef).toBe(controllerBefore.bufRef)
+    expect(turnController.pendingSegmentTools).toEqual(controllerBefore.pendingSegmentTools)
+    expect(turnController.turnTools).toEqual(controllerBefore.turnTools)
     expect(afterCommit).not.toHaveBeenCalled()
-    expect(fail).toHaveBeenCalledWith('commit')
   })
 })
 describe('resume scroll settle', () => {
