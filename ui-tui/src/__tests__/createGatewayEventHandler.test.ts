@@ -1581,6 +1581,30 @@ describe('createGatewayEventHandler', () => {
     expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask '))).toBe(false)
   })
 
+  it('persists an expired clarify by correlated tool ID without consuming a promoted same-session clarify', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    patchUiState({ sid: 'sid-a' })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { context: 'A?', name: 'clarify', tool_id: 'clarify-tool-a' }, session_id: 'sid-a', type: 'tool.start' })
+    onEvent({ payload: { choices: ['A1'], question: 'A?', request_id: 'clarify-a' }, session_id: 'sid-a', type: 'clarify.request' })
+    onEvent({ payload: { choices: ['B1'], question: 'B?', request_id: 'clarify-b' }, session_id: 'sid-a', type: 'clarify.request' })
+    onEvent({ payload: { request_id: 'clarify-a' }, session_id: 'sid-a', type: 'clarify.expire' })
+
+    expect(getOverlayState().clarify?.requestId).toBe('clarify-b')
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'clarify-tool-a' }, session_id: 'sid-a', type: 'tool.complete' })
+    onEvent({ payload: { name: 'clarify', tool_id: 'clarify-tool-a' }, session_id: 'sid-a', type: 'tool.complete' })
+
+    const records = appended.filter(msg => msg.role === 'system' && msg.text.startsWith('ask A?'))
+    expect(records).toHaveLength(1)
+    expect(records[0]?.text).toContain('1. A1')
+    expect(records[0]?.text).toContain('timed out — no selection')
+    expect(getOverlayState().clarify?.requestId).toBe('clarify-b')
+    expect(getOverlayState().controlQueue).toEqual([])
+  })
+
   it('clears only the matching sensitive prompt when the gateway expires it', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 

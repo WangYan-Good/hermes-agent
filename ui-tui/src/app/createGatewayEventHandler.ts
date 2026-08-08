@@ -23,7 +23,7 @@ import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '..
 import { formatAbandonedClarify, formatToolCall, stripAnsi } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
-import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
+import type { ClarifyReq, Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { completeControlPrompt, controlPromptFromEvent, enqueueControlPrompt, expireControlPrompt } from './controlPromptQueue.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
@@ -402,6 +402,39 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // paths can't both persist the same prompt twice.
   const persistedAbandonedClarify = new Set<string>()
 
+  type AbandonedClarify = Pick<ClarifyReq, 'choices' | 'question' | 'requestId'>
+  const MAX_CLARIFY_LIFECYCLE_ENTRIES = 32
+  const pendingClarifyToolIdsBySession = new Map<string, string[]>()
+  const clarifyToolIdByRequestId = new Map<string, string>()
+  const clarifyRequestIdByToolId = new Map<string, string>()
+  const expiredClarifyByToolId = new Map<string, Readonly<AbandonedClarify>>()
+  const completedExpiredClarifyToolIds = new Set<string>()
+  const expiredClarifyWithoutToolId = new Set<string>()
+
+  const clearClarifyLifecycle = () => {
+    pendingClarifyToolIdsBySession.clear()
+    clarifyToolIdByRequestId.clear()
+    clarifyRequestIdByToolId.clear()
+    expiredClarifyByToolId.clear()
+    completedExpiredClarifyToolIds.clear()
+    expiredClarifyWithoutToolId.clear()
+  }
+
+  const persistAbandonedClarify = (clarify: AbandonedClarify, persist: boolean) => {
+    if (persistedAbandonedClarify.has(clarify.requestId)) {
+      return
+    }
+
+    persistedAbandonedClarify.add(clarify.requestId)
+
+    if (persist) {
+      appendMessage({
+        role: 'system',
+        text: formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
+      })
+    }
+  }
+
   // When a clarify prompt is dismissed without an answer (the backend _block
   // timed out and returned an empty string), the live ClarifyPrompt overlay is
   // left set until the next turn's idle() silently nulls it — so the question
@@ -418,14 +451,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       return
     }
 
-    persistedAbandonedClarify.add(clarify.requestId)
-
-    if (persist) {
-    appendMessage({
-      role: 'system',
-      text: formatAbandonedClarify(clarify.question, clarify.choices, 'timed out')
-    })
-    }
+    persistAbandonedClarify(clarify, persist)
 
     completeControlPrompt('clarify', clarify.requestId)
   }
@@ -722,12 +748,44 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   return (ev: GatewayEvent) => {
     const sid = getUiState().sid
 
+    const eventSessionId = ev.session_id ?? sid ?? 'default'
+
+    if (ev.type === 'tool.start' && ev.payload.name === 'clarify') {
+      const pendingToolIds = pendingClarifyToolIdsBySession.get(eventSessionId) ?? []
+
+      if (pendingToolIds.length >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {pendingToolIds.shift()}
+      pendingToolIds.push(ev.payload.tool_id)
+      pendingClarifyToolIdsBySession.set(eventSessionId, pendingToolIds)
+    }
+
     const route = ctx.outputRouter.route(ev, sid)
 
     const control = controlPromptFromEvent(ev, sid, ctx.outputRouter.titleForSession)
 
     if (control?.kind === 'request') {
       enqueueControlPrompt(control.prompt)
+
+      if (control.prompt.kind === 'clarify') {
+        const pendingToolIds = pendingClarifyToolIdsBySession.get(eventSessionId)
+        const toolId = pendingToolIds?.shift()
+
+        if (!pendingToolIds?.length) {pendingClarifyToolIdsBySession.delete(eventSessionId)}
+
+        if (toolId) {
+          if (clarifyToolIdByRequestId.size >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {
+            const stale = clarifyToolIdByRequestId.entries().next().value
+
+            if (stale) {
+              clarifyToolIdByRequestId.delete(stale[0])
+              clarifyRequestIdByToolId.delete(stale[1])
+            }
+          }
+
+          clarifyToolIdByRequestId.set(control.prompt.request.requestId, toolId)
+          clarifyRequestIdByToolId.set(toolId, control.prompt.request.requestId)
+        }
+      }
+
       setStatus(
         ({ approval: 'approval needed', clarify: 'waiting for input…', secret: 'secret input needed', sudo: 'sudo password needed' } as const)[
           control.prompt.kind
@@ -738,7 +796,39 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     if (control?.kind === 'expire') {
+      const activeClarify = control.promptKind === 'clarify' && getOverlayState().clarify?.requestId === control.requestId
+        ? getOverlayState().clarify
+        : null
+
       expireControlPrompt(control.promptKind, control.requestId)
+
+      if (activeClarify) {
+        const toolId = clarifyToolIdByRequestId.get(control.requestId)
+
+        if (toolId) {
+          if (expiredClarifyByToolId.size >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {
+            const staleToolId = expiredClarifyByToolId.keys().next().value
+
+            if (staleToolId) {expiredClarifyByToolId.delete(staleToolId)}
+          }
+
+          expiredClarifyByToolId.set(toolId, Object.freeze({
+            choices: activeClarify.choices ? [...activeClarify.choices] : null,
+            question: activeClarify.question,
+            requestId: activeClarify.requestId
+          }))
+          clarifyToolIdByRequestId.delete(control.requestId)
+          clarifyRequestIdByToolId.delete(toolId)
+        } else {
+          if (expiredClarifyWithoutToolId.size >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {
+            const staleRequestId = expiredClarifyWithoutToolId.values().next().value
+
+            if (staleRequestId) {expiredClarifyWithoutToolId.delete(staleRequestId)}
+          }
+
+          expiredClarifyWithoutToolId.add(control.requestId)
+        }
+      }
 
       return
     }
@@ -749,6 +839,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     switch (ev.type) {
       case 'gateway.ready':
+        clearClarifyLifecycle()
         handleReady(ev.payload?.skin)
 
         return
@@ -1153,7 +1244,28 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // clears the overlay in answerClarify() before this fires, so this
         // no-ops there. Persist the question + options so they don't vanish.
         if (ev.payload.name === 'clarify') {
-          flushAbandonedClarify(ev.session_id ?? sid ?? 'default', true)
+          const expiredClarify = expiredClarifyByToolId.get(ev.payload.tool_id)
+          const requestId = clarifyRequestIdByToolId.get(ev.payload.tool_id)
+
+          if (expiredClarify) {
+            expiredClarifyByToolId.delete(ev.payload.tool_id)
+
+            if (completedExpiredClarifyToolIds.size >= MAX_CLARIFY_LIFECYCLE_ENTRIES) {
+              const staleToolId = completedExpiredClarifyToolIds.values().next().value
+
+              if (staleToolId) {completedExpiredClarifyToolIds.delete(staleToolId)}
+            }
+
+            completedExpiredClarifyToolIds.add(ev.payload.tool_id)
+            persistAbandonedClarify(expiredClarify, true)
+          } else if (!completedExpiredClarifyToolIds.has(ev.payload.tool_id) && expiredClarifyWithoutToolId.size === 0) {
+            flushAbandonedClarify(eventSessionId, true)
+          }
+
+          if (requestId) {
+            clarifyRequestIdByToolId.delete(ev.payload.tool_id)
+            clarifyToolIdByRequestId.delete(requestId)
+          }
         }
 
         const inlineDiffText =
