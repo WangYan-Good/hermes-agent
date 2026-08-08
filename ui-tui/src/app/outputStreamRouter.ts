@@ -14,6 +14,7 @@ export interface OutputStreamRouterOptions {
 }
 
 export interface OutputStreamRouter {
+  disconnect: () => void
   dispose: () => void
   flush: () => void
   route: (event: GatewayEvent, activeSessionId: null | string) => OutputRoute
@@ -66,6 +67,11 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
     }
   }
 
+  const clearPending = () => {
+    clearTimer()
+    pendingDeltas.clear()
+  }
+
   const flushSession = (sessionId: string) => {
     const pending = pendingDeltas.get(sessionId)
 
@@ -95,6 +101,12 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
   }
 
   const route = (event: GatewayEvent, activeSessionId: null | string): OutputRoute => {
+    if (disposed) {return 'ignored'}
+
+    if (event.type === 'gateway.ready') {
+      clearPending()
+    }
+
     if (event.type.startsWith('gateway.')) {return 'active'}
 
     const sessionId = event.session_id
@@ -137,10 +149,10 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
   }
 
   return {
+    disconnect: clearPending,
     dispose: () => {
       disposed = true
-      clearTimer()
-      pendingDeltas.clear()
+      clearPending()
     },
     flush,
     route,

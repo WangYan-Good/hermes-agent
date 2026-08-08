@@ -43,7 +43,7 @@ import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
-import { completeControlPrompt } from './controlPromptQueue.js'
+import { clearControlPrompts, completeControlPrompt, removeControlPromptsForSession } from './controlPromptQueue.js'
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { planGatewayRecovery } from './gatewayRecovery.js'
@@ -54,10 +54,13 @@ import {
   capturePrimaryOutputSnapshot,
   commitOutputPrimaryTransition,
   getOutputStreamsState,
+  markOutputTransportDisconnected,
   type OutputConflict,
   type OutputConflictDecision,
+  removeOutputSession,
   resolveOutputConflict,
-  type SessionTransitionHooks
+  type SessionTransitionHooks,
+  syncOutputSessions
 } from './outputStreamStore.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
@@ -658,6 +661,7 @@ export function useMainApp(gw: GatewayClient) {
             // titlebar. The active_list poll already carries it, so no extra
             // round-trip is needed.
             const currentSid = getUiState().sid
+            syncOutputSessions(result.sessions, currentSid)
 
             const sessionTitle = result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
 
@@ -933,7 +937,10 @@ export function useMainApp(gw: GatewayClient) {
     const handler = (ev: GatewayEvent) => onEventRef.current(ev)
 
     const exitHandler = () => {
-      turnController.reset()
+      outputRouter.disconnect()
+      markOutputTransportDisconnected()
+      clearControlPrompts()
+      turnController.fullReset()
 
       // A still-owned child dying while the TUI is alive is an *unexpected*
       // death — a user /quit exits Node before this fires, and a replaced child
@@ -975,7 +982,7 @@ export function useMainApp(gw: GatewayClient) {
       gw.off('event', handler)
       gw.off('exit', exitHandler)
     }
-  }, [gw, sys])
+  }, [gw, outputRouter, sys])
 
   useLongRunToolCharms()
 
@@ -1091,6 +1098,12 @@ export function useMainApp(gw: GatewayClient) {
 
       try {
         const result = (await session.closeSession(id)) as null | SessionCloseResponse
+
+        if (result?.closed || result?.ok) {
+          removeOutputSession(id)
+          removeControlPromptsForSession(id)
+        }
+
         patchUiState({ status: 'ready' })
 
         return result

@@ -55,6 +55,30 @@ export const enqueueControlPrompt = (prompt: ControlPrompt) => {
   patchOverlayState({ [prompt.kind]: prompt.request })
 }
 
+export const clearControlPrompts = () =>
+  patchOverlayState({
+    approval: null,
+    clarify: null,
+    controlQueue: [],
+    secret: null,
+    sudo: null
+  })
+
+export const removeControlPromptsForSession = (sessionId: string) => {
+  const state = getOverlayState()
+  const active = current()
+  const controlQueue = state.controlQueue.filter(prompt => prompt.request.sessionId !== sessionId)
+
+  if (active?.request.sessionId === sessionId) {
+    patchOverlayState({ [active.kind]: null, controlQueue })
+    promote()
+
+    return
+  }
+
+  patchOverlayState({ controlQueue })
+}
+
 export const completeControlPrompt = (kind: ControlKind, requestId: string | undefined, sessionId: string) => {
   const active = current()
 
