@@ -4,7 +4,12 @@ import { join } from 'node:path'
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getOutputStreamsState, resetOutputStreams, setSecondaryOutput, syncOutputSessions } from '../app/outputStreamStore.js'
+import {
+  getOutputStreamsState,
+  resetOutputStreams,
+  setSecondaryOutput,
+  syncOutputSessions
+} from '../app/outputStreamStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
@@ -14,6 +19,7 @@ import {
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
   scheduleResumeScrollToBottom,
+  settleSessionIntentFailure,
   signalFreshSessionBoundary,
   writeActiveSessionFile
 } from '../app/useSessionLifecycle.js'
@@ -27,12 +33,14 @@ const activation = (sessionId = 'sid-b') => ({
 
 const deferred = <T>() => {
   let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
 
-  const promise = new Promise<T>(res => {
+  const promise = new Promise<T>((res, rej) => {
     resolve = res
+    reject = rej
   })
 
-  return { promise, resolve }
+  return { promise, reject, resolve }
 }
 
 const staleActivationAfter = async (nextIntent: 'new-live' | 'resume') => {
@@ -120,7 +128,6 @@ describe('live session activation in-flight state', () => {
   })
 })
 
-
 describe('atomic live session activation', () => {
   it('does not run transition hooks for an invalid activation response', async () => {
     const beforeCommit = vi.fn()
@@ -197,49 +204,138 @@ describe('atomic live session activation', () => {
     expect(commit).not.toHaveBeenCalled()
   })
 
+  it.each(['new-live', 'resume'] as const)(
+    'does not report a stale activation rejection after %s begins',
+    async nextIntent => {
+      const intents = createSessionIntentGeneration()
+      const pending = deferred<ReturnType<typeof activation>>()
 
-  it('propagates a throwing before hook without changing layout or focus', async () => {
+      const fail = vi.fn()
+
+      const result = activateLiveSessionAtomic({
+        afterCommit: vi.fn(),
+        beforeCommit: vi.fn(),
+        commit: vi.fn(),
+        fail,
+        id: 'sid-b',
+        isCurrent: intents.begin('activate-live'),
+        previousSessionId: 'sid-a',
+        request: () => pending.promise
+      })
+
+      intents.begin(nextIntent)
+      pending.reject(new Error('activation rejected'))
+
+      expect(await result).toBe(false)
+      expect(fail).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each(['new-live', 'activate-live'] as const)(
+    'does not report a stale resume rejection after %s begins',
+    nextIntent => {
+      const intents = createSessionIntentGeneration()
+
+      const fail = vi.fn()
+
+      const isCurrent = intents.begin('resume')
+
+      intents.begin(nextIntent)
+
+      expect(settleSessionIntentFailure(isCurrent, fail, new Error('resume rejected'))).toBe(false)
+      expect(fail).not.toHaveBeenCalled()
+    }
+  )
+
+  it('rolls back a throwing before hook without changing layout or focus', async () => {
     resetOutputStreams()
-    syncOutputSessions([{ id: 'sid-a', title: 'Alpha' }, { id: 'sid-b', title: 'Beta' }], 'sid-a')
+    syncOutputSessions(
+      [
+        { id: 'sid-a', title: 'Alpha' },
+        { id: 'sid-b', title: 'Beta' }
+      ],
+      'sid-a'
+    )
     setSecondaryOutput('sid-b')
     patchUiState({ sid: 'sid-a' })
     const afterCommit = vi.fn()
 
-    await expect(activateLiveSessionAtomic({
-      afterCommit,
-      beforeCommit: () => { throw new Error('before') },
-      commit: () => patchUiState({ sid: 'sid-b' }),
-      fail: vi.fn(),
-      id: 'sid-b',
-      previousSessionId: 'sid-a',
-      request: vi.fn().mockResolvedValue(activation())
-    })).rejects.toThrow('before')
+    await expect(
+      activateLiveSessionAtomic({
+        afterCommit,
+        beforeCommit: () => {
+          throw new Error('before')
+        },
+        commit: () => patchUiState({ sid: 'sid-b' }),
+        fail: vi.fn(),
+        id: 'sid-b',
+        previousSessionId: 'sid-a',
+        request: vi.fn().mockResolvedValue(activation())
+      })
+    ).resolves.toBe(false)
 
     expect(getUiState().sid).toBe('sid-a')
-    expect(getOutputStreamsState().layout).toEqual({ mode: 'split', primarySessionId: 'sid-a', secondarySessionId: 'sid-b' })
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'split',
+      primarySessionId: 'sid-a',
+      secondarySessionId: 'sid-b'
+    })
     expect(afterCommit).not.toHaveBeenCalled()
   })
 
-  it('propagates a throwing commit without changing layout or focus', async () => {
+  it('rolls back visible state when commit mutates then throws', async () => {
     resetOutputStreams()
-    syncOutputSessions([{ id: 'sid-a', title: 'Alpha' }, { id: 'sid-b', title: 'Beta' }], 'sid-a')
+    syncOutputSessions(
+      [
+        { id: 'sid-a', title: 'Alpha' },
+        { id: 'sid-b', title: 'Beta' }
+      ],
+      'sid-a'
+    )
     setSecondaryOutput('sid-b')
     patchUiState({ sid: 'sid-a' })
     const afterCommit = vi.fn()
 
-    await expect(activateLiveSessionAtomic({
-      afterCommit,
-      beforeCommit: vi.fn(),
-      commit: () => { throw new Error('commit') },
-      fail: vi.fn(),
-      id: 'sid-b',
-      previousSessionId: 'sid-a',
-      request: vi.fn().mockResolvedValue(activation())
-    })).rejects.toThrow('commit')
+    let visible: { focus: null | string; sessionId: null | string; transcript: string[] } = {
+      focus: 'sid-a',
+      sessionId: 'sid-a',
+      transcript: ['alpha']
+    }
+
+    const fail = vi.fn()
+
+    await expect(
+      activateLiveSessionAtomic({
+        afterCommit,
+        beforeCommit: vi.fn(),
+        capture: () => ({ ...visible, transcript: [...visible.transcript], ui: getUiState() }),
+        commit: () => {
+          patchUiState({ sid: null })
+          visible = { focus: null, sessionId: null, transcript: [] }
+          throw new Error('commit')
+        },
+        fail,
+        id: 'sid-b',
+        previousSessionId: 'sid-a',
+        request: vi.fn().mockResolvedValue(activation()),
+        restore: snapshot => {
+          const prior = snapshot as typeof visible & { ui: ReturnType<typeof getUiState> }
+          const { ui, ...priorVisible } = prior
+          visible = priorVisible
+          patchUiState(ui)
+        }
+      })
+    ).resolves.toBe(false)
 
     expect(getUiState().sid).toBe('sid-a')
-    expect(getOutputStreamsState().layout).toEqual({ mode: 'split', primarySessionId: 'sid-a', secondarySessionId: 'sid-b' })
+    expect(visible).toEqual({ focus: 'sid-a', sessionId: 'sid-a', transcript: ['alpha'] })
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'split',
+      primarySessionId: 'sid-a',
+      secondarySessionId: 'sid-b'
+    })
     expect(afterCommit).not.toHaveBeenCalled()
+    expect(fail).toHaveBeenCalledWith('commit')
   })
 })
 describe('resume scroll settle', () => {

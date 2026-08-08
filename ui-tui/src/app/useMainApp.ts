@@ -562,6 +562,7 @@ export function useMainApp(gw: GatewayClient) {
     colsRef,
     composerActions,
     gw,
+    getHistoryItems: () => historyItemsRef.current,
     onFreshSessionStarted: DASHBOARD_TUI_MODE ? setDashboardFreshSessionId : undefined,
     panel,
     rpc,
