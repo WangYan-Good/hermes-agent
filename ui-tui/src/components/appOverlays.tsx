@@ -4,7 +4,7 @@ import type { ReactNode } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
-import { $outputConflict } from '../app/outputStreamStore.js'
+import { $outputConflict, exitOutputSplit, setSecondaryOutput } from '../app/outputStreamStore.js'
 import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
@@ -14,6 +14,7 @@ import { BillingOverlay } from './billingOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OutputConflictPrompt } from './outputConflictPrompt.js'
+import { OutputManager } from './outputManager.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
@@ -258,6 +259,23 @@ export function FloatingOverlays({
             onNewPrompt={onNewPromptSession}
             onResume={onResumeSelect}
             onSelect={onActiveSessionSelect}
+            t={theme}
+          />
+        </FloatBox>
+      )
+    })
+  }
+
+  if (overlay.outputs && !overlay.approval && !overlay.billing && !overlay.clarify && !overlay.secret && !overlay.sudo) {
+    widgets.push({
+      id: 'outputs',
+      render: () => (
+        <FloatBox color={theme.color.border}>
+          <OutputManager
+            onActivate={onActiveSessionSelect}
+            onClose={() => patchOverlayState({ outputs: false })}
+            onExitSplit={exitOutputSplit}
+            onSetSecondary={setSecondaryOutput}
             t={theme}
           />
         </FloatBox>

@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
+import { SLASH_COMMANDS } from '../app/slash/registry.js'
+import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { inlineSlashTrigger, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
@@ -22,6 +24,25 @@ export function mergeWidgetAppItems(input: string, items: CompletionItem[]): Com
     .map(app => ({ display: `/${app.id}`, meta: app.help, text: `/${app.id}` }))
 
   return [...items, ...local]
+}
+
+export function mergeLocalTuiCommandItems(
+  input: string,
+  items: CompletionItem[],
+  dashboardMode = DASHBOARD_TUI_MODE
+): CompletionItem[] {
+  if (input.includes(' ')) {
+    return items
+  }
+
+  const combined = mergeWidgetAppItems(input, items)
+
+  const local = SLASH_COMMANDS.filter(command => !command.dashboardOnly || dashboardMode)
+    .filter(command => `/${command.name}`.startsWith(input.toLowerCase()))
+    .map(command => ({ display: `/${command.name}`, meta: command.help, text: `/${command.name}` }))
+    .filter(item => !combined.some(existing => existing.text === item.text))
+
+  return [...combined, ...local]
 }
 
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
@@ -122,7 +143,7 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
           const r = asRpcResult<CompletionResponse>(raw)
 
           const fetched =
-            request.method === 'complete.slash' ? mergeWidgetAppItems(input, r?.items ?? []) : (r?.items ?? [])
+            request.method === 'complete.slash' ? mergeLocalTuiCommandItems(input, r?.items ?? []) : (r?.items ?? [])
 
           // Mid-message offers SKILLS only. A built-in like `/model` or `/new`
           // acts on the app, so it's meaningless as a reference inside prose —
