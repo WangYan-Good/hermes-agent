@@ -4,7 +4,8 @@ import {
   completeControlPrompt,
   type ControlPrompt,
   enqueueControlPrompt,
-  expireControlPrompt
+  expireControlPrompt,
+  removeControlPromptsForSession
 } from '../app/controlPromptQueue.js'
 import { $isBlocked, getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 
@@ -93,6 +94,24 @@ describe('control prompt queue', () => {
 
     expect(getOverlayState().clarify?.sessionId).toBe('sid-b')
     expect(getOverlayState().controlQueue).toEqual([])
+  })
+
+  it('removes only prompts owned by the closed session and preserves global and sibling requests', () => {
+    enqueueControlPrompt(approvalPrompt('sid-a'))
+    enqueueControlPrompt(sudoPrompt('sid-b'))
+    enqueueControlPrompt(secretPrompt('default'))
+    enqueueControlPrompt(clarifyPrompt('sid-b'))
+
+    removeControlPromptsForSession('sid-b')
+
+    expect(getOverlayState().approval?.sessionId).toBe('sid-a')
+    expect(getOverlayState().controlQueue).toEqual([
+      expect.objectContaining({ kind: 'secret', request: expect.objectContaining({ sessionId: 'default' }) })
+    ])
+
+    removeControlPromptsForSession('sid-a')
+    expect(getOverlayState().approval).toBeNull()
+    expect(getOverlayState().secret?.sessionId).toBe('default')
   })
 
 })

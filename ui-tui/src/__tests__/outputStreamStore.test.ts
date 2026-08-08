@@ -5,7 +5,10 @@ import {
   commitOutputPrimaryTransition,
   exitOutputSplit,
   getOutputStreamsState,
+  markOutputTransportDisconnected,
+  markOutputTransportReady,
   observeOutputEvent,
+  removeOutputSession,
   resetOutputStreams,
   resolveOutputConflict,
   setSecondaryOutput,
@@ -219,4 +222,105 @@ describe('output stream state', () => {
       expect.objectContaining({ complete: false, kind: 'message', text: 'partial answer' })
     ])
   })
+  it('syncs active session model, preview, status, and title without changing the selected layout', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', model: 'model-a', preview: 'alpha preview', status: 'working', title: 'Alpha' },
+        { id: 'sid-b', model: 'model-b', preview: 'beta preview', status: 'waiting', title: 'Beta' }
+      ],
+      'sid-a'
+    )
+    setSecondaryOutput('sid-b')
+    syncOutputSessions(
+      [
+        { id: 'sid-a', model: 'model-a-next', preview: 'alpha next', status: 'idle', title: 'Alpha renamed' },
+        { id: 'sid-b', model: 'model-b-next', preview: 'beta next', status: 'idle', title: 'Beta renamed' }
+      ],
+      'sid-a'
+    )
+
+    const state = getOutputStreamsState()
+    expect(state.layout).toEqual({ mode: 'split', primarySessionId: 'sid-a', secondarySessionId: 'sid-b' })
+    expect(state.streams['sid-a']).toMatchObject({
+      model: 'model-a-next',
+      preview: 'alpha next',
+      status: 'idle',
+      title: 'Alpha renamed'
+    })
+    expect(state.streams['sid-b']).toMatchObject({
+      model: 'model-b-next',
+      preview: 'beta next',
+      status: 'idle',
+      title: 'Beta renamed'
+    })
+    expect(state.conflict).toBeNull()
+  })
+
+  it('restores titles and status after reconnect without choosing a new focus', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working', title: 'Alpha' },
+        { id: 'sid-b', status: 'working', title: 'Beta' }
+      ],
+      'sid-a'
+    )
+    observeOutputEvent({ payload: { text: 'stale' }, type: 'message.interim' }, 'sid-b', {
+      buffer: true,
+      now: 1
+    })
+    setSecondaryOutput('sid-b')
+
+    markOutputTransportDisconnected()
+    expect(getOutputStreamsState().streams['sid-b']).toMatchObject({ producing: false, status: 'disconnected' })
+
+    markOutputTransportReady()
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working', title: 'Alpha' },
+        { id: 'sid-b', status: 'idle', title: 'Beta' }
+      ],
+      'sid-a'
+    )
+
+    const state = getOutputStreamsState()
+    expect(state.layout.primarySessionId).toBe('sid-a')
+    expect(state.layout.secondarySessionId).toBe('sid-b')
+    expect(state.streams['sid-b']).toMatchObject({
+      entries: [],
+      hasDisplayOutput: false,
+      preview: '',
+      status: 'idle',
+      title: 'Beta',
+      unreadCount: 0
+    })
+  })
+
+  it('marks only a closed visible stream ended and preserves its final buffer', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working', title: 'Alpha' },
+        { id: 'sid-b', status: 'working', title: 'Beta' },
+        { id: 'sid-c', status: 'working', title: 'Gamma' }
+      ],
+      'sid-a'
+    )
+    observeOutputEvent({ payload: { text: 'final' }, type: 'message.interim' }, 'sid-b', {
+      buffer: true,
+      now: 2
+    })
+    observeOutputEvent({ payload: { text: 'still running' }, type: 'message.interim' }, 'sid-c', {
+      buffer: true,
+      now: 3
+    })
+    setSecondaryOutput('sid-b')
+    const before = getOutputStreamsState().streams['sid-b']?.entries
+
+    removeOutputSession('sid-b')
+
+    const state = getOutputStreamsState()
+    expect(state.layout.secondarySessionId).toBe('sid-b')
+    expect(state.streams['sid-b']).toMatchObject({ entries: before, producing: false, status: 'closed' })
+    expect(state.streams['sid-c']).toMatchObject({ producing: true, status: 'running' })
+  })
+
 })

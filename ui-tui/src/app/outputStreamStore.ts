@@ -24,6 +24,7 @@ export interface OutputStream {
   entries: OutputEntry[]
   hasDisplayOutput: boolean
   lastOutputAt: number
+  model: string
   omitted: boolean
   preview: string
   producing: boolean
@@ -176,6 +177,7 @@ export const $outputLayout = atom<OutputLayout>(buildState().layout)
 let state = buildState()
 let entrySequence = 0
 let hadMultipleProducers = false
+let transportDisconnected = false
 
 export const getOutputStreamsState = (): OutputStreamsState => state
 
@@ -190,6 +192,80 @@ export const resetOutputStreams = () => {
   state = buildState()
   entrySequence = 0
   hadMultipleProducers = false
+  transportDisconnected = false
+  publish()
+}
+
+export const markOutputTransportDisconnected = () => {
+  transportDisconnected = true
+
+  const streams = Object.fromEntries(
+    Object.entries(state.streams).map(([sessionId, stream]) => [
+      sessionId,
+      {
+        ...stream,
+        producing: false,
+        status: isTerminal(stream.status) ? stream.status : 'disconnected'
+      }
+    ])
+  )
+
+  state = { ...state, conflict: null, conflictHandled: false, streams }
+  hadMultipleProducers = false
+  publish()
+}
+
+export const markOutputTransportReady = () => {
+  if (!transportDisconnected) {
+    return false
+  }
+
+  transportDisconnected = false
+  const primarySessionId = state.layout.primarySessionId
+
+  const streams = Object.fromEntries(
+    Object.entries(state.streams).map(([sessionId, stream]) => [
+      sessionId,
+      sessionId === primarySessionId
+        ? stream
+        : {
+            ...stream,
+            bytes: 0,
+            entries: [],
+            hasDisplayOutput: false,
+            lastOutputAt: 0,
+            omitted: false,
+            preview: '',
+            producing: false,
+            unreadCount: 0
+          }
+    ])
+  )
+
+  state = { ...state, conflict: null, conflictHandled: false, streams }
+  hadMultipleProducers = false
+  publish()
+
+  return true
+}
+
+export const removeOutputSession = (sessionId: string) => {
+  const stream = state.streams[sessionId]
+
+  if (!stream) {return}
+
+  updateStream({ ...stream, producing: false, status: 'closed', unreadCount: 0 })
+
+  if (state.conflict?.candidateSessionId === sessionId || state.conflict?.primarySessionId === sessionId) {
+    state = { ...state, conflict: null }
+  }
+
+  hadMultipleProducers = Object.values(state.streams).filter(item => item.producing).length >= 2
+
+  if (!hadMultipleProducers) {
+    state = { ...state, conflictHandled: false }
+  }
+
   publish()
 }
 
@@ -243,7 +319,10 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
     const status = details.status ?? stream.status
     updateStream({
       ...stream,
-      status: isTerminal(stream.status) && !isTerminal(status) ? stream.status : status,
+      model: details.model ?? stream.model,
+      preview: details.preview ?? stream.preview,
+      status:
+        stream.status !== 'disconnected' && isTerminal(stream.status) && !isTerminal(status) ? stream.status : status,
       title: details.title ?? stream.title
     })
   }
@@ -358,6 +437,7 @@ function getOrCreateStream(sessionId: string): OutputStream {
     entries: [],
     hasDisplayOutput: false,
     lastOutputAt: 0,
+    model: '',
     omitted: false,
     preview: '',
     producing: false,
@@ -551,11 +631,19 @@ function isTerminal(status: string): status is OutputTerminalStatus {
   return TERMINAL_STATUSES.has(status as OutputTerminalStatus)
 }
 
-function readSession(item: unknown): { sessionId?: string; status?: string; title?: string } {
+function readSession(item: unknown): {
+  model?: string
+  preview?: string
+  sessionId?: string
+  status?: string
+  title?: string
+} {
   if (!item || typeof item !== 'object') {return {}}
   const record = item as Record<string, unknown>
 
   return {
+    model: getString(record, ['model']),
+    preview: getString(record, ['preview']),
     sessionId: getString(record, ['sessionId', 'session_id', 'id']),
     status: getString(record, ['status']),
     title: getString(record, ['title', 'name', 'label'])

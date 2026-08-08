@@ -25,9 +25,10 @@ import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { ClarifyReq, Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
 
-import { completeControlPrompt, controlPromptFromEvent, enqueueControlPrompt, expireControlPrompt } from './controlPromptQueue.js'
+import { clearControlPrompts, completeControlPrompt, controlPromptFromEvent, enqueueControlPrompt, expireControlPrompt } from './controlPromptQueue.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
+import { markOutputTransportReady } from './outputStreamStore.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
 import { turnController } from './turnController.js'
@@ -687,6 +688,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
   const handleReady = (skin?: GatewaySkin) => {
+    if (markOutputTransportReady()) {
+      clearControlPrompts()
+    }
+
     if (skin) {
       applySkin(skin)
     }

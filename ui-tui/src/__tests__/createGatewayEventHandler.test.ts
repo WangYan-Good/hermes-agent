@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { completeControlPrompt } from '../app/controlPromptQueue.js'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { createOutputStreamRouter } from '../app/outputStreamRouter.js'
-import { getOutputStreamsState, resetOutputStreams } from '../app/outputStreamStore.js'
+import { getOutputStreamsState, markOutputTransportDisconnected, resetOutputStreams } from '../app/outputStreamStore.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
@@ -1061,6 +1061,27 @@ describe('createGatewayEventHandler', () => {
     // per config instead of re-resuming the recovered session.
     expect(ctx.session.recoverSidRef.current).toBeNull()
     expect(getUiState().status).toBe('recovering session…')
+  })
+
+  it('clears stale output buffers and control prompts when the gateway becomes ready again', () => {
+    const ctx = buildCtx([])
+    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    patchUiState({ sid: 'sid-a' })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: {}, session_id: 'sid-a', type: 'message.start' })
+    onEvent({ payload: { text: 'stale' }, session_id: 'sid-b', type: 'message.interim' })
+    onEvent({ payload: { request_id: 'sudo-b' }, session_id: 'sid-b', type: 'sudo.request' })
+    ctx.outputRouter.flush()
+    expect(getOutputStreamsState().streams['sid-b']?.entries).not.toEqual([])
+    expect(getOverlayState().sudo?.requestId).toBe('sudo-b')
+    markOutputTransportDisconnected()
+
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
+
+    expect(getOutputStreamsState().streams['sid-b']?.entries).toEqual([])
+    expect(getOverlayState().sudo).toBeNull()
+    expect(getOverlayState().controlQueue).toEqual([])
   })
 
   it('on gateway.ready with auto_resume on and a recent session, resumes it', async () => {
