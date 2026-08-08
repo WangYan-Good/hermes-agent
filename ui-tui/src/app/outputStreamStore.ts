@@ -29,6 +29,7 @@ export interface OutputStream {
   preview: string
   producing: boolean
   sessionId: string
+  sessionKey: string
   status: string
   title: string
   unreadCount: number
@@ -55,6 +56,7 @@ export interface SessionTransition {
   kind: SessionTransitionKind
   nextSessionId: string
   previousSessionId: null | string
+  sessionKey?: string
 }
 export interface SessionTransitionHooks {
   afterCommit: (transition: SessionTransition) => void
@@ -180,6 +182,9 @@ let hadMultipleProducers = false
 let transportDisconnected = false
 
 export const getOutputStreamsState = (): OutputStreamsState => state
+
+export const getOutputSessionKey = (sessionId: null | string): null | string =>
+  sessionId ? state.streams[sessionId]?.sessionKey || null : null
 
 export const captureOutputStreamsState = (): OutputStreamsState => structuredClone(state)
 
@@ -315,12 +320,28 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
     const details = readSession(item)
 
     if (!details.sessionId) {continue}
-    const stream = getOrCreateStream(details.sessionId)
+
+    let sessionId = details.sessionId
+
+    if (details.sessionKey) {
+      const previousRuntimeId = Object.values(state.streams).find(
+        stream => stream.sessionKey === details.sessionKey && stream.sessionId !== details.sessionId
+      )?.sessionId
+
+      if (previousRuntimeId === currentSessionId) {
+        sessionId = previousRuntimeId
+      } else if (previousRuntimeId) {
+        remapOutputSession(previousRuntimeId, details.sessionId, details.sessionKey)
+      }
+    }
+
+    const stream = getOrCreateStream(sessionId)
     const status = stream.producing ? stream.status : (details.status ?? stream.status)
     updateStream({
       ...stream,
       model: details.model ?? stream.model,
       preview: stream.producing ? stream.preview : (details.preview ?? stream.preview),
+      sessionKey: details.sessionKey ?? stream.sessionKey,
       status:
         !stream.producing && stream.status !== 'disconnected' && isTerminal(stream.status) && !isTerminal(status)
           ? stream.status
@@ -409,11 +430,27 @@ export const capturePrimaryOutputSnapshot = (
 }
 
 export const commitOutputPrimaryTransition = (transition: SessionTransition) => {
+  if (transition.kind === 'recover' && transition.sessionKey) {
+    const previousRuntimeId = Object.values(state.streams).find(
+      stream => stream.sessionKey === transition.sessionKey && stream.sessionId !== transition.nextSessionId
+    )?.sessionId
+
+    if (previousRuntimeId) {
+      remapOutputSession(previousRuntimeId, transition.nextSessionId, transition.sessionKey)
+    }
+  }
+
   const next = getOrCreateStream(transition.nextSessionId)
   const previousSessionId = transition.previousSessionId
 
+  const nextWithIdentity = {
+    ...next,
+    sessionKey: transition.sessionKey ?? next.sessionKey,
+    unreadCount: 0
+  }
+
   if (transition.kind === 'recover') {
-    updateStream({ ...next, unreadCount: 0 })
+    updateStream(nextWithIdentity)
     state = {
       ...state,
       conflict: null,
@@ -429,7 +466,7 @@ export const commitOutputPrimaryTransition = (transition: SessionTransition) => 
   const preservesLivePair = (transition.kind === 'activate-live' || transition.kind === 'new-live') &&
     Boolean(previousSessionId && previousSessionId !== transition.nextSessionId)
 
-  updateStream({ ...next, unreadCount: 0 })
+  updateStream(nextWithIdentity)
   state = {
     ...state,
     conflict: null,
@@ -440,6 +477,59 @@ export const commitOutputPrimaryTransition = (transition: SessionTransition) => 
     }
   }
   publish()
+}
+
+function remapOutputSession(previousSessionId: string, nextSessionId: string, sessionKey: string) {
+  const previous = state.streams[previousSessionId]
+
+  if (!previous || previousSessionId === nextSessionId) {return}
+  const destination = state.streams[nextSessionId]
+  const destinationEntryIds = new Set(previous.entries.map(entry => entry.id))
+
+  const entries = [
+    ...previous.entries,
+    ...(destination?.entries.filter(entry => !destinationEntryIds.has(entry.id)) ?? [])
+  ]
+
+  const stream = limitEntries({
+    ...previous,
+    entries,
+    hasDisplayOutput: previous.hasDisplayOutput || Boolean(destination?.hasDisplayOutput),
+    lastOutputAt: Math.max(previous.lastOutputAt, destination?.lastOutputAt ?? 0),
+    model: destination?.model || previous.model,
+    omitted: previous.omitted || Boolean(destination?.omitted),
+    preview: destination?.preview || previous.preview,
+    producing: previous.producing || Boolean(destination?.producing),
+    sessionId: nextSessionId,
+    sessionKey,
+    status: destination?.producing ? destination.status : previous.status,
+    title: destination && destination.title !== nextSessionId ? destination.title : previous.title,
+    unreadCount: Math.max(previous.unreadCount, destination?.unreadCount ?? 0)
+  })
+
+  const streams = { ...state.streams }
+  delete streams[previousSessionId]
+  streams[nextSessionId] = stream
+  const remap = (sessionId: null | string) => sessionId === previousSessionId ? nextSessionId : sessionId
+
+  const conflict = state.conflict
+    ? {
+        ...state.conflict,
+        candidateSessionId: remap(state.conflict.candidateSessionId)!,
+        primarySessionId: remap(state.conflict.primarySessionId)!
+      }
+    : null
+
+  state = {
+    ...state,
+    conflict: conflict?.candidateSessionId === conflict?.primarySessionId ? null : conflict,
+    layout: {
+      ...state.layout,
+      primarySessionId: remap(state.layout.primarySessionId),
+      secondarySessionId: remap(state.layout.secondarySessionId)
+    },
+    streams
+  }
 }
 
 function getOrCreateStream(sessionId: string): OutputStream {
@@ -457,6 +547,7 @@ function getOrCreateStream(sessionId: string): OutputStream {
     preview: '',
     producing: false,
     sessionId,
+    sessionKey: '',
     status: 'idle',
     title: sessionId,
     unreadCount: 0
@@ -650,6 +741,7 @@ function readSession(item: unknown): {
   model?: string
   preview?: string
   sessionId?: string
+  sessionKey?: string
   status?: string
   title?: string
 } {
@@ -660,6 +752,7 @@ function readSession(item: unknown): {
     model: getString(record, ['model']),
     preview: getString(record, ['preview']),
     sessionId: getString(record, ['sessionId', 'session_id', 'id']),
+    sessionKey: getString(record, ['sessionKey', 'session_key', 'stored_session_id']),
     status: getString(record, ['status']),
     title: getString(record, ['title', 'name', 'label'])
   }
