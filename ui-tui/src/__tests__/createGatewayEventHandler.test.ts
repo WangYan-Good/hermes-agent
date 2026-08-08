@@ -1648,6 +1648,32 @@ describe('createGatewayEventHandler', () => {
     expect(records).toHaveLength(1)
   })
 
+  it('isolates identical clarify tool IDs by source session through expiration and completion', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    patchUiState({ sid: 'sid-a' })
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { name: 'clarify', tool_id: 'shared-tool' }, session_id: 'sid-a', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: ['A1'], question: 'Question A?', request_id: 'request-a' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'shared-tool' }, session_id: 'sid-b', type: 'tool.start' } as any)
+    onEvent({ payload: { choices: ['B1'], question: 'Question B?', request_id: 'request-b' }, session_id: 'sid-b', type: 'clarify.request' } as any)
+
+    onEvent({ payload: { request_id: 'request-a' }, session_id: 'sid-a', type: 'clarify.expire' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'shared-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+
+    expect(getOverlayState().clarify?.requestId).toBe('request-b')
+    expect(appended.filter(msg => msg.role === 'system' && msg.text.startsWith('ask Question A?'))).toHaveLength(1)
+    expect(appended.some(msg => msg.role === 'system' && msg.text.startsWith('ask Question B?'))).toBe(false)
+
+    patchUiState({ sid: 'sid-b' })
+    onEvent({ payload: { request_id: 'request-b' }, session_id: 'sid-b', type: 'clarify.expire' } as any)
+    onEvent({ payload: { name: 'clarify', tool_id: 'shared-tool' }, session_id: 'sid-b', type: 'tool.complete' } as any)
+
+    expect(appended.filter(msg => msg.role === 'system' && msg.text.startsWith('ask Question B?'))).toHaveLength(1)
+  })
+
   it('globally evicts the oldest clarify lifecycle across sessions without touching the promoted prompt', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
