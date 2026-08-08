@@ -471,7 +471,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
           overlay.sudo
       )
 
-      if (overlay.outputs && !hasGlobalControl) {
+      if (DASHBOARD_TUI_MODE && overlay.outputs && !hasGlobalControl && !cState.input && !cState.inputBuf.length) {
         const direction = outputFocusDirection(key)
 
         if (direction) {
@@ -500,7 +500,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
 
-    const outputDirection = outputFocusDirection(key)
+    const outputDirection = DASHBOARD_TUI_MODE && !cState.input && !cState.inputBuf.length ? outputFocusDirection(key) : 0
 
     if (outputDirection) {
       return actions.cycleOutputFocus(outputDirection)

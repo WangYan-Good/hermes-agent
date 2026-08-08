@@ -376,6 +376,7 @@ const ComposerPane = memo(function ComposerPane({
           onModelSelect={actions.onModelSelect}
           onNewLiveSession={actions.newLiveSession}
           onNewPromptSession={actions.newPromptSession}
+          onOutputFocus={actions.focusOutputSession}
           onResumeSelect={actions.resumeById}
           pagerPageSize={composer.pagerPageSize}
         />
