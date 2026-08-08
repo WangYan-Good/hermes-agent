@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import type { Msg } from '../types.js'
+
 export const OUTPUT_ENTRY_LIMIT = 200
 export const OUTPUT_BYTE_LIMIT = 64 * 1024
 export const OUTPUT_SPLIT_MIN_COLS = 110
@@ -47,6 +49,16 @@ export interface OutputStreamsState {
   layout: OutputLayout
   streams: Record<string, OutputStream>
 }
+export type SessionTransitionKind = 'activate-live' | 'new-live' | 'replace' | 'resume'
+export interface SessionTransition {
+  kind: SessionTransitionKind
+  nextSessionId: string
+  previousSessionId: null | string
+}
+export interface SessionTransitionHooks {
+  afterCommit: (transition: SessionTransition) => void
+  beforeCommit: (transition: SessionTransition) => void
+}
 export interface OutputEvent {
   payload?: Record<string, unknown>
   type: string
@@ -68,6 +80,7 @@ interface EventRule {
 const TERMINAL_STATUSES = new Set<OutputTerminalStatus>(['closed', 'completed', 'disconnected', 'error'])
 const OMITTED_ENTRY_ID = 'omitted'
 const OMITTED_TEXT = '[Earlier output omitted]'
+
 const EVENT_RULES: Record<string, EventRule> = {
   'background.complete': {
     complete: true,
@@ -155,6 +168,7 @@ const buildState = (): OutputStreamsState => ({
   layout: { mode: 'single', primarySessionId: null, secondarySessionId: null },
   streams: {}
 })
+
 export const $outputStreams = atom<Record<string, OutputStream>>({})
 export const $outputConflict = atom<null | OutputConflict>(null)
 export const $outputLayout = atom<OutputLayout>(buildState().layout)
@@ -164,6 +178,7 @@ let entrySequence = 0
 let hadMultipleProducers = false
 
 export const getOutputStreamsState = (): OutputStreamsState => state
+
 export const resetOutputStreams = () => {
   state = buildState()
   entrySequence = 0
@@ -173,17 +188,20 @@ export const resetOutputStreams = () => {
 
 export const observeOutputEvent = (event: OutputEvent, sessionId: string, options: ObserveOutputOptions) => {
   const rule = EVENT_RULES[event.type]
-  if (!rule || !sessionId) return
+
+  if (!rule || !sessionId) {return}
 
   const now = options.now ?? Date.now()
   const paints = rule.paints && (event.type !== 'message.delta' || Boolean(getString(event.payload, ['text'])))
   const stream = getOrCreateStream(sessionId)
+
   if (state.layout.primarySessionId == null)
-    state = { ...state, layout: { ...state.layout, primarySessionId: sessionId } }
+    {state = { ...state, layout: { ...state.layout, primarySessionId: sessionId } }}
 
   const terminal = isTerminal(stream.status)
   const startsNewRound = event.type === 'message.start'
   const nextStatus = getStatus(event.payload, rule.status)
+
   let nextStream: OutputStream = {
     ...stream,
     hasDisplayOutput: stream.hasDisplayOutput || paints,
@@ -200,8 +218,9 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
   if (paints && options.buffer) {
     nextStream = appendEntry(nextStream, makeEntry(event, rule, now), event.type, hasCompletionText(event.payload))
   }
+
   if (paints && sessionId !== state.layout.primarySessionId)
-    nextStream = { ...nextStream, unreadCount: nextStream.unreadCount + 1 }
+    {nextStream = { ...nextStream, unreadCount: nextStream.unreadCount + 1 }}
 
   updateStream(nextStream)
   updateConflict(sessionId, paints)
@@ -211,7 +230,8 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
 export const syncOutputSessions = (items: readonly unknown[], currentSessionId: null | string) => {
   for (const item of items) {
     const details = readSession(item)
-    if (!details.sessionId) continue
+
+    if (!details.sessionId) {continue}
     const stream = getOrCreateStream(details.sessionId)
     const status = details.status ?? stream.status
     updateStream({
@@ -220,31 +240,36 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
       title: details.title ?? stream.title
     })
   }
+
   if (state.layout.primarySessionId == null && currentSessionId) {
     getOrCreateStream(currentSessionId)
     state = { ...state, layout: { ...state.layout, primarySessionId: currentSessionId } }
   }
+
   publish()
 }
 
 export const resolveOutputConflict = (decision: OutputConflictDecision) => {
   const conflict = state.conflict
-  if (!conflict) return
+
+  if (!conflict) {return}
   let layout = state.layout
+
   if (decision === 'prioritize-candidate')
-    layout = { mode: 'single', primarySessionId: conflict.candidateSessionId, secondarySessionId: null }
+    {layout = { mode: 'single', primarySessionId: conflict.candidateSessionId, secondarySessionId: null }}
   else if (decision === 'split')
-    layout = {
+    {layout = {
       mode: 'split',
       primarySessionId: conflict.primarySessionId,
       secondarySessionId: conflict.candidateSessionId
-    }
+    }}
+
   state = { ...state, conflict: null, conflictHandled: hadMultipleProducers, layout }
   publish()
 }
 
 export const setSecondaryOutput = (sessionId: string) => {
-  if (!sessionId) return
+  if (!sessionId) {return}
   getOrCreateStream(sessionId)
   const primarySessionId = state.layout.primarySessionId ?? sessionId
   state =
@@ -262,9 +287,64 @@ export const exitOutputSplit = () => {
   publish()
 }
 
+export const capturePrimaryOutputSnapshot = (
+  sessionId: string,
+  title: string,
+  status: string,
+  history: readonly Msg[],
+  streamingText: string
+) => {
+  if (!sessionId) {
+    return
+  }
+
+  const now = Date.now()
+  const entries = snapshotEntries(history, streamingText, now)
+  const stream = getOrCreateStream(sessionId)
+
+  const snapshot = limitEntries({
+    ...stream,
+    bytes: 0,
+    entries,
+    hasDisplayOutput: stream.hasDisplayOutput || entries.length > 0,
+    lastOutputAt: entries.length ? now : stream.lastOutputAt,
+    omitted: false,
+    preview: entries.at(-1)?.text ?? stream.preview,
+    status: status || stream.status,
+    title: title || stream.title,
+    unreadCount: 0
+  })
+
+  updateStream(snapshot)
+  publish()
+}
+
+export const commitOutputPrimaryTransition = (transition: SessionTransition) => {
+  const next = getOrCreateStream(transition.nextSessionId)
+  const previousSessionId = transition.previousSessionId
+
+  const preservesLivePair =
+    (transition.kind === 'activate-live' || transition.kind === 'new-live') &&
+    Boolean(previousSessionId && previousSessionId !== transition.nextSessionId)
+
+  updateStream({ ...next, unreadCount: 0 })
+  state = {
+    ...state,
+    conflict: null,
+    layout: {
+      mode: preservesLivePair ? 'split' : 'single',
+      primarySessionId: transition.nextSessionId,
+      secondarySessionId: preservesLivePair ? previousSessionId : null
+    }
+  }
+  publish()
+}
+
 function getOrCreateStream(sessionId: string): OutputStream {
   const existing = state.streams[sessionId]
-  if (existing) return existing
+
+  if (existing) {return existing}
+
   const stream: OutputStream = {
     bytes: 0,
     entries: [],
@@ -278,7 +358,9 @@ function getOrCreateStream(sessionId: string): OutputStream {
     title: sessionId,
     unreadCount: 0
   }
+
   updateStream(stream)
+
   return stream
 }
 
@@ -288,17 +370,22 @@ function updateStream(stream: OutputStream) {
 
 function updateConflict(sessionId: string, paints: boolean) {
   const producing = Object.values(state.streams).filter(stream => stream.producing)
+
   if (producing.length < 2) {
     if (hadMultipleProducers) {
       state = { ...state, conflict: null, conflictHandled: false }
       hadMultipleProducers = false
     }
+
     return
   }
+
   hadMultipleProducers = true
-  if (!paints || state.conflict || state.conflictHandled) return
+
+  if (!paints || state.conflict || state.conflictHandled) {return}
   const primarySessionId = state.layout.primarySessionId
-  if (!primarySessionId || primarySessionId === sessionId) return
+
+  if (!primarySessionId || primarySessionId === sessionId) {return}
   const episode = state.episode + 1
   state = { ...state, conflict: { candidateSessionId: sessionId, episode, primarySessionId }, episode }
 }
@@ -311,6 +398,7 @@ function appendEntry(
 ): OutputStream {
   const entries = [...stream.entries]
   const last = entries.at(-1)
+
   if (eventType === 'message.delta' && last?.kind === 'message' && !last.complete) {
     entries[entries.length - 1] = { ...last, text: `${last.text}${entry.text}`, timestamp: entry.timestamp }
   } else if (
@@ -327,6 +415,7 @@ function appendEntry(
   } else if (eventType !== 'message.complete' || completionHasText) {
     entries.push(entry)
   }
+
   return limitEntries({
     ...stream,
     entries,
@@ -334,16 +423,58 @@ function appendEntry(
   })
 }
 
+function snapshotEntries(history: readonly Msg[], streamingText: string, timestamp: number): OutputEntry[] {
+  const entries: OutputEntry[] = []
+  let sequence = 0
+
+  for (const item of history) {
+    const text = item.text.trim()
+
+    if (!text) {
+      continue
+    }
+
+    sequence += 1
+    entries.push({
+      complete: true,
+      id: `snapshot-${timestamp}-${sequence}`,
+      kind: item.role === 'assistant' || item.role === 'user' ? 'message' : 'system',
+      text,
+      timestamp
+    })
+  }
+
+  const tail = streamingText.trim()
+
+  if (!tail) {
+    return entries
+  }
+
+  const last = entries.at(-1)
+
+  if (last?.kind === 'message') {
+    entries[entries.length - 1] = { ...last, complete: false, text: `${last.text} ${tail}`.trim() }
+  } else {
+    sequence += 1
+    entries.push({ complete: false, id: `snapshot-${timestamp}-${sequence}`, kind: 'message', text: tail, timestamp })
+  }
+
+  return entries
+}
+
 function limitEntries(stream: OutputStream): OutputStream {
   let entries = stream.entries.filter(entry => entry.id !== OMITTED_ENTRY_ID)
   let omitted = stream.omitted
   let bytes = entries.reduce((total, entry) => total + entryBytes(entry), 0)
+
   while (entries.length > OUTPUT_ENTRY_LIMIT || bytes > OUTPUT_BYTE_LIMIT) {
     const removed = entries.shift()
-    if (!removed) break
+
+    if (!removed) {break}
     bytes -= entryBytes(removed)
     omitted = true
   }
+
   if (omitted) {
     const marker: OutputEntry = {
       complete: true,
@@ -353,14 +484,18 @@ function limitEntries(stream: OutputStream): OutputStream {
       timestamp: entries[0]?.timestamp ?? 0,
       tone: 'warn'
     }
+
     entries.unshift(marker)
     bytes += entryBytes(marker)
+
     while (entries.length > OUTPUT_ENTRY_LIMIT || bytes > OUTPUT_BYTE_LIMIT) {
       const removed = entries.splice(1, 1)[0]
-      if (!removed) break
+
+      if (!removed) {break}
       bytes -= entryBytes(removed)
     }
   }
+
   return { ...stream, bytes: Math.max(0, bytes), entries, omitted }
 }
 
@@ -368,6 +503,7 @@ function makeEntry(event: OutputEvent, rule: EventRule, timestamp: number): Outp
   const payload = event.payload ?? {}
   const label = getString(payload, ['name', 'label', 'goal', 'title'])
   entrySequence += 1
+
   return {
     complete: rule.complete,
     id: `${event.type}-${timestamp}-${entrySequence}`,
@@ -382,37 +518,48 @@ function makeEntry(event: OutputEvent, rule: EventRule, timestamp: number): Outp
 function getStatus(payload: Record<string, unknown> | undefined, fallback: null | string): null | string {
   return getString(payload, ['status']) ?? fallback
 }
+
 function getText(payload: Record<string, unknown>, fallback: string): string {
   return (
     getString(payload, ['text', 'rendered', 'message', 'preview', 'summary', 'status', 'name', 'title']) ?? fallback
   )
 }
+
 function hasCompletionText(payload: Record<string, unknown> | undefined): boolean {
   return Boolean(getString(payload, ['text', 'rendered']))
 }
+
 function getString(payload: Record<string, unknown> | undefined, keys: readonly string[]): string | undefined {
-  if (!payload) return undefined
+  if (!payload) {return undefined}
+
   for (const key of keys) {
     const value = payload[key]
-    if (typeof value === 'string' && value) return value
+
+    if (typeof value === 'string' && value) {return value}
   }
+
   return undefined
 }
+
 function entryBytes(entry: OutputEntry): number {
   return new TextEncoder().encode(`${entry.label ?? ''}${entry.text}`).byteLength
 }
+
 function isTerminal(status: string): status is OutputTerminalStatus {
   return TERMINAL_STATUSES.has(status as OutputTerminalStatus)
 }
+
 function readSession(item: unknown): { sessionId?: string; status?: string; title?: string } {
-  if (!item || typeof item !== 'object') return {}
+  if (!item || typeof item !== 'object') {return {}}
   const record = item as Record<string, unknown>
+
   return {
     sessionId: getString(record, ['sessionId', 'session_id', 'id']),
     status: getString(record, ['status']),
     title: getString(record, ['title', 'name', 'label'])
   }
 }
+
 function publish() {
   $outputStreams.set(state.streams)
   $outputConflict.set(state.conflict)

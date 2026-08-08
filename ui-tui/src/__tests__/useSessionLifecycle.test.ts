@@ -8,12 +8,20 @@ import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 import {
+  activateLiveSessionAtomic,
   hydrateLiveSessionInflight,
   liveSessionInflightMessages,
   scheduleResumeScrollToBottom,
   signalFreshSessionBoundary,
   writeActiveSessionFile
 } from '../app/useSessionLifecycle.js'
+
+const activation = (sessionId = 'sid-b') => ({
+  inflight: null,
+  messages: [],
+  session_id: sessionId,
+  status: 'idle' as const
+})
 
 describe('fresh session boundary', () => {
   it('signals only when a live session is replaced by a different session', () => {
@@ -75,6 +83,72 @@ describe('live session activation in-flight state', () => {
 
     expect(turnController.bufRef).toBe('')
     expect(getTurnState().streaming).toBe('')
+  })
+})
+
+
+describe('atomic live session activation', () => {
+  it('does not run transition hooks for an invalid activation response', async () => {
+    const beforeCommit = vi.fn()
+    const afterCommit = vi.fn()
+    const commit = vi.fn()
+
+    const ok = await activateLiveSessionAtomic({
+      afterCommit,
+      beforeCommit,
+      commit,
+      fail: vi.fn(),
+      id: 'sid-b',
+      previousSessionId: 'sid-a',
+      request: vi.fn().mockResolvedValue({})
+    })
+
+    expect(ok).toBe(false)
+    expect(beforeCommit).not.toHaveBeenCalled()
+    expect(commit).not.toHaveBeenCalled()
+    expect(afterCommit).not.toHaveBeenCalled()
+  })
+
+  it('does not commit a stale activation after a newer switch intent', async () => {
+    const beforeCommit = vi.fn()
+    const afterCommit = vi.fn()
+    const commit = vi.fn()
+
+    const ok = await activateLiveSessionAtomic({
+      afterCommit,
+      beforeCommit,
+      commit,
+      fail: vi.fn(),
+      id: 'sid-a',
+      isCurrent: () => false,
+      previousSessionId: 'sid-b',
+      request: vi.fn().mockResolvedValue(activation('sid-a'))
+    })
+
+    expect(ok).toBe(false)
+    expect(beforeCommit).not.toHaveBeenCalled()
+    expect(commit).not.toHaveBeenCalled()
+    expect(afterCommit).not.toHaveBeenCalled()
+  })
+
+  it('commits a validated activation between its transition hooks', async () => {
+    const events: string[] = []
+
+    const ok = await activateLiveSessionAtomic({
+      afterCommit: () => events.push('after'),
+      beforeCommit: () => events.push('before'),
+      commit: response => {
+        expect(response.session_id).toBe('sid-b')
+        events.push('commit')
+      },
+      fail: message => events.push(`fail:${message}`),
+      id: 'sid-b',
+      previousSessionId: 'sid-a',
+      request: vi.fn().mockResolvedValue(activation())
+    })
+
+    expect(ok).toBe(true)
+    expect(events).toEqual(['before', 'commit', 'after'])
   })
 })
 
