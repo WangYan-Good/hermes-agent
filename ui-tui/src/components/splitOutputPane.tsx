@@ -1,6 +1,6 @@
 import { Box, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useMemo } from 'react'
 
 import {
   $outputLayout,
@@ -14,6 +14,7 @@ import { $uiTheme } from '../app/uiStore.js'
 import type { Theme } from '../theme.js'
 
 export type OutputPaneMode = 'split' | 'tabs'
+export const READONLY_OUTPUT_RENDER_LIMIT = 40
 
 export const outputPaneMode = (cols: number): OutputPaneMode => (cols >= OUTPUT_SPLIT_MIN_COLS ? 'split' : 'tabs')
 
@@ -33,8 +34,27 @@ export interface ReadonlyOutputPaneProps {
 
 const entryText = (entry: OutputEntry) => (entry.label ? entry.label + ': ' + entry.text : entry.text)
 
+export function readonlyOutputTail(
+  entries: readonly OutputEntry[],
+  omitted: boolean,
+  limit = READONLY_OUTPUT_RENDER_LIMIT
+): OutputEntry[] {
+  const safeLimit = Math.max(1, limit)
+  const marker = entries.find(entry => entry.id === 'omitted')
+  const content = entries.filter(entry => entry.id !== 'omitted')
+  const contentLimit = omitted ? Math.max(0, safeLimit - 1) : safeLimit
+  const tail = contentLimit > 0 ? content.slice(-contentLimit) : []
+
+  return marker ? [marker, ...tail] : tail
+}
+
 export function ReadonlyOutputPane({ onFocus, stream, t, width }: ReadonlyOutputPaneProps) {
-  const hasOmissionEntry = stream.entries.some(entry => entry.id === 'omitted')
+  const entries = useMemo(
+    () => readonlyOutputTail(stream.entries, stream.omitted),
+    [stream.entries, stream.omitted]
+  )
+
+  const hasOmissionEntry = entries.some(entry => entry.id === 'omitted')
 
   return (
     <Box flexDirection="column" flexGrow={1} onClick={onFocus} width={width}>
@@ -45,7 +65,7 @@ export function ReadonlyOutputPane({ onFocus, stream, t, width }: ReadonlyOutput
         {stream.status}
       </Text>
       {stream.omitted && !hasOmissionEntry ? <Text color={t.color.warn}>[Earlier output omitted]</Text> : null}
-      {stream.entries.map(entry => (
+      {entries.map(entry => (
         <Text
           color={entry.tone === 'error' ? t.color.error : entry.tone === 'warn' ? t.color.warn : t.color.text}
           key={entry.id}
@@ -105,13 +125,36 @@ export function SplitOutputPane({ cols, onFocusSession, renderPrimary }: SplitOu
   const primary = layout.primarySessionId ? streams[layout.primarySessionId] : undefined
   const secondary = layout.secondarySessionId ? streams[layout.secondarySessionId] : undefined
 
+  const runningOthers = Object.values(streams).filter(
+    stream => stream.sessionId !== layout.primarySessionId && stream.producing
+  )
+
+  const showStillRunning = Boolean(primary && terminalStatuses.has(primary.status) && runningOthers.length)
+
+  const notices = (
+    <>
+      {showStillRunning ? (
+        <Box flexShrink={0} paddingX={1}>
+          <Text color={t.color.warn}>still running: {runningOthers.map(stream => stream.title).join(' · ')}</Text>
+        </Box>
+      ) : null}
+      <OverflowBar layout={layout} streams={streams} t={t} />
+    </>
+  )
+
   if (layout.mode !== 'split' || !secondary) {
-    return <>{renderPrimary(cols)}</>
+    return (
+      <Box flexDirection="column" flexGrow={1}>
+        <Box flexDirection="column" flexGrow={1}>
+          {renderPrimary(cols)}
+        </Box>
+        {notices}
+      </Box>
+    )
   }
 
   const mode = outputPaneMode(cols)
   const primaryTitle = primary?.title || layout.primarySessionId || 'Current'
-  const showStillRunning = Boolean(primary && terminalStatuses.has(primary.status) && secondary.producing)
 
   return (
     <Box flexDirection="column" flexGrow={1}>
@@ -149,12 +192,7 @@ export function SplitOutputPane({ cols, onFocusSession, renderPrimary }: SplitOu
           />
         </Box>
       )}
-      {showStillRunning ? (
-        <Box flexShrink={0} paddingX={1}>
-          <Text color={t.color.warn}>still running: {secondary.title}</Text>
-        </Box>
-      ) : null}
-      <OverflowBar layout={layout} streams={streams} t={t} />
+      {notices}
     </Box>
   )
 }
