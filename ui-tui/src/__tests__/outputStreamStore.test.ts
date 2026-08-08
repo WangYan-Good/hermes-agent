@@ -174,6 +174,22 @@ describe('output stream state', () => {
     })
   })
 
+  it('keeps a pinned secondary when a third session outputs', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', title: 'Alpha' },
+        { id: 'sid-b', title: 'Beta' },
+        { id: 'sid-c', title: 'Gamma' }
+      ],
+      'sid-a'
+    )
+    setSecondaryOutput('sid-b')
+
+    observeOutputEvent({ payload: { text: 'C' }, type: 'message.delta' }, 'sid-c', { buffer: true, now: 3 })
+
+    expect(getOutputStreamsState().layout.secondarySessionId).toBe('sid-b')
+  })
+
   it('seeds the old primary transcript before promoting a live session', () => {
     capturePrimaryOutputSnapshot(
       'sid-a',

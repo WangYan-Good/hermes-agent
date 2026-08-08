@@ -1,7 +1,16 @@
 import { atom, computed } from 'nanostores'
 
+import { DASHBOARD_TUI_MODE } from '../config/env.js'
+
 import type { OverlayState } from './interfaces.js'
+import { $outputConflict, type OutputConflict } from './outputStreamStore.js'
 import { $uiState } from './uiStore.js'
+
+export const outputConflictBlocksComposer = (
+  conflict: null | OutputConflict,
+  dashboardMode = DASHBOARD_TUI_MODE
+) => Boolean(dashboardMode && conflict)
+
 
 const buildOverlayState = (): OverlayState => ({
   agents: false,
@@ -28,7 +37,7 @@ const buildOverlayState = (): OverlayState => ({
 export const $overlayState = atom<OverlayState>(buildOverlayState())
 
 export const $isBlocked = computed(
-  $overlayState,
+  [$overlayState, $outputConflict],
   ({
     agents,
     approval,
@@ -46,7 +55,7 @@ export const $isBlocked = computed(
     subscription,
     sudo,
     widget
-  }) =>
+  }, conflict) =>
     Boolean(
       agents ||
       approval ||
@@ -63,7 +72,7 @@ export const $isBlocked = computed(
       skillsHub ||
       subscription ||
       sudo ||
-      widget
+      widget || outputConflictBlocksComposer(conflict)
     )
 )
 

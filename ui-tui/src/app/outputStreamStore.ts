@@ -256,8 +256,9 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
   publish()
 }
 
-export const resolveOutputConflict = (decision: OutputConflictDecision) => {
-  const conflict = state.conflict
+export const resolveOutputConflict = (decision: OutputConflictDecision, resolvedConflict?: OutputConflict) => {
+  if (resolvedConflict && state.conflict && state.conflict.episode !== resolvedConflict.episode) {return}
+  const conflict = state.conflict ?? resolvedConflict
 
   if (!conflict) {return}
   let layout = state.layout

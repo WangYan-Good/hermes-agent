@@ -50,7 +50,15 @@ import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
 import { createOutputStreamRouter } from './outputStreamRouter.js'
-import { capturePrimaryOutputSnapshot, commitOutputPrimaryTransition, type SessionTransitionHooks } from './outputStreamStore.js'
+import {
+  capturePrimaryOutputSnapshot,
+  commitOutputPrimaryTransition,
+  getOutputStreamsState,
+  type OutputConflict,
+  type OutputConflictDecision,
+  resolveOutputConflict,
+  type SessionTransitionHooks
+} from './outputStreamStore.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -83,6 +91,34 @@ const statusColorOf = (status: string, t: { error: string; muted: string; ok: st
   }
 
   return t.muted
+}
+
+export interface DecideOutputConflictWithActivationOptions {
+  activate: (sessionId: string) => Promise<boolean>
+  conflict: OutputConflict
+  decision: OutputConflictDecision
+}
+
+export async function decideOutputConflictWithActivation({
+  activate,
+  conflict,
+  decision
+}: DecideOutputConflictWithActivationOptions): Promise<boolean> {
+  if (decision === 'prioritize-candidate') {
+    const activated = await activate(conflict.candidateSessionId)
+
+    if (!activated) {
+      return false
+    }
+
+    resolveOutputConflict(decision, conflict)
+
+    return true
+  }
+
+  resolveOutputConflict(decision)
+
+  return true
 }
 
 export interface PromptLiveSessionOptions {
@@ -1125,6 +1161,30 @@ export function useMainApp(gw: GatewayClient) {
       : state.activity.some(item => item.tone !== 'info')
   )
 
+  const focusOutputSession = useCallback(
+    async (sessionId: string) => {
+      if (getUiState().sid === sessionId) {
+        return true
+      }
+
+      return session.activateLiveSession(sessionId)
+    },
+    [session]
+  )
+
+  const decideOutputConflict = useCallback(
+    (decision: OutputConflictDecision) => {
+      const conflict = getOutputStreamsState().conflict
+
+      if (!conflict) {
+        return
+      }
+
+      return decideOutputConflictWithActivation({ activate: focusOutputSession, conflict, decision })
+    },
+    [focusOutputSession]
+  )
+
   const appActions = useMemo(
     () => ({
       activateLiveSession: session.activateLiveSession,
@@ -1134,6 +1194,8 @@ export function useMainApp(gw: GatewayClient) {
       answerSecret,
       answerSudo,
       clearSelection,
+      decideOutputConflict,
+      focusOutputSession,
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
       onModelSelect,
@@ -1157,6 +1219,8 @@ export function useMainApp(gw: GatewayClient) {
       answerSudo,
       clearSelection,
       closeLiveSession,
+      decideOutputConflict,
+      focusOutputSession,
       newPromptSession,
       onModelSelect,
       session
