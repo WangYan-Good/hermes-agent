@@ -119,10 +119,10 @@ export async function decideOutputConflictWithActivation({
     } catch {
       return false
     }
+  }
 
   if (decision === 'open-manager') {
     patchOverlayState({ outputs: true })
-  }
   }
 
   resolveOutputConflict(decision, conflict)

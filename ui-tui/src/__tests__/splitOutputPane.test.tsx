@@ -18,6 +18,7 @@ import {
 } from '../app/outputStreamStore.js'
 import {
   $isBlocked,
+  getOverlayState,
   outputConflictBlocksComposer,
   patchOverlayState,
   resetOverlayState
@@ -341,6 +342,27 @@ describe('output conflict prompt', () => {
     expect(output).toContain('Enter token')
     expect(output).toContain('from: Beta')
     expect(output).not.toContain('concurrent output')
+  })
+
+  it('opens the manager and resolves the conflict without activating or changing the layout', async () => {
+    observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: false, now: 1 })
+    observeOutputEvent({ payload: { text: 'B' }, type: 'message.delta' }, 'sid-b', { buffer: true, now: 2 })
+    const before = structuredClone(getOutputStreamsState())
+    const activate = vi.fn().mockResolvedValue(true)
+
+    const ok = await decideOutputConflictWithActivation({
+      activate,
+      conflict: before.conflict!,
+      decision: 'open-manager'
+    })
+
+    const after = getOutputStreamsState()
+
+    expect(ok).toBe(true)
+    expect(activate).not.toHaveBeenCalled()
+    expect(after.conflict).toBeNull()
+    expect(after.layout).toEqual(before.layout)
+    expect(getOverlayState().outputs).toBe(true)
   })
 
   it('does not change layout or dismiss the conflict when candidate activation fails', async () => {
