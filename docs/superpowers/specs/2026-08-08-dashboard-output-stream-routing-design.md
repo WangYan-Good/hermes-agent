@@ -70,7 +70,7 @@ OutputStreamRouter
 - `SplitOutputPane`：组合现有完整主 Transcript 与轻量只读副窗格。
 - `OverflowBar`：显示第三个及更多等待输出流及其未读状态。
 
-Dashboard 自动启用条件复用现有 `HERMES_TUI_SIDECAR_URL` 运行标识，不增加新的用户配置或环境变量。
+Dashboard 自动启用条件复用现有 `DASHBOARD_TUI_MODE` 常量；该常量由 PTY 启动器设置的 `HERMES_TUI_DASHBOARD` 解析得到，不增加新的用户配置或环境变量。
 
 ## 6. 状态模型
 
