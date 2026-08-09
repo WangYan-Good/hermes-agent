@@ -3,7 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { enqueueControlPrompt } from '../app/controlPromptQueue.js'
 import { createOutputLifecycleCoordinator } from '../app/outputLifecycleCoordinator.js'
 import { createOutputStreamRouter } from '../app/outputStreamRouter.js'
-import { getOutputStreamsState, observeOutputEvent, resetOutputStreams, setSecondaryOutput } from '../app/outputStreamStore.js'
+import {
+  getOutputStreamsState,
+  observeOutputEvent,
+  resetOutputStreams,
+  setSecondaryOutput
+} from '../app/outputStreamStore.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { resetTurnState } from '../app/turnStore.js'

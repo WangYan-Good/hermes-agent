@@ -21,7 +21,13 @@ import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
-import { captureOutputStreamsState, restoreOutputStreamsState, type SessionTransition, type SessionTransitionHooks, type SessionTransitionKind } from './outputStreamStore.js'
+import {
+  captureOutputStreamsState,
+  restoreOutputStreamsState,
+  type SessionTransition,
+  type SessionTransitionHooks,
+  type SessionTransitionKind
+} from './outputStreamStore.js'
 import { patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -531,7 +537,6 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const isCurrent = sessionIntentRef.current.begin('activate-live')
       const previousSessionId = getUiState().sid
       const stateAdapter = createLiveSessionTransitionStateAdapter({ getHistoryItems, setHistoryItems })
-
 
       return activateLiveSessionAtomic({
         afterCommit: transitionHooks.afterCommit,

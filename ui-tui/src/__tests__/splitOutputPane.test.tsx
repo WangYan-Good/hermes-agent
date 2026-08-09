@@ -28,12 +28,7 @@ import { decideOutputConflictWithActivation } from '../app/useMainApp.js'
 import { AppLayout } from '../components/appLayout.js'
 import { PromptZone } from '../components/appOverlays.js'
 import { outputConflictAction, OutputConflictPrompt } from '../components/outputConflictPrompt.js'
-import {
-  outputPaneMode,
-  outputPaneWidths,
-  ReadonlyOutputPane,
-  SplitOutputPane
-} from '../components/splitOutputPane.js'
+import { outputPaneMode, outputPaneWidths, ReadonlyOutputPane, SplitOutputPane } from '../components/splitOutputPane.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
 import { stripAnsi } from '../lib/text.js'
@@ -168,17 +163,19 @@ describe('dashboard output pane layout', () => {
     seedThreeStreamsAndSplit()
 
     for (let index = 0; index < 80; index += 1) {
-      observeOutputEvent({ payload: { text: `TAIL-ROW-${String(index).padStart(3, '0')}` }, type: 'message.interim' }, 'sid-b', {
-        buffer: true,
-        now: 10 + index
-      })
+      observeOutputEvent(
+        { payload: { text: `TAIL-ROW-${String(index).padStart(3, '0')}` }, type: 'message.interim' },
+        'sid-b',
+        {
+          buffer: true,
+          now: 10 + index
+        }
+      )
     }
 
     const stream = getOutputStreamsState().streams['sid-b']!
 
-    const output = renderToText(
-      <ReadonlyOutputPane onFocus={vi.fn()} stream={stream} t={DEFAULT_THEME} width={60} />
-    )
+    const output = renderToText(<ReadonlyOutputPane onFocus={vi.fn()} stream={stream} t={DEFAULT_THEME} width={60} />)
 
     const renderedRows = new Set(output.match(/TAIL-ROW-\d+/g) ?? [])
 

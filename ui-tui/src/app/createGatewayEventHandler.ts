@@ -25,7 +25,12 @@ import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { ClarifyReq, Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
-import { completeControlPrompt, controlPromptFromEvent, enqueueControlPrompt, expireControlPrompt } from './controlPromptQueue.js'
+import {
+  completeControlPrompt,
+  controlPromptFromEvent,
+  enqueueControlPrompt,
+  expireControlPrompt
+} from './controlPromptQueue.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
@@ -796,18 +801,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
       }
 
       setStatus(
-        ({ approval: 'approval needed', clarify: 'waiting for input…', secret: 'secret input needed', sudo: 'sudo password needed' } as const)[
-          control.prompt.kind
-        ]
+        (
+          {
+            approval: 'approval needed',
+            clarify: 'waiting for input…',
+            secret: 'secret input needed',
+            sudo: 'sudo password needed'
+          } as const
+        )[control.prompt.kind]
       )
 
       return
     }
 
     if (control?.kind === 'expire') {
-      const activeClarify = control.promptKind === 'clarify' && getOverlayState().clarify?.sessionId === eventSessionId && getOverlayState().clarify?.requestId === control.requestId
-        ? getOverlayState().clarify
-        : null
+      const activeClarify =
+        control.promptKind === 'clarify' &&
+        getOverlayState().clarify?.sessionId === eventSessionId &&
+        getOverlayState().clarify?.requestId === control.requestId
+          ? getOverlayState().clarify
+          : null
 
       expireControlPrompt(control.promptKind, control.requestId, eventSessionId)
 
@@ -1238,7 +1251,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
 
         return
       case 'tool.complete': {
-
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
@@ -1267,7 +1279,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
 
         return
       }
-
 
       case 'background.complete':
         dropBgTask(ev.payload.task_id)

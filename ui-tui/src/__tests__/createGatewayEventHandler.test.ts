@@ -24,7 +24,7 @@ const ref = <T>(current: T) => ({ current })
 const buildCtx = (appended: Msg[]) => {
   const outputRouter = createOutputStreamRouter({ dashboardMode: false })
 
-  return ({
+  return {
     composer: {
       dequeue: () => undefined,
       queueEditRef: ref<null | number>(null),
@@ -63,7 +63,7 @@ const buildCtx = (appended: Msg[]) => {
       setRecording: vi.fn(),
       setVoiceEnabled: vi.fn()
     }
-  }) as any
+  } as any
 }
 
 describe('createGatewayEventHandler', () => {
@@ -123,10 +123,18 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ sid: 'sid-focus' })
     const onEvent = createGatewayEventHandler(ctx)
 
-    onEvent({ payload: { choices: null, question: 'A?', request_id: 'clarify-a' }, session_id: 'sid-a', type: 'clarify.request' })
+    onEvent({
+      payload: { choices: null, question: 'A?', request_id: 'clarify-a' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    })
     onEvent({ payload: { command: 'deploy', description: 'B?' }, session_id: 'sid-b', type: 'approval.request' })
     onEvent({ payload: { request_id: 'sudo-c' }, session_id: 'sid-c', type: 'sudo.request' })
-    onEvent({ payload: { env_var: 'TOKEN', prompt: 'D?', request_id: 'secret-d' }, session_id: 'sid-d', type: 'secret.request' })
+    onEvent({
+      payload: { env_var: 'TOKEN', prompt: 'D?', request_id: 'secret-d' },
+      session_id: 'sid-d',
+      type: 'secret.request'
+    })
 
     expect(getOverlayState().clarify).toMatchObject({ requestId: 'clarify-a', sessionId: 'sid-a' })
     expect(getOverlayState().controlQueue).toEqual([
@@ -1554,7 +1562,11 @@ describe('createGatewayEventHandler', () => {
       session_id: 'sid-a',
       type: 'clarify.request'
     } as any)
-    onEvent({ payload: { duration_s: 300, name: 'clarify', tool_id: 'clar-1' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+    onEvent({
+      payload: { duration_s: 300, name: 'clarify', tool_id: 'clar-1' },
+      session_id: 'sid-a',
+      type: 'tool.complete'
+    } as any)
 
     const record = appended.find(msg => msg.role === 'system' && msg.text.startsWith('ask How do you want to scope?'))
     expect(record).toBeDefined()
@@ -1570,7 +1582,11 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, session_id: 'sid-a', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: ['A'], question: 'Pick?', request_id: 'req-3' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: ['A'], question: 'Pick?', request_id: 'req-3' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, session_id: 'sid-a', type: 'tool.complete' } as any)
     // A duplicate clarify tool.complete must not re-persist the same prompt.
     onEvent({ payload: { name: 'clarify', tool_id: 'clar-1' }, session_id: 'sid-a', type: 'tool.complete' } as any)
@@ -1612,9 +1628,21 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ sid: 'sid-a' })
     const onEvent = createGatewayEventHandler(ctx)
 
-    onEvent({ payload: { context: 'A?', name: 'clarify', tool_id: 'clarify-tool-a' }, session_id: 'sid-a', type: 'tool.start' })
-    onEvent({ payload: { choices: ['A1'], question: 'A?', request_id: 'clarify-a' }, session_id: 'sid-a', type: 'clarify.request' })
-    onEvent({ payload: { choices: ['B1'], question: 'B?', request_id: 'clarify-b' }, session_id: 'sid-a', type: 'clarify.request' })
+    onEvent({
+      payload: { context: 'A?', name: 'clarify', tool_id: 'clarify-tool-a' },
+      session_id: 'sid-a',
+      type: 'tool.start'
+    })
+    onEvent({
+      payload: { choices: ['A1'], question: 'A?', request_id: 'clarify-a' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    })
+    onEvent({
+      payload: { choices: ['B1'], question: 'B?', request_id: 'clarify-b' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    })
     onEvent({ payload: { request_id: 'clarify-a' }, session_id: 'sid-a', type: 'clarify.expire' })
 
     expect(getOverlayState().clarify?.requestId).toBe('clarify-b')
@@ -1635,9 +1663,17 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: null, question: 'A?', request_id: 'request-a' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: null, question: 'A?', request_id: 'request-a' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'tool-b' }, session_id: 'sid-a', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: null, question: 'B?', request_id: 'request-b' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: null, question: 'B?', request_id: 'request-b' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    } as any)
 
     completeControlPrompt('clarify', 'request-a', 'sid-a')
     expect(getOverlayState().clarify?.requestId).toBe('request-b')
@@ -1652,8 +1688,16 @@ describe('createGatewayEventHandler', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({ payload: { choices: null, question: 'Current?', request_id: 'current' }, session_id: 'sid-a', type: 'clarify.request' } as any)
-    onEvent({ payload: { name: 'clarify', tool_id: 'unknown-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+    onEvent({
+      payload: { choices: null, question: 'Current?', request_id: 'current' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    } as any)
+    onEvent({
+      payload: { name: 'clarify', tool_id: 'unknown-tool' },
+      session_id: 'sid-a',
+      type: 'tool.complete'
+    } as any)
 
     expect(getOverlayState().clarify?.requestId).toBe('current')
     expect(appended).toEqual([])
@@ -1666,7 +1710,11 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { name: 'clarify', tool_id: 'orphan-tool' }, session_id: 'sid-a', type: 'tool.start' } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'orphan-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'real-tool' }, session_id: 'sid-a', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: ['Yes'], question: 'Real?', request_id: 'real-request' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: ['Yes'], question: 'Real?', request_id: 'real-request' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    } as any)
     onEvent({ payload: { request_id: 'real-request' }, session_id: 'sid-a', type: 'clarify.expire' } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'real-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
 
@@ -1682,9 +1730,17 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(ctx)
 
     onEvent({ payload: { name: 'clarify', tool_id: 'shared-tool' }, session_id: 'sid-a', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: ['A1'], question: 'Question A?', request_id: 'request-a' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: ['A1'], question: 'Question A?', request_id: 'request-a' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'shared-tool' }, session_id: 'sid-b', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: ['B1'], question: 'Question B?', request_id: 'request-b' }, session_id: 'sid-b', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: ['B1'], question: 'Question B?', request_id: 'request-b' },
+      session_id: 'sid-b',
+      type: 'clarify.request'
+    } as any)
 
     onEvent({ payload: { request_id: 'request-a' }, session_id: 'sid-a', type: 'clarify.expire' } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'shared-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
@@ -1708,9 +1764,17 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(ctx)
 
     onEvent({ payload: { name: 'clarify', tool_id: 'tool-b' }, session_id: 'sid-b', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: ['B1'], question: 'Question B?', request_id: 'shared-request' }, session_id: 'sid-b', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: ['B1'], question: 'Question B?', request_id: 'shared-request' },
+      session_id: 'sid-b',
+      type: 'clarify.request'
+    } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: ['A1'], question: 'Question A?', request_id: 'shared-request' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: ['A1'], question: 'Question A?', request_id: 'shared-request' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    } as any)
 
     onEvent({ payload: { request_id: 'shared-request' }, session_id: 'sid-a', type: 'clarify.expire' } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.complete' } as any)
@@ -1725,9 +1789,17 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: null, question: 'Question A?', request_id: 'shared-request' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: null, question: 'Question A?', request_id: 'shared-request' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'tool-b' }, session_id: 'sid-b', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: null, question: 'Question B?', request_id: 'shared-request' }, session_id: 'sid-b', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: null, question: 'Question B?', request_id: 'shared-request' },
+      session_id: 'sid-b',
+      type: 'clarify.request'
+    } as any)
 
     completeControlPrompt('clarify', 'shared-request', 'sid-a')
     onEvent({ payload: { name: 'clarify', tool_id: 'tool-a' }, session_id: 'sid-a', type: 'tool.complete' } as any)
@@ -1751,8 +1823,16 @@ describe('createGatewayEventHandler', () => {
       } as any)
     }
 
-    onEvent({ payload: { choices: ['A'], question: 'Evicted?', request_id: 'evicted-request' }, session_id: 'sid-0', type: 'clarify.request' } as any)
-    onEvent({ payload: { choices: ['B'], question: 'Promoted?', request_id: 'promoted-request' }, session_id: 'sid-0', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: ['A'], question: 'Evicted?', request_id: 'evicted-request' },
+      session_id: 'sid-0',
+      type: 'clarify.request'
+    } as any)
+    onEvent({
+      payload: { choices: ['B'], question: 'Promoted?', request_id: 'promoted-request' },
+      session_id: 'sid-0',
+      type: 'clarify.request'
+    } as any)
     onEvent({ payload: { request_id: 'evicted-request' }, session_id: 'sid-0', type: 'clarify.expire' } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'tool-0' }, session_id: 'sid-0', type: 'tool.complete' } as any)
 
@@ -1767,7 +1847,11 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(ctx)
 
     onEvent({ payload: { name: 'clarify', tool_id: 'old-tool' }, session_id: 'sid-a', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: null, question: 'Still active?', request_id: 'old-request' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: null, question: 'Still active?', request_id: 'old-request' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    } as any)
     onEvent({ payload: {}, type: 'gateway.ready' } as any)
     onEvent({ payload: { name: 'clarify', tool_id: 'old-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
 
@@ -1780,7 +1864,11 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
     onEvent({ payload: { name: 'clarify', tool_id: 'old-tool' }, session_id: 'sid-a', type: 'tool.start' } as any)
-    onEvent({ payload: { choices: null, question: 'Still active?', request_id: 'old-request' }, session_id: 'sid-a', type: 'clarify.request' } as any)
+    onEvent({
+      payload: { choices: null, question: 'Still active?', request_id: 'old-request' },
+      session_id: 'sid-a',
+      type: 'clarify.request'
+    } as any)
     onEvent.dispose()
     onEvent({ payload: { name: 'clarify', tool_id: 'old-tool' }, session_id: 'sid-a', type: 'tool.complete' } as any)
 
@@ -1792,7 +1880,13 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx([]))
 
     patchOverlayState({
-      secret: { envVar: 'NEW_KEY', prompt: 'Enter new key', requestId: 'secret-new', sessionId: 'default', sessionTitle: 'Default' },
+      secret: {
+        envVar: 'NEW_KEY',
+        prompt: 'Enter new key',
+        requestId: 'secret-new',
+        sessionId: 'default',
+        sessionTitle: 'Default'
+      },
       sudo: { requestId: 'sudo-1', sessionId: 'default', sessionTitle: 'Default' }
     })
 
@@ -1806,7 +1900,6 @@ describe('createGatewayEventHandler', () => {
     expect(getOverlayState().sudo).toBeNull()
   })
 
-
   it('expires only the matching queued clarify and ignores delayed tool completion without request identity', () => {
     const ctx = buildCtx([])
     ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
@@ -1814,13 +1907,25 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(ctx)
 
     onEvent({ payload: { command: 'deploy', description: 'A?' }, session_id: 'sid-a', type: 'approval.request' })
-    onEvent({ payload: { choices: null, question: 'B1?', request_id: 'clarify-b1' }, session_id: 'sid-b', type: 'clarify.request' })
-    onEvent({ payload: { choices: null, question: 'B2?', request_id: 'clarify-b2' }, session_id: 'sid-b', type: 'clarify.request' })
+    onEvent({
+      payload: { choices: null, question: 'B1?', request_id: 'clarify-b1' },
+      session_id: 'sid-b',
+      type: 'clarify.request'
+    })
+    onEvent({
+      payload: { choices: null, question: 'B2?', request_id: 'clarify-b2' },
+      session_id: 'sid-b',
+      type: 'clarify.request'
+    })
     onEvent({ payload: { request_id: 'clarify-b1' }, session_id: 'sid-b', type: 'clarify.expire' } as any)
 
-    expect(getOverlayState().controlQueue).toEqual([expect.objectContaining({ kind: 'clarify', request: expect.objectContaining({ requestId: 'clarify-b2' }) })])
+    expect(getOverlayState().controlQueue).toEqual([
+      expect.objectContaining({ kind: 'clarify', request: expect.objectContaining({ requestId: 'clarify-b2' }) })
+    ])
     onEvent({ payload: { name: 'clarify', tool_id: 'old-b1' }, session_id: 'sid-b', type: 'tool.complete' } as any)
-    expect(getOverlayState().controlQueue).toEqual([expect.objectContaining({ kind: 'clarify', request: expect.objectContaining({ requestId: 'clarify-b2' }) })])
+    expect(getOverlayState().controlQueue).toEqual([
+      expect.objectContaining({ kind: 'clarify', request: expect.objectContaining({ requestId: 'clarify-b2' }) })
+    ])
   })
 
   it('does not clear another session clarify when the active session clarify tool completes', () => {
@@ -1830,12 +1935,20 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ sid: 'sid-a' })
     const onEvent = createGatewayEventHandler(ctx)
 
-    onEvent({ payload: { choices: null, question: 'B?', request_id: 'clarify-b' }, session_id: 'sid-b', type: 'clarify.request' })
-    onEvent({ payload: { name: 'clarify', tool_id: 'clarify-tool-a' }, session_id: 'sid-a', type: 'tool.complete' } as any)
+    onEvent({
+      payload: { choices: null, question: 'B?', request_id: 'clarify-b' },
+      session_id: 'sid-b',
+      type: 'clarify.request'
+    })
+    onEvent({
+      payload: { name: 'clarify', tool_id: 'clarify-tool-a' },
+      session_id: 'sid-a',
+      type: 'tool.complete'
+    } as any)
 
     expect(getOverlayState().clarify?.sessionId).toBe('sid-b')
     expect(appended).toEqual([])
-  // ── Credits notice (Strategy B) ──────────────────────────────────────
+    // ── Credits notice (Strategy B) ──────────────────────────────────────
   })
   describe('credits notice', () => {
     it('shows a notice immediately when idle (no turn in flight)', () => {

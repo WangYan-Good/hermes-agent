@@ -379,31 +379,34 @@ describe('output stream state', () => {
     { disconnect: true, eventType: 'message.complete', producing: false, status: 'completed', text: 'new done' },
     { disconnect: false, eventType: 'error', producing: false, status: 'error', text: 'new failed' },
     { disconnect: true, eventType: 'message.delta', producing: true, status: 'running', text: 'new live' }
-  ])('keeps destination event state when recover remaps for each terminal or running event', ({ disconnect, eventType, producing, status, text }) => {
-    syncOutputSessions([{ id: 'runtime-old', session_key: 'stored-a', status: 'working' }], 'runtime-old')
-    observeOutputEvent({ payload: { text: 'old private' }, type: 'message.interim' }, 'runtime-old', {
-      buffer: true,
-      now: 10
-    })
+  ])(
+    'keeps destination event state when recover remaps for each terminal or running event',
+    ({ disconnect, eventType, producing, status, text }) => {
+      syncOutputSessions([{ id: 'runtime-old', session_key: 'stored-a', status: 'working' }], 'runtime-old')
+      observeOutputEvent({ payload: { text: 'old private' }, type: 'message.interim' }, 'runtime-old', {
+        buffer: true,
+        now: 10
+      })
 
-    if (disconnect) {
-      markOutputTransportDisconnected()
+      if (disconnect) {
+        markOutputTransportDisconnected()
+      }
+
+      observeOutputEvent({ payload: { text }, type: eventType }, 'runtime-new', { buffer: true, now: 20 })
+
+      commitOutputPrimaryTransition({
+        kind: 'recover',
+        nextSessionId: 'runtime-new',
+        previousSessionId: null,
+        sessionKey: 'stored-a'
+      })
+
+      const stream = getOutputStreamsState().streams['runtime-new']!
+      expect(getOutputStreamsState().streams['runtime-old']).toBeUndefined()
+      expect(stream).toMatchObject({ preview: text, producing, sessionKey: 'stored-a', status })
+      expect(stream.entries.map(entry => entry.text)).toEqual(['old private', text])
     }
-
-    observeOutputEvent({ payload: { text }, type: eventType }, 'runtime-new', { buffer: true, now: 20 })
-
-    commitOutputPrimaryTransition({
-      kind: 'recover',
-      nextSessionId: 'runtime-new',
-      previousSessionId: null,
-      sessionKey: 'stored-a'
-    })
-
-    const stream = getOutputStreamsState().streams['runtime-new']!
-    expect(getOutputStreamsState().streams['runtime-old']).toBeUndefined()
-    expect(stream).toMatchObject({ preview: text, producing, sessionKey: 'stored-a', status })
-    expect(stream.entries.map(entry => entry.text)).toEqual(['old private', text])
-  })
+  )
 
   it('rejects recovery remap before mutating streams when the destination belongs to another durable key', () => {
     syncOutputSessions(
@@ -500,30 +503,27 @@ describe('output stream state', () => {
       text: 'subagent update'
     },
     { eventType: 'background.complete', payload: { summary: 'background done' }, text: 'background done' }
-  ])(
-    'does not let lifecycle-neutral $eventType overwrite recovered running state',
-    ({ eventType, payload, text }) => {
-      syncOutputSessions(
-        [{ id: 'runtime-old', session_key: 'stored-a', status: 'working', title: 'Alpha' }],
-        'runtime-old'
-      )
-      observeOutputEvent({ payload: { text: 'old live' }, type: 'message.delta' }, 'runtime-old', {
-        buffer: true,
-        now: 10
-      })
-      syncOutputSessions([{ id: 'runtime-new', status: 'working', title: 'Recovered metadata' }], 'runtime-old')
-      observeOutputEvent({ payload, type: eventType }, 'runtime-new', { buffer: true, now: 20 })
+  ])('does not let lifecycle-neutral $eventType overwrite recovered running state', ({ eventType, payload, text }) => {
+    syncOutputSessions(
+      [{ id: 'runtime-old', session_key: 'stored-a', status: 'working', title: 'Alpha' }],
+      'runtime-old'
+    )
+    observeOutputEvent({ payload: { text: 'old live' }, type: 'message.delta' }, 'runtime-old', {
+      buffer: true,
+      now: 10
+    })
+    syncOutputSessions([{ id: 'runtime-new', status: 'working', title: 'Recovered metadata' }], 'runtime-old')
+    observeOutputEvent({ payload, type: eventType }, 'runtime-new', { buffer: true, now: 20 })
 
-      commitOutputPrimaryTransition({
-        kind: 'recover',
-        nextSessionId: 'runtime-new',
-        previousSessionId: 'runtime-old',
-        sessionKey: 'stored-a'
-      })
+    commitOutputPrimaryTransition({
+      kind: 'recover',
+      nextSessionId: 'runtime-new',
+      previousSessionId: 'runtime-old',
+      sessionKey: 'stored-a'
+    })
 
-      const stream = getOutputStreamsState().streams['runtime-new']!
-      expect(stream).toMatchObject({ producing: true, sessionKey: 'stored-a', status: 'running' })
-      expect(stream.entries.map(entry => entry.text)).toEqual(['old live', text])
-    }
-  )
+    const stream = getOutputStreamsState().streams['runtime-new']!
+    expect(stream).toMatchObject({ producing: true, sessionKey: 'stored-a', status: 'running' })
+    expect(stream.entries.map(entry => entry.text)).toEqual(['old live', text])
+  })
 })

@@ -4,15 +4,12 @@ import { completionRequestForInput, mergeLocalTuiCommandItems } from '../hooks/u
 
 describe('completionRequestForInput', () => {
   it('offers dashboard-only local commands only in the dashboard', () => {
-    expect(mergeLocalTuiCommandItems('/out', [], true)).toContainEqual(
-      expect.objectContaining({ text: '/outputs' })
-    )
+    expect(mergeLocalTuiCommandItems('/out', [], true)).toContainEqual(expect.objectContaining({ text: '/outputs' }))
     expect(mergeLocalTuiCommandItems('/out', [], false)).toEqual([])
   })
 
   it('routes real slash commands to slash completion', () => {
     expect(completionRequestForInput('/help')).toMatchObject({
-
       method: 'complete.slash',
       params: { text: '/help' },
       replaceFrom: 1

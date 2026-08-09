@@ -134,7 +134,15 @@ describe('dismissSensitivePrompt', () => {
 
   it('clears a secret overlay before a stale cancel RPC resolves', async () => {
     resetOverlayState()
-    patchOverlayState({ secret: { envVar: 'API_KEY', prompt: 'Enter API key', requestId: 'secret-1', sessionId: 'sid-b', sessionTitle: 'Beta' } })
+    patchOverlayState({
+      secret: {
+        envVar: 'API_KEY',
+        prompt: 'Enter API key',
+        requestId: 'secret-1',
+        sessionId: 'sid-b',
+        sessionTitle: 'Beta'
+      }
+    })
     const rpc = vi.fn().mockResolvedValue(null)
     const sys = vi.fn()
 
@@ -156,7 +164,13 @@ describe('dismissApprovalPrompt', () => {
     })
     enqueueControlPrompt({
       kind: 'secret',
-      request: { envVar: 'TOKEN', prompt: 'Enter TOKEN', requestId: 'secret-b', sessionId: 'sid-b', sessionTitle: 'Beta' }
+      request: {
+        envVar: 'TOKEN',
+        prompt: 'Enter TOKEN',
+        requestId: 'secret-b',
+        sessionId: 'sid-b',
+        sessionTitle: 'Beta'
+      }
     })
     const rpc = vi.fn().mockResolvedValue({ resolved: true })
 

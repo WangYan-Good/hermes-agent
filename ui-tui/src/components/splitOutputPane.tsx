@@ -49,10 +49,7 @@ export function readonlyOutputTail(
 }
 
 export function ReadonlyOutputPane({ onFocus, stream, t, width }: ReadonlyOutputPaneProps) {
-  const entries = useMemo(
-    () => readonlyOutputTail(stream.entries, stream.omitted),
-    [stream.entries, stream.omitted]
-  )
+  const entries = useMemo(() => readonlyOutputTail(stream.entries, stream.omitted), [stream.entries, stream.omitted])
 
   const hasOmissionEntry = entries.some(entry => entry.id === 'omitted')
 

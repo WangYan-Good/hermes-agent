@@ -140,13 +140,15 @@ export function dismissApprovalPrompt(overlay: Pick<OverlayState, 'approval'>, r
     return
   }
 
-  return rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: approval.sessionId }).then(response => {
-    if (response?.resolved || response?.status === 'expired') {
-      completeControlPrompt('approval', undefined, approval.sessionId)
-    }
+  return rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: approval.sessionId }).then(
+    response => {
+      if (response?.resolved || response?.status === 'expired') {
+        completeControlPrompt('approval', undefined, approval.sessionId)
+      }
 
-    return response
-  })
+      return response
+    }
+  )
 }
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
@@ -463,12 +465,12 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
       const hasGlobalControl = Boolean(
         overlay.approval ||
-          overlay.billing ||
-          overlay.clarify ||
-          overlay.confirm ||
-          overlay.secret ||
-          overlay.subscription ||
-          overlay.sudo
+        overlay.billing ||
+        overlay.clarify ||
+        overlay.confirm ||
+        overlay.secret ||
+        overlay.subscription ||
+        overlay.sudo
       )
 
       if (DASHBOARD_TUI_MODE && overlay.outputs && !hasGlobalControl && !cState.input && !cState.inputBuf.length) {
@@ -482,7 +484,6 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
         return
       }
-
 
       if (isCtrl(key, ch, 'c') || (key.escape && (overlay.secret || overlay.sudo))) {
         cancelOverlayFromCtrlC()
@@ -499,8 +500,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-
-    const outputDirection = DASHBOARD_TUI_MODE && !cState.input && !cState.inputBuf.length ? outputFocusDirection(key) : 0
+    const outputDirection =
+      DASHBOARD_TUI_MODE && !cState.input && !cState.inputBuf.length ? outputFocusDirection(key) : 0
 
     if (outputDirection) {
       return actions.cycleOutputFocus(outputDirection)

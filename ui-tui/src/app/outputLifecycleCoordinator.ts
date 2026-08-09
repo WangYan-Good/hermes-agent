@@ -1,9 +1,6 @@
 import type { SessionCloseResponse } from '../gatewayTypes.js'
 
-import {
-  clearControlPrompts,
-  removeControlPromptsForSession
-} from './controlPromptQueue.js'
+import { clearControlPrompts, removeControlPromptsForSession } from './controlPromptQueue.js'
 import type { OutputStreamRouter } from './outputStreamRouter.js'
 import {
   commitOutputPrimaryTransition,
@@ -26,9 +23,7 @@ export interface OutputLifecycleCoordinator {
   validateTransition: (transition: SessionTransition) => void
 }
 
-export const createOutputLifecycleCoordinator = (
-  outputRouter: OutputStreamRouter
-): OutputLifecycleCoordinator => ({
+export const createOutputLifecycleCoordinator = (outputRouter: OutputStreamRouter): OutputLifecycleCoordinator => ({
   applyCloseResult: (sessionId, result) => {
     if (!result?.closed && !result?.ok) {
       return false
