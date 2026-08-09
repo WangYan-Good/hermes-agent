@@ -23,6 +23,7 @@ export interface OutputStream {
   bytes: number
   entries: OutputEntry[]
   hasDisplayOutput: boolean
+  hasLifecycleEvent: boolean
   lastOutputAt: number
   model: string
   omitted: boolean
@@ -227,6 +228,7 @@ export const markOutputTransportDisconnected = () => {
       sessionId,
       {
         ...stream,
+        hasLifecycleEvent: true,
         producing: false,
         status: isTerminal(stream.status) ? stream.status : 'disconnected'
       }
@@ -277,7 +279,7 @@ export const removeOutputSession = (sessionId: string) => {
 
   if (!stream) {return}
 
-  updateStream({ ...stream, producing: false, status: 'closed', unreadCount: 0 })
+  updateStream({ ...stream, hasLifecycleEvent: true, producing: false, status: 'closed', unreadCount: 0 })
 
   if (state.conflict?.candidateSessionId === sessionId || state.conflict?.primarySessionId === sessionId) {
     state = { ...state, conflict: null }
@@ -310,6 +312,7 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
 
   let nextStream: OutputStream = {
     ...stream,
+    hasLifecycleEvent: stream.hasLifecycleEvent || nextStatus != null || rule.producing != null,
     hasDisplayOutput: stream.hasDisplayOutput || paints,
     lastOutputAt: paints ? now : stream.lastOutputAt,
     producing:
@@ -334,14 +337,30 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
 }
 
 export const syncOutputSessions = (items: readonly unknown[], currentSessionId: null | string) => {
-  for (const item of items) {
-    const details = readSession(item)
+  const detailsList = items.map(readSession)
 
+  const sessionKeysByRuntime = new Map(
+    Object.values(state.streams)
+      .filter(stream => stream.sessionKey)
+      .map(stream => [stream.sessionId, stream.sessionKey])
+  )
+
+  for (const details of detailsList) {
     if (!details.sessionId) {continue}
 
     if (details.sessionKey) {
-      assertOutputSessionProvenance(details.sessionId, details.sessionKey)
+      const existingSessionKey = sessionKeysByRuntime.get(details.sessionId)
+
+      if (existingSessionKey && existingSessionKey !== details.sessionKey) {
+        throw new OutputSessionIdentityCollisionError(details.sessionId, details.sessionKey, existingSessionKey)
+      }
+
+      sessionKeysByRuntime.set(details.sessionId, details.sessionKey)
     }
+  }
+
+  for (const details of detailsList) {
+    if (!details.sessionId) {continue}
 
     let sessionId = details.sessionId
 
@@ -525,23 +544,21 @@ function remapOutputSession(previousSessionId: string, nextSessionId: string, se
     ...(destination?.entries.filter(entry => !destinationEntryIds.has(entry.id)) ?? [])
   ]
 
-  const destinationHasObservedEvent = Boolean(
-    destination &&
-    (destination.hasDisplayOutput || destination.producing || destination.entries.length || destination.lastOutputAt)
-  )
+  const destinationHasLifecycleEvent = Boolean(destination?.hasLifecycleEvent)
 
   const stream = limitEntries({
     ...previous,
     entries,
     hasDisplayOutput: previous.hasDisplayOutput || Boolean(destination?.hasDisplayOutput),
+    hasLifecycleEvent: previous.hasLifecycleEvent || destinationHasLifecycleEvent,
     lastOutputAt: Math.max(previous.lastOutputAt, destination?.lastOutputAt ?? 0),
     model: destination?.model || previous.model,
     omitted: previous.omitted || Boolean(destination?.omitted),
     preview: destination?.preview || previous.preview,
-    producing: destinationHasObservedEvent ? destination!.producing : previous.producing,
+    producing: destinationHasLifecycleEvent ? destination!.producing : previous.producing,
     sessionId: nextSessionId,
     sessionKey,
-    status: destinationHasObservedEvent ? destination!.status : previous.status,
+    status: destinationHasLifecycleEvent ? destination!.status : previous.status,
     title: destination && destination.title !== nextSessionId ? destination.title : previous.title,
     unreadCount: Math.max(previous.unreadCount, destination?.unreadCount ?? 0)
   })
@@ -581,6 +598,7 @@ function getOrCreateStream(sessionId: string): OutputStream {
     entries: [],
     hasDisplayOutput: false,
     lastOutputAt: 0,
+    hasLifecycleEvent: false,
     model: '',
     omitted: false,
     preview: '',
