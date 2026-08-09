@@ -586,6 +586,8 @@ export function useMainApp(gw: GatewayClient) {
 
   const transitionHooks = useMemo<SessionTransitionHooks>(() => ({
     beforeCommit: transition => {
+      outputLifecycle.validateTransition(transition)
+
       if (transition.previousSessionId && (transition.kind === 'activate-live' || transition.kind === 'new-live')) {
         capturePrimaryOutputSnapshot(
           transition.previousSessionId,

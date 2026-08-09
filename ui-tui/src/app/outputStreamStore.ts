@@ -62,6 +62,18 @@ export interface SessionTransitionHooks {
   afterCommit: (transition: SessionTransition) => void
   beforeCommit: (transition: SessionTransition) => void
 }
+
+export class OutputSessionIdentityCollisionError extends Error {
+  readonly code = 'OUTPUT_SESSION_IDENTITY_COLLISION'
+
+  constructor(sessionId: string, expectedSessionKey: string, actualSessionKey: string) {
+    super(
+      'session identity collision for runtime ' + sessionId +
+      ': expected ' + expectedSessionKey + ', found ' + actualSessionKey
+    )
+    this.name = 'OutputSessionIdentityCollisionError'
+  }
+}
 export interface OutputEvent {
   payload?: Record<string, unknown>
   type: string
@@ -185,6 +197,12 @@ export const getOutputStreamsState = (): OutputStreamsState => state
 
 export const getOutputSessionKey = (sessionId: null | string): null | string =>
   sessionId ? state.streams[sessionId]?.sessionKey || null : null
+
+export const validateOutputPrimaryTransition = (transition: SessionTransition) => {
+  if (transition.sessionKey) {
+    assertOutputSessionProvenance(transition.nextSessionId, transition.sessionKey)
+  }
+}
 
 export const captureOutputStreamsState = (): OutputStreamsState => structuredClone(state)
 
@@ -321,6 +339,10 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
 
     if (!details.sessionId) {continue}
 
+    if (details.sessionKey) {
+      assertOutputSessionProvenance(details.sessionId, details.sessionKey)
+    }
+
     let sessionId = details.sessionId
 
     if (details.sessionKey) {
@@ -430,6 +452,8 @@ export const capturePrimaryOutputSnapshot = (
 }
 
 export const commitOutputPrimaryTransition = (transition: SessionTransition) => {
+  validateOutputPrimaryTransition(transition)
+
   if (transition.kind === 'recover' && transition.sessionKey) {
     const previousRuntimeId = Object.values(state.streams).find(
       stream => stream.sessionKey === transition.sessionKey && stream.sessionId !== transition.nextSessionId
@@ -479,10 +503,20 @@ export const commitOutputPrimaryTransition = (transition: SessionTransition) => 
   publish()
 }
 
+function assertOutputSessionProvenance(sessionId: string, sessionKey: string) {
+  const destinationSessionKey = state.streams[sessionId]?.sessionKey
+
+  if (destinationSessionKey && destinationSessionKey !== sessionKey) {
+    throw new OutputSessionIdentityCollisionError(sessionId, sessionKey, destinationSessionKey)
+  }
+}
+
 function remapOutputSession(previousSessionId: string, nextSessionId: string, sessionKey: string) {
   const previous = state.streams[previousSessionId]
 
   if (!previous || previousSessionId === nextSessionId) {return}
+
+  assertOutputSessionProvenance(nextSessionId, sessionKey)
   const destination = state.streams[nextSessionId]
   const destinationEntryIds = new Set(previous.entries.map(entry => entry.id))
 
@@ -490,6 +524,11 @@ function remapOutputSession(previousSessionId: string, nextSessionId: string, se
     ...previous.entries,
     ...(destination?.entries.filter(entry => !destinationEntryIds.has(entry.id)) ?? [])
   ]
+
+  const destinationHasObservedEvent = Boolean(
+    destination &&
+    (destination.hasDisplayOutput || destination.producing || destination.entries.length || destination.lastOutputAt)
+  )
 
   const stream = limitEntries({
     ...previous,
@@ -499,10 +538,10 @@ function remapOutputSession(previousSessionId: string, nextSessionId: string, se
     model: destination?.model || previous.model,
     omitted: previous.omitted || Boolean(destination?.omitted),
     preview: destination?.preview || previous.preview,
-    producing: previous.producing || Boolean(destination?.producing),
+    producing: destinationHasObservedEvent ? destination!.producing : previous.producing,
     sessionId: nextSessionId,
     sessionKey,
-    status: destination?.producing ? destination.status : previous.status,
+    status: destinationHasObservedEvent ? destination!.status : previous.status,
     title: destination && destination.title !== nextSessionId ? destination.title : previous.title,
     unreadCount: Math.max(previous.unreadCount, destination?.unreadCount ?? 0)
   })

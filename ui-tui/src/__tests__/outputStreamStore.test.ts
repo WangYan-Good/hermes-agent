@@ -374,4 +374,93 @@ describe('output stream state', () => {
       secondarySessionId: null
     })
   })
+
+  it.each([
+    { disconnect: true, eventType: 'message.complete', producing: false, status: 'completed', text: 'new done' },
+    { disconnect: false, eventType: 'error', producing: false, status: 'error', text: 'new failed' },
+    { disconnect: true, eventType: 'message.delta', producing: true, status: 'running', text: 'new live' }
+  ])('keeps destination event state when recover remaps for each terminal or running event', ({ disconnect, eventType, producing, status, text }) => {
+    syncOutputSessions([{ id: 'runtime-old', session_key: 'stored-a', status: 'working' }], 'runtime-old')
+    observeOutputEvent({ payload: { text: 'old private' }, type: 'message.interim' }, 'runtime-old', {
+      buffer: true,
+      now: 10
+    })
+
+    if (disconnect) {
+      markOutputTransportDisconnected()
+    }
+
+    observeOutputEvent({ payload: { text }, type: eventType }, 'runtime-new', { buffer: true, now: 20 })
+
+    commitOutputPrimaryTransition({
+      kind: 'recover',
+      nextSessionId: 'runtime-new',
+      previousSessionId: null,
+      sessionKey: 'stored-a'
+    })
+
+    const stream = getOutputStreamsState().streams['runtime-new']!
+    expect(getOutputStreamsState().streams['runtime-old']).toBeUndefined()
+    expect(stream).toMatchObject({ preview: text, producing, sessionKey: 'stored-a', status })
+    expect(stream.entries.map(entry => entry.text)).toEqual(['old private', text])
+  })
+
+  it('rejects recovery remap before mutating streams when the destination belongs to another durable key', () => {
+    syncOutputSessions(
+      [
+        { id: 'runtime-a', session_key: 'stored-a', status: 'working', title: 'Alpha' },
+        { id: 'runtime-b', session_key: 'stored-b', status: 'working', title: 'Beta' }
+      ],
+      'runtime-a'
+    )
+    observeOutputEvent({ payload: { text: 'A private' }, type: 'message.interim' }, 'runtime-a', {
+      buffer: true,
+      now: 10
+    })
+    observeOutputEvent({ payload: { text: 'B private' }, type: 'message.interim' }, 'runtime-b', {
+      buffer: true,
+      now: 20
+    })
+    setSecondaryOutput('runtime-b')
+    const before = structuredClone(getOutputStreamsState())
+
+    expect(() =>
+      commitOutputPrimaryTransition({
+        kind: 'recover',
+        nextSessionId: 'runtime-b',
+        previousSessionId: 'runtime-a',
+        sessionKey: 'stored-a'
+      })
+    ).toThrow(/session identity collision/i)
+    expect(getOutputStreamsState()).toEqual(before)
+  })
+
+  it('rejects active-list remap before mutating streams when the target runtime has another durable key', () => {
+    syncOutputSessions(
+      [
+        { id: 'runtime-current', session_key: 'stored-current', status: 'working' },
+        { id: 'runtime-a', session_key: 'stored-a', status: 'working' },
+        { id: 'runtime-b', session_key: 'stored-b', status: 'working' }
+      ],
+      'runtime-current'
+    )
+    observeOutputEvent({ payload: { text: 'A private' }, type: 'message.interim' }, 'runtime-a', {
+      buffer: true,
+      now: 10
+    })
+    observeOutputEvent({ payload: { text: 'B private' }, type: 'message.interim' }, 'runtime-b', {
+      buffer: true,
+      now: 20
+    })
+    setSecondaryOutput('runtime-a')
+    const before = structuredClone(getOutputStreamsState())
+
+    expect(() =>
+      syncOutputSessions(
+        [{ id: 'runtime-b', session_key: 'stored-a', status: 'working', title: 'Wrong owner' }],
+        'runtime-current'
+      )
+    ).toThrow(/session identity collision/i)
+    expect(getOutputStreamsState()).toEqual(before)
+  })
 })
