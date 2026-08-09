@@ -463,4 +463,67 @@ describe('output stream state', () => {
     ).toThrow(/session identity collision/i)
     expect(getOutputStreamsState()).toEqual(before)
   })
+
+  it('preflights an active-list batch before mutating any stream', () => {
+    syncOutputSessions(
+      [
+        { id: 'runtime-current', session_key: 'stored-current', status: 'working', title: 'Before' },
+        { id: 'runtime-a', session_key: 'stored-a', status: 'working', title: 'Alpha' },
+        { id: 'runtime-b', session_key: 'stored-b', status: 'working', title: 'Beta' }
+      ],
+      'runtime-current'
+    )
+    const before = structuredClone(getOutputStreamsState())
+
+    expect(() =>
+      syncOutputSessions(
+        [
+          {
+            id: 'runtime-current',
+            session_key: 'stored-current',
+            status: 'working',
+            title: 'MUTATED BEFORE COLLISION'
+          },
+          { id: 'runtime-b', session_key: 'stored-a', status: 'working', title: 'Wrong owner' }
+        ],
+        'runtime-current'
+      )
+    ).toThrow(/session identity collision/i)
+    expect(getOutputStreamsState()).toEqual(before)
+  })
+
+  it.each([
+    { eventType: 'tool.complete', payload: { name: 'search', text: 'tool done' }, text: 'tool done' },
+    {
+      eventType: 'subagent.progress',
+      payload: { message: 'subagent update', name: 'worker' },
+      text: 'subagent update'
+    },
+    { eventType: 'background.complete', payload: { summary: 'background done' }, text: 'background done' }
+  ])(
+    'does not let lifecycle-neutral $eventType overwrite recovered running state',
+    ({ eventType, payload, text }) => {
+      syncOutputSessions(
+        [{ id: 'runtime-old', session_key: 'stored-a', status: 'working', title: 'Alpha' }],
+        'runtime-old'
+      )
+      observeOutputEvent({ payload: { text: 'old live' }, type: 'message.delta' }, 'runtime-old', {
+        buffer: true,
+        now: 10
+      })
+      syncOutputSessions([{ id: 'runtime-new', status: 'working', title: 'Recovered metadata' }], 'runtime-old')
+      observeOutputEvent({ payload, type: eventType }, 'runtime-new', { buffer: true, now: 20 })
+
+      commitOutputPrimaryTransition({
+        kind: 'recover',
+        nextSessionId: 'runtime-new',
+        previousSessionId: 'runtime-old',
+        sessionKey: 'stored-a'
+      })
+
+      const stream = getOutputStreamsState().streams['runtime-new']!
+      expect(stream).toMatchObject({ producing: true, sessionKey: 'stored-a', status: 'running' })
+      expect(stream.entries.map(entry => entry.text)).toEqual(['old live', text])
+    }
+  )
 })
