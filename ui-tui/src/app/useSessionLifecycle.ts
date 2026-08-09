@@ -599,7 +599,17 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               sessionKey: r.session_key ?? r.resumed
             }
 
-            transitionHooks.beforeCommit(transition)
+            try {
+              transitionHooks.beforeCommit(transition)
+            } catch (error) {
+              if (!settleSessionIntentFailure(isCurrent, message => sys('error: ' + message), error)) {
+                return
+              }
+
+              patchUiState({ status: 'ready' })
+
+              return
+            }
 
             resetSession()
             setSessionStartedAt(r.started_at ? r.started_at * 1000 : Date.now())

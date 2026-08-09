@@ -12,7 +12,8 @@ import {
   markOutputTransportReady,
   removeOutputSession,
   type SessionTransition,
-  syncOutputSessions
+  syncOutputSessions,
+  validateOutputPrimaryTransition
 } from './outputStreamStore.js'
 import { turnController } from './turnController.js'
 
@@ -22,6 +23,7 @@ export interface OutputLifecycleCoordinator {
   disconnect: (currentSessionId?: null | string) => null | string
   ready: () => boolean
   syncActiveSessions: (items: readonly unknown[], currentSessionId: null | string) => void
+  validateTransition: (transition: SessionTransition) => void
 }
 
 export const createOutputLifecycleCoordinator = (
@@ -56,5 +58,6 @@ export const createOutputLifecycleCoordinator = (
 
     return reconnected
   },
-  syncActiveSessions: syncOutputSessions
+  syncActiveSessions: syncOutputSessions,
+  validateTransition: validateOutputPrimaryTransition
 })
