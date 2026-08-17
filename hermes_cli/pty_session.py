@@ -15,6 +15,8 @@ from typing import Optional
 WS_CLOSE_PROCESS_EXITED = 4410
 WS_CLOSE_SUPERSEDED = 4409
 TUI_FORCE_REDRAW = b"\x0c"
+_CLEAR_AND_HOME = b"\x1b[2J\x1b[H"
+_REDRAW_INPUT = TUI_FORCE_REDRAW
 
 
 class RingBuffer:
@@ -35,6 +37,10 @@ class RingBuffer:
     def snapshot(self) -> bytes:
         return bytes(self._buf)
 
+    def clear(self) -> None:
+        self._buf.clear()
+        self._truncated = False
+
     @property
     def truncated(self) -> bool:
         return self._truncated
@@ -51,6 +57,8 @@ class PtySession:
         self._read_timeout = read_timeout
         self._ws = None
         self._drain_task: Optional[asyncio.Task] = None
+        self._outbound_lock = asyncio.Lock()
+        self._redraw_on_attach = False
 
     async def start(self) -> None:
         self._drain_task = asyncio.create_task(self._drain())
@@ -71,7 +79,14 @@ class PtySession:
             if not chunk:                            # idle tick
                 await asyncio.sleep(0)
                 continue
+            await self._record_and_forward(chunk)
+
+    async def _record_and_forward(self, chunk: bytes) -> None:
+        """Append and forward one PTY chunk after any attach replay finishes."""
+        async with self._outbound_lock:
             self.buffer.append(chunk)
+            if self.buffer.truncated:
+                self._redraw_on_attach = True
             ws = self._ws
             if ws is not None:
                 try:
@@ -84,23 +99,44 @@ class PtySession:
 
         The TUI uses an alternate screen and differential rendering, so a
         bounded ANSI tail is not guaranteed to be a self-contained frame.
-        Reattaching a fresh xterm therefore asks the live TUI to emit one
-        complete redraw after the replay.
+        A truncated replay always requests a semantic repaint. Callers may
+        also request a complete redraw after replaying an intact buffer.
         """
-        old = self._ws
-        if old is not None and old is not ws:
+        async with self._outbound_lock:
+            old = self._ws
+            if old is not None and old is not ws:
+                try:
+                    await old.close(code=WS_CLOSE_SUPERSEDED)
+                except Exception:
+                    pass
+            self._ws = ws
+            self.attached = True
+            self.last_detached_at = None
+            self._redraw_on_attach = self._redraw_on_attach or self.buffer.truncated
+
             try:
-                await old.close(code=WS_CLOSE_SUPERSEDED)
+                # A byte-capped ANSI tail is not a valid replay stream:
+                # truncation can begin inside UTF-8, CSI, or a relative-cursor
+                # update. Once truncation has happened, every later attach
+                # requests a semantic repaint; no later partial buffer is ever
+                # promoted back to replay-safe merely because it fits.
+                if self._redraw_on_attach:
+                    await ws.send_bytes(_CLEAR_AND_HOME)
+                    self.bridge.write(_REDRAW_INPUT)
+                    self.buffer.clear()
+                    return
+
+                snap = self.buffer.snapshot()
+                if snap:
+                    await ws.send_bytes(snap)
+                if force_redraw:
+                    self.bridge.write(_REDRAW_INPUT)
             except Exception:
-                pass
-        self._ws = ws
-        self.attached = True
-        self.last_detached_at = None
-        snap = self.buffer.snapshot()
-        if snap:
-            await ws.send_bytes(snap)
-        if force_redraw:
-            self.bridge.write(TUI_FORCE_REDRAW)
+                if self._ws is ws:
+                    self._ws = None
+                    self.attached = False
+                    self.last_detached_at = time.monotonic()
+                raise
 
     def detach(self, ws) -> None:
         # Only the currently-attached socket may mark the session detached.

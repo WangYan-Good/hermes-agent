@@ -1,6 +1,7 @@
 import type { MouseTrackingMode } from '@hermes/ink'
 import { useEffect, useRef } from 'react'
 
+import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
@@ -114,6 +115,11 @@ export const normalizeMouseTracking = (display: {
 
   return 'all'
 }
+
+export const resolveConfiguredMouseTracking = (
+  display: Parameters<typeof normalizeMouseTracking>[0],
+  dashboardMode = DASHBOARD_TUI_MODE
+): MouseTrackingMode => (dashboardMode ? 'wheel' : normalizeMouseTracking(display))
 
 const MTIME_POLL_MS = 5000
 
@@ -283,7 +289,7 @@ export const applyDisplay = (
     focusView: !!d.focus_view,
     indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
-    mouseTracking: normalizeMouseTracking(d),
+    mouseTracking: resolveConfiguredMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
     sections: resolveSections(d.sections),

@@ -23,6 +23,26 @@ const parseToggle = (v?: string): boolean | null => {
   return null
 }
 
+export const parseMouseTrackingOverride = (v?: string): MouseTrackingMode | null => {
+  const raw = (v ?? '').trim().toLowerCase()
+
+  if (raw === 'wheel' || raw === 'scroll') {
+    return 'wheel'
+  }
+
+  if (raw === 'buttons' || raw === 'button' || raw === 'click') {
+    return 'buttons'
+  }
+
+  if (raw === 'all' || raw === 'full' || raw === 'any') {
+    return 'all'
+  }
+
+  const enabled = parseToggle(raw)
+
+  return enabled == null ? null : enabled ? 'all' : 'off'
+}
+
 export const TERMUX_TUI_MODE = isTermuxTuiMode()
 
 export const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
@@ -35,19 +55,19 @@ export const STARTUP_IMAGE = (process.env.HERMES_TUI_IMAGE ?? '').trim()
 //
 // Precedence (highest first):
 //
-// - HERMES_TUI_MOUSE_TRACKING (truthy/falsy) explicitly overrides everything.
+// - HERMES_TUI_MOUSE_TRACKING (off|wheel|buttons|all, plus boolean aliases)
+//   explicitly overrides everything.
 //   This is the "force a value" knob and intentionally beats the legacy
 //   kill-switch and the Termux default.
 // - HERMES_TUI_DISABLE_MOUSE=1 forces mouse off — the legacy kill switch.
 // - On Termux the default is mouse off so touch selection isn't intercepted
 //   by terminal mouse protocols. Desktop defaults to 'all' to preserve prior
 //   behavior.
-const mouseTrackingOverride = parseToggle(process.env.HERMES_TUI_MOUSE_TRACKING)
+const mouseTrackingOverride = parseMouseTrackingOverride(process.env.HERMES_TUI_MOUSE_TRACKING)
 const mouseTrackingDisabledLegacy = truthy(process.env.HERMES_TUI_DISABLE_MOUSE)
 
-const resolvedBootMouseEnabled = mouseTrackingOverride ?? (TERMUX_TUI_MODE ? false : !mouseTrackingDisabledLegacy)
-
-export const MOUSE_TRACKING: MouseTrackingMode = resolvedBootMouseEnabled ? 'all' : 'off'
+export const MOUSE_TRACKING: MouseTrackingMode =
+  mouseTrackingOverride ?? (TERMUX_TUI_MODE || mouseTrackingDisabledLegacy ? 'off' : 'all')
 
 export const NO_CONFIRM_DESTRUCTIVE = truthy(process.env.HERMES_TUI_NO_CONFIRM)
 

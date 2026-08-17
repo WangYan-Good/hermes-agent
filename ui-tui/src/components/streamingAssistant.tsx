@@ -1,8 +1,9 @@
+import { Box, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 
 import type { AppLayoutProgressProps } from '../app/interfaces.js'
-import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
+import { toggleTodoCollapsed, type TurnState, useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { blockRenders } from '../domain/blockLayout.js'
 import { appendToolShelfMessage } from '../lib/liveProgress.js'
@@ -21,6 +22,15 @@ interface LiveBlock {
   tools?: ActiveTool[]
 }
 
+type LiveOutputState = Pick<TurnState, 'streaming' | 'streamPendingTools' | 'streamSegments' | 'tools'>
+
+export const liveOutputVisible = (state: LiveOutputState, showProgressArea: boolean): boolean =>
+  Boolean(
+    state.streaming ||
+    state.tools.length ||
+    (showProgressArea && (state.streamPendingTools.length || state.streamSegments.length))
+  )
+
 export const StreamingAssistant = memo(function StreamingAssistant({
   cols,
   compact,
@@ -35,9 +45,10 @@ export const StreamingAssistant = memo(function StreamingAssistant({
   const streamPendingTools = useTurnSelector(state => state.streamPendingTools)
   const streaming = useTurnSelector(state => state.streaming)
   const activeTools = useTurnSelector(state => state.tools)
+  const visible = useTurnSelector(state => liveOutputVisible(state, progress.showProgressArea))
   const showStreamingArea = Boolean(streaming)
 
-  if (!progress.showProgressArea && !showStreamingArea && !activeTools.length) {
+  if (!visible) {
     return null
   }
 
@@ -109,6 +120,55 @@ export const LiveTodoPanel = memo(function LiveTodoPanel() {
   return <TodoPanel collapsed={collapsed} onToggle={toggleTodoCollapsed} t={ui.theme} todos={todos} />
 })
 
+export const LiveOutputWindow = memo(function LiveOutputWindow({
+  bottomSpacerRows = 0,
+  cols,
+  compact,
+  detailsMode,
+  detailsModeCommandOverride,
+  progress,
+  sections
+}: LiveOutputWindowProps) {
+  const ui = useStore($uiState)
+
+  const active = useTurnSelector(state => liveOutputVisible(state, progress.showProgressArea))
+
+  if (!active) {
+    return null
+  }
+
+  return (
+    <Box
+      borderColor={ui.theme.color.border}
+      borderStyle="single"
+      flexDirection="column"
+      flexShrink={1}
+      height="40%"
+      minHeight={0}
+      overflow="hidden"
+    >
+      <Box flexShrink={0}>
+        <Text bold color={ui.theme.color.label} wrap="truncate-end">
+          Live output
+        </Text>
+      </Box>
+      <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} stickyScroll>
+        <Box flexDirection="column" paddingX={1}>
+          <StreamingAssistant
+            cols={Math.max(1, cols - 4)}
+            compact={compact}
+            detailsMode={detailsMode}
+            detailsModeCommandOverride={detailsModeCommandOverride}
+            progress={progress}
+            sections={sections}
+          />
+          {bottomSpacerRows > 0 ? <Box height={bottomSpacerRows} /> : null}
+        </Box>
+      </ScrollBox>
+    </Box>
+  )
+})
+
 interface StreamingAssistantProps {
   cols: number
   compact?: boolean
@@ -117,4 +177,8 @@ interface StreamingAssistantProps {
   prevMsg?: Msg
   progress: AppLayoutProgressProps
   sections?: SectionVisibility
+}
+
+interface LiveOutputWindowProps extends Omit<StreamingAssistantProps, 'prevMsg'> {
+  bottomSpacerRows?: number
 }

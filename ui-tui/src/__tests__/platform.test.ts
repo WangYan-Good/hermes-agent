@@ -558,3 +558,22 @@ describe('isMacActionFallback', () => {
     expect(isMacActionFallback({ ctrl: true, meta: false, super: false }, 'w', 'w')).toBe(false)
   })
 })
+
+describe('isRedrawShortcut', () => {
+  it('accepts both the macOS action chord and a raw Ctrl+L redraw signal', async () => {
+    const { isRedrawShortcut } = await importPlatform('darwin')
+
+    expect(isRedrawShortcut({ ctrl: false, meta: false, super: true }, 'l')).toBe(true)
+    expect(isRedrawShortcut({ ctrl: true, meta: false, super: false }, 'l')).toBe(true)
+    expect(isRedrawShortcut({ ctrl: false, meta: true, super: false }, 'l')).toBe(true)
+    expect(isRedrawShortcut({ ctrl: false, meta: false, super: false }, 'l')).toBe(false)
+    expect(isRedrawShortcut({ ctrl: true, meta: false, super: false }, 'k')).toBe(false)
+  })
+
+  it('keeps Ctrl+L as the redraw chord on non-macOS', async () => {
+    const { isRedrawShortcut } = await importPlatform('linux')
+
+    expect(isRedrawShortcut({ ctrl: true, meta: false, super: false }, 'l')).toBe(true)
+    expect(isRedrawShortcut({ ctrl: false, meta: false, super: true }, 'l')).toBe(false)
+  })
+})
