@@ -1,6 +1,6 @@
 import { PassThrough } from 'stream'
 
-import { renderSync, Text } from '@hermes/ink'
+import { Box, renderSync, Text } from '@hermes/ink'
 import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -23,17 +23,13 @@ import {
   patchOverlayState,
   resetOverlayState
 } from '../app/overlayStore.js'
+import { patchTurnState, resetTurnState } from '../app/turnStore.js'
 import { patchUiState, resetUiState } from '../app/uiStore.js'
 import { decideOutputConflictWithActivation } from '../app/useMainApp.js'
-import { AppLayout } from '../components/appLayout.js'
+import { AppLayout, appScreenMode, petSpacerAllocation } from '../components/appLayout.js'
 import { PromptZone } from '../components/appOverlays.js'
 import { outputConflictAction, OutputConflictPrompt } from '../components/outputConflictPrompt.js'
-import {
-  outputPaneMode,
-  outputPaneWidths,
-  ReadonlyOutputPane,
-  SplitOutputPane
-} from '../components/splitOutputPane.js'
+import { outputPaneMode, outputPaneWidths, ReadonlyOutputPane, SplitOutputPane } from '../components/splitOutputPane.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import { DEFAULT_VOICE_RECORD_KEY } from '../lib/platform.js'
 import { stripAnsi } from '../lib/text.js'
@@ -88,6 +84,7 @@ const seedThreeStreamsAndSplit = () => {
 beforeEach(() => {
   resetOutputStreams()
   resetOverlayState()
+  resetTurnState()
   resetUiState()
 })
 
@@ -145,6 +142,18 @@ const appLayoutProps: AppLayoutProps = {
 }
 
 describe('dashboard output pane layout', () => {
+  it('keeps dashboard output on a fixed alternate-screen viewport even when inline mode is requested', () => {
+    expect(appScreenMode(true, true)).toBe('alternate')
+    expect(appScreenMode(true, false)).toBe('inline')
+    expect(appScreenMode(false, true)).toBe('alternate')
+  })
+
+  it('reserves narrow pet rows in whichever dashboard window is visible at the bottom', () => {
+    expect(petSpacerAllocation(4, true, false)).toEqual({ live: 0, transcript: 4 })
+    expect(petSpacerAllocation(4, true, true)).toEqual({ live: 4, transcript: 0 })
+    expect(petSpacerAllocation(4, false, false)).toEqual({ live: 0, transcript: 4 })
+  })
+
   it('uses tabs below 110 columns and two panes at 110 columns', () => {
     expect(outputPaneMode(109)).toBe('tabs')
     expect(outputPaneMode(110)).toBe('split')
@@ -168,17 +177,19 @@ describe('dashboard output pane layout', () => {
     seedThreeStreamsAndSplit()
 
     for (let index = 0; index < 80; index += 1) {
-      observeOutputEvent({ payload: { text: `TAIL-ROW-${String(index).padStart(3, '0')}` }, type: 'message.interim' }, 'sid-b', {
-        buffer: true,
-        now: 10 + index
-      })
+      observeOutputEvent(
+        { payload: { text: `TAIL-ROW-${String(index).padStart(3, '0')}` }, type: 'message.interim' },
+        'sid-b',
+        {
+          buffer: true,
+          now: 10 + index
+        }
+      )
     }
 
     const stream = getOutputStreamsState().streams['sid-b']!
 
-    const output = renderToText(
-      <ReadonlyOutputPane onFocus={vi.fn()} stream={stream} t={DEFAULT_THEME} width={60} />
-    )
+    const output = renderToText(<ReadonlyOutputPane onFocus={vi.fn()} stream={stream} t={DEFAULT_THEME} width={60} />)
 
     const renderedRows = new Set(output.match(/TAIL-ROW-\d+/g) ?? [])
 
@@ -186,6 +197,32 @@ describe('dashboard output pane layout', () => {
     expect(output).toContain('TAIL-ROW-079')
     expect(output).not.toContain('TAIL-ROW-000')
     expect(stream.entries.some(entry => entry.text === 'TAIL-ROW-000')).toBe(true)
+  })
+
+  it('clips a readonly output window to its pane and keeps the newest rows visible', () => {
+    seedThreeStreamsAndSplit()
+
+    for (let index = 0; index < 80; index += 1) {
+      observeOutputEvent(
+        { payload: { text: `CLIPPED-ROW-${String(index).padStart(3, '0')}` }, type: 'message.interim' },
+        'sid-b',
+        {
+          buffer: true,
+          now: 10 + index
+        }
+      )
+    }
+
+    const stream = getOutputStreamsState().streams['sid-b']!
+
+    const output = renderToText(
+      <Box flexDirection="column" height={8}>
+        <ReadonlyOutputPane onFocus={vi.fn()} stream={stream} t={DEFAULT_THEME} width={60} />
+      </Box>
+    )
+
+    expect(output).toContain('CLIPPED-ROW-079')
+    expect(output).not.toContain('CLIPPED-ROW-050')
   })
 
   it('renders tab labels but only the focused transcript below the threshold', () => {
@@ -261,6 +298,27 @@ describe('dashboard output pane layout', () => {
     expect(output).toContain('PRIMARY TRANSCRIPT')
     expect(output).toContain('Beta · read-only')
     expect(output).toContain('SECONDARY BODY')
+  })
+
+  it('isolates dashboard streaming updates in a labelled live-output window', () => {
+    syncOutputSessions([{ id: 'sid-a', status: 'working', title: 'Alpha' }], 'sid-a')
+    patchTurnState({ streaming: 'LIVE CHINESE 输出进度 6%' })
+    patchUiState({ sessionTitle: 'Alpha', sid: 'sid-a', status: 'working' })
+
+    const gateway = {
+      gw: { request: async () => null, send: () => {} } as unknown as GatewayClient,
+      rpc: async () => null
+    }
+
+    const output = renderToText(
+      <GatewayProvider value={gateway}>
+        <AppLayout {...appLayoutProps} dashboardMode />
+      </GatewayProvider>
+    )
+
+    expect(output).toContain('PRIMARY TRANSCRIPT')
+    expect(output).toContain('Live output')
+    expect(output).toContain('LIVE CHINESE 输出进度 6%')
   })
 
   it('keeps standalone AppLayout on the original single transcript surface', () => {

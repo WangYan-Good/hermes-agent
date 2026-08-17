@@ -1,4 +1,4 @@
-import { Box, Text } from '@hermes/ink'
+import { Box, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useMemo } from 'react'
 
@@ -49,32 +49,39 @@ export function readonlyOutputTail(
 }
 
 export function ReadonlyOutputPane({ onFocus, stream, t, width }: ReadonlyOutputPaneProps) {
-  const entries = useMemo(
-    () => readonlyOutputTail(stream.entries, stream.omitted),
-    [stream.entries, stream.omitted]
-  )
+  const entries = useMemo(() => readonlyOutputTail(stream.entries, stream.omitted), [stream.entries, stream.omitted])
 
   const hasOmissionEntry = entries.some(entry => entry.id === 'omitted')
 
   return (
-    <Box flexDirection="column" flexGrow={1} onClick={onFocus} width={width}>
-      <Text bold color={t.color.label} wrap="truncate-end">
-        {stream.title} · read-only
-      </Text>
-      <Text color={t.color.muted} wrap="truncate-end">
-        {stream.status}
-      </Text>
-      {stream.omitted && !hasOmissionEntry ? <Text color={t.color.warn}>[Earlier output omitted]</Text> : null}
-      {entries.map(entry => (
-        <Text
-          color={entry.tone === 'error' ? t.color.error : entry.tone === 'warn' ? t.color.warn : t.color.text}
-          key={entry.id}
-          wrap="wrap"
-        >
-          {entryText(entry)}
+    <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} onClick={onFocus} width={width}>
+      <Box flexShrink={0}>
+        <Text bold color={t.color.label} wrap="truncate-end">
+          {stream.title} · read-only
         </Text>
-      ))}
-      <Text color={t.color.muted}>click to focus</Text>
+      </Box>
+      <Box flexShrink={0}>
+        <Text color={t.color.muted} wrap="truncate-end">
+          {stream.status}
+        </Text>
+      </Box>
+      <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} stickyScroll>
+        <Box flexDirection="column">
+          {stream.omitted && !hasOmissionEntry ? <Text color={t.color.warn}>[Earlier output omitted]</Text> : null}
+          {entries.map(entry => (
+            <Text
+              color={entry.tone === 'error' ? t.color.error : entry.tone === 'warn' ? t.color.warn : t.color.text}
+              key={entry.id}
+              wrap="wrap"
+            >
+              {entryText(entry)}
+            </Text>
+          ))}
+        </Box>
+      </ScrollBox>
+      <Box flexShrink={0}>
+        <Text color={t.color.muted}>click to focus</Text>
+      </Box>
     </Box>
   )
 }

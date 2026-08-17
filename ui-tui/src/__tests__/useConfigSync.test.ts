@@ -9,6 +9,7 @@ import {
   normalizeIndicatorStyle,
   normalizeMouseTracking,
   normalizeStatusBar,
+  resolveConfiguredMouseTracking,
   syncMcpReload
 } from '../app/useConfigSync.js'
 
@@ -194,6 +195,12 @@ describe('normalizeStatusBar', () => {
 })
 
 describe('normalizeMouseTracking', () => {
+  it('keeps dashboard wheel routing when config synchronization runs', () => {
+    expect(resolveConfiguredMouseTracking({ mouse_tracking: false }, true)).toBe('wheel')
+    expect(resolveConfiguredMouseTracking({ mouse_tracking: 'all' }, true)).toBe('wheel')
+    expect(resolveConfiguredMouseTracking({ mouse_tracking: false }, false)).toBe('off')
+  })
+
   it('defaults to all and prefers canonical mouse_tracking over legacy tui_mouse', () => {
     expect(normalizeMouseTracking({})).toBe('all')
     expect(normalizeMouseTracking({ mouse_tracking: false })).toBe('off')

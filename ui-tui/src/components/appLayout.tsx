@@ -9,6 +9,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
+import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
 import { DASHBOARD_TUI_MODE, INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
@@ -35,7 +36,7 @@ import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { SplitOutputPane } from './splitOutputPane.js'
-import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
+import { liveOutputVisible, LiveOutputWindow, LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput, type TextInputMouseApi } from './textInput.js'
 
 // Box geometry, kept here so the transcript's reservation math matches the
@@ -48,6 +49,17 @@ const KITTY_PLACEHOLDER = '\u{10eeee}'
 // Below this many columns of remaining text width, the right gutter is too
 // cramped, so the transcript collapses to reserving bottom rows instead.
 const MIN_GUTTER_BODY_COLS = 72
+
+export type AppScreenMode = 'alternate' | 'inline'
+
+export const appScreenMode = (inlineMode: boolean, dashboardMode: boolean): AppScreenMode =>
+  inlineMode && !dashboardMode ? 'inline' : 'alternate'
+
+export const petSpacerAllocation = (rows: number, isolateLiveOutput: boolean, liveOutputActive: boolean) => {
+  const safeRows = Math.max(0, rows)
+
+  return isolateLiveOutput && liveOutputActive ? { live: safeRows, transcript: 0 } : { live: 0, transcript: safeRows }
+}
 
 // Petdex mascot — a small floating overlay riding the bottom-right corner just
 // above the status bar, with a little top/left breathing room. It reserves no
@@ -139,9 +151,10 @@ const PromptPrefix = memo(function PromptPrefix({
 const TranscriptPane = memo(function TranscriptPane({
   actions,
   composer,
+  isolateLiveOutput = false,
   progress,
   transcript
-}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
+}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'> & { isolateLiveOutput?: boolean }) {
   const ui = useStore($uiState)
   const petBox = useStore($petBox)
   const railCols = useAmbientRailWidth('left') + useAmbientRailWidth('right')
@@ -154,6 +167,8 @@ const TranscriptPane = memo(function TranscriptPane({
   const useGutter = !!petBox && composer.cols - railCols - petBox.width >= MIN_GUTTER_BODY_COLS
   const bodyCols = Math.max(28, (useGutter && petBox ? composer.cols - petBox.width : composer.cols) - railCols)
   const petBandRows = petBox && !useGutter ? petBox.height : 0
+  const liveOutputActive = useTurnSelector(state => liveOutputVisible(state, progress.showProgressArea))
+  const petSpacers = petSpacerAllocation(petBandRows, isolateLiveOutput, liveOutputActive)
 
   // LiveTodoPanel rides as a child of the latest user-message row so it
   // visually belongs to the prompt and follows it during scroll. -1 when
@@ -180,86 +195,104 @@ const TranscriptPane = memo(function TranscriptPane({
   )
 
   return (
-    <>
-      <ScrollBox
-        flexDirection="column"
-        flexGrow={1}
-        flexShrink={1}
-        onClick={(e: { cellIsBlank?: boolean }) => {
-          if (e.cellIsBlank) {
-            actions.clearSelection()
-          }
-        }}
-        ref={transcript.scrollRef}
-        stickyScroll
-      >
-        <Box flexDirection="column" paddingX={1}>
-          {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
+    <Box flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0}>
+      <Box flexDirection="row" flexGrow={1} flexShrink={1} minHeight={0}>
+        <ScrollBox
+          flexDirection="column"
+          flexGrow={1}
+          flexShrink={1}
+          onClick={(e: { cellIsBlank?: boolean }) => {
+            if (e.cellIsBlank) {
+              actions.clearSelection()
+            }
+          }}
+          ref={transcript.scrollRef}
+          stickyScroll
+        >
+          <Box flexDirection="column" paddingX={1}>
+            {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
-          {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
-            <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
-              {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
-                <Box marginTop={1}>
-                  <Text color={ui.theme.color.border}>───</Text>
-                </Box>
-              )}
+            {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
+              <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
+                {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
+                  <Box marginTop={1}>
+                    <Text color={ui.theme.color.border}>───</Text>
+                  </Box>
+                )}
 
-              {row.msg.kind === 'intro' ? (
-                <Box flexDirection="column" paddingTop={1}>
-                  <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
+                {row.msg.kind === 'intro' ? (
+                  <Box flexDirection="column" paddingTop={1}>
+                    <Banner maxWidth={Math.max(1, composer.cols - 2)} t={ui.theme} />
 
-                  {row.msg.info && (
-                    <SessionPanel
-                      info={row.msg.info}
-                      maxWidth={Math.max(1, composer.cols - 2)}
-                      sid={ui.sid}
-                      t={ui.theme}
-                    />
-                  )}
-                </Box>
-              ) : row.msg.kind === 'panel' && row.msg.panelData ? (
-                <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
-              ) : (
-                <MessageLine
-                  cols={bodyCols}
-                  compact={ui.compact}
-                  detailsMode={ui.detailsMode}
-                  detailsModeCommandOverride={ui.detailsModeCommandOverride}
-                  msg={row.msg}
-                  prev={prevRenderedMsg(i => transcript.virtualRows[i]?.msg, row.index, {
-                    commandOverride: ui.detailsModeCommandOverride,
-                    detailsMode: ui.detailsMode,
-                    sections: ui.sections
-                  })}
-                  sections={ui.sections}
-                  t={ui.theme}
-                />
-              )}
+                    {row.msg.info && (
+                      <SessionPanel
+                        info={row.msg.info}
+                        maxWidth={Math.max(1, composer.cols - 2)}
+                        sid={ui.sid}
+                        t={ui.theme}
+                      />
+                    )}
+                  </Box>
+                ) : row.msg.kind === 'panel' && row.msg.panelData ? (
+                  <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
+                ) : (
+                  <MessageLine
+                    cols={bodyCols}
+                    compact={ui.compact}
+                    detailsMode={ui.detailsMode}
+                    detailsModeCommandOverride={ui.detailsModeCommandOverride}
+                    msg={row.msg}
+                    prev={prevRenderedMsg(i => transcript.virtualRows[i]?.msg, row.index, {
+                      commandOverride: ui.detailsModeCommandOverride,
+                      detailsMode: ui.detailsMode,
+                      sections: ui.sections
+                    })}
+                    sections={ui.sections}
+                    t={ui.theme}
+                  />
+                )}
 
-              {row.index === lastUserIdx && <LiveTodoPanel />}
-            </Box>
-          ))}
+                {row.index === lastUserIdx && <LiveTodoPanel />}
+              </Box>
+            ))}
 
-          {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
+            {transcript.virtualHistory.bottomSpacer > 0 ? (
+              <Box height={transcript.virtualHistory.bottomSpacer} />
+            ) : null}
 
-          <StreamingAssistant
-            cols={bodyCols}
-            compact={ui.compact}
-            detailsMode={ui.detailsMode}
-            detailsModeCommandOverride={ui.detailsModeCommandOverride}
-            prevMsg={transcript.historyItems[transcript.historyItems.length - 1]}
-            progress={progress}
-            sections={ui.sections}
-          />
+            {!isolateLiveOutput ? (
+              <StreamingAssistant
+                cols={bodyCols}
+                compact={ui.compact}
+                detailsMode={ui.detailsMode}
+                detailsModeCommandOverride={ui.detailsModeCommandOverride}
+                prevMsg={transcript.historyItems[transcript.historyItems.length - 1]}
+                progress={progress}
+                sections={ui.sections}
+              />
+            ) : null}
 
-          {/* Narrow terminals: reserve rows so the newest lines sit above the pet. */}
-          {petBandRows > 0 ? <Box height={petBandRows} /> : null}
-        </Box>
-      </ScrollBox>
+            {/* Narrow terminals: reserve rows so the newest lines sit above the pet. */}
+            {petSpacers.transcript > 0 ? <Box height={petSpacers.transcript} /> : null}
+          </Box>
+        </ScrollBox>
 
-      <NoSelect flexShrink={0} marginLeft={1}>
-        <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
-      </NoSelect>
+        <NoSelect flexShrink={0} marginLeft={1}>
+          <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
+        </NoSelect>
+      </Box>
+
+      {isolateLiveOutput ? (
+        <LiveOutputWindow
+          bottomSpacerRows={petSpacers.live}
+          cols={bodyCols}
+          compact={ui.compact}
+          detailsMode={ui.detailsMode}
+          detailsModeCommandOverride={ui.detailsModeCommandOverride}
+          progress={progress}
+          sections={ui.sections}
+        />
+      ) : null}
 
       <StickyPromptTracker
         messages={transcript.historyItems}
@@ -267,7 +300,7 @@ const TranscriptPane = memo(function TranscriptPane({
         onChange={actions.setStickyPrompt}
         scrollRef={transcript.scrollRef}
       />
-    </>
+    </Box>
   )
 })
 
@@ -527,11 +560,14 @@ export const AppLayout = memo(function AppLayout({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  // Inline mode skips AlternateScreen so the host terminal's native
-  // scrollback captures rows scrolled off the top; composer + progress
-  // stay anchored via normal flex-column flow.
-  const Shell = INLINE_MODE ? Fragment : AlternateScreen
-  const shellProps = INLINE_MODE ? {} : { mouseTracking }
+  // Dashboard panes require a viewport-bounded root: their ScrollBoxes own
+  // history and clipping, while the alternate screen lets Ink address rows
+  // absolutely. Relative updates in the primary buffer can lose their anchor
+  // while live output grows or wraps and then overwrite settled transcript.
+  // Standalone users may still opt into inline mode for native scrollback.
+  const screenMode = appScreenMode(INLINE_MODE, dashboardMode)
+  const Shell = screenMode === 'inline' ? Fragment : AlternateScreen
+  const shellProps = screenMode === 'inline' ? {} : { mouseTracking }
 
   return (
     <Shell {...shellProps}>
@@ -556,6 +592,7 @@ export const AppLayout = memo(function AppLayout({
                     <TranscriptPane
                       actions={actions}
                       composer={{ ...composer, cols: paneCols }}
+                      isolateLiveOutput
                       progress={progress}
                       transcript={transcript}
                     />

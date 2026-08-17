@@ -15192,14 +15192,11 @@ def _resolve_chat_argv(
         _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
     _apply_tui_python_env(env)
     env.setdefault("NODE_ENV", "production")
-    # Browser-embedded chat should prefer stable wheel-based scrollback over
-    # native terminal mouse tracking. When mouse tracking is enabled, wheel
-    # events are consumed by the TUI and forwarded as terminal input, which
-    # makes browser-side transcript scrolling feel broken. Keep the terminal
-    # build unchanged for native CLI usage; only disable mouse tracking for
-    # the dashboard PTY path.
-    env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
-    env.setdefault("HERMES_TUI_INLINE", "1")
+    # Browser chat uses a fixed alternate-screen viewport. Ink owns the
+    # transcript/output ScrollBoxes, so forward wheel events to it without
+    # enabling click/drag/hover terminal tracking.
+    from hermes_cli.dashboard_tui_env import apply_dashboard_tui_render_env
+    apply_dashboard_tui_render_env(env)
     # The dashboard terminal is xterm.js, which always renders 24-bit RGB.
     # But chalk inside the TUI child decides its color depth from the
     # SERVER process env — and hosted/cloud deploys run the dashboard under
@@ -15211,8 +15208,6 @@ def _resolve_chat_argv(
     # COLORTERM=truecolor into os.environ. Backfill it for the PTY child;
     # setdefault so an explicit operator value still wins.
     env.setdefault("COLORTERM", "truecolor")
-    env["HERMES_TUI_DASHBOARD"] = "1"
-
     if profile_dir is not None:
         env["HERMES_HOME"] = str(profile_dir)
 
