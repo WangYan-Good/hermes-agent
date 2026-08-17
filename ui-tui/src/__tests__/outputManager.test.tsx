@@ -23,7 +23,12 @@ vi.mock('@hermes/ink', async importOriginal => {
 
 import { GatewayProvider } from '../app/gatewayContext.js'
 import type { SubscriptionOverlayState } from '../app/interfaces.js'
-import { getOutputStreamsState, resetOutputStreams, setSecondaryOutput, syncOutputSessions } from '../app/outputStreamStore.js'
+import {
+  getOutputStreamsState,
+  resetOutputStreams,
+  setSecondaryOutput,
+  syncOutputSessions
+} from '../app/outputStreamStore.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { resetUiState } from '../app/uiStore.js'
 import { FloatingOverlays } from '../components/appOverlays.js'

@@ -27,7 +27,7 @@ import type { Msg } from '../types.js'
 
 type Lifecycle = ReturnType<typeof useSessionLifecycle>
 
-const ref = <T,>(current: T) => ({ current })
+const ref = <T>(current: T) => ({ current })
 
 const flushPromises = async () => {
   for (let index = 0; index < 8; index += 1) {
@@ -48,7 +48,13 @@ const makeStreams = () => {
   return { stderr, stdin, stdout }
 }
 
-function LifecycleHarness({ expose, gw, rpc, sys = vi.fn(), transitionHooks }: {
+function LifecycleHarness({
+  expose,
+  gw,
+  rpc,
+  sys = vi.fn(),
+  transitionHooks
+}: {
   expose: React.MutableRefObject<Lifecycle | null>
   gw: GatewayClient
   rpc?: GatewayRpc

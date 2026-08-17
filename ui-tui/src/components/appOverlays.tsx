@@ -72,7 +72,13 @@ export function PromptZone({
   showOutputConflict
 }: Pick<
   AppOverlaysProps,
-  'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onOutputConflictDecision' | 'onSecretSubmit' | 'onSudoSubmit' | 'showOutputConflict'
+  | 'cols'
+  | 'onApprovalChoice'
+  | 'onClarifyAnswer'
+  | 'onOutputConflictDecision'
+  | 'onSecretSubmit'
+  | 'onSudoSubmit'
+  | 'showOutputConflict'
 >) {
   const overlay = useStore($overlayState)
   const conflict = useStore($outputConflict)

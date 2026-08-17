@@ -15,11 +15,8 @@ export interface OutputManagerProps {
   t: Theme
 }
 
-export const outputFocusDirection = (key: {
-  leftArrow: boolean
-  meta: boolean
-  rightArrow: boolean
-}): -1 | 0 | 1 => (key.meta && key.leftArrow ? -1 : key.meta && key.rightArrow ? 1 : 0)
+export const outputFocusDirection = (key: { leftArrow: boolean; meta: boolean; rightArrow: boolean }): -1 | 0 | 1 =>
+  key.meta && key.leftArrow ? -1 : key.meta && key.rightArrow ? 1 : 0
 
 interface OutputManagerRow {
   role: 'primary' | 'secondary' | 'waiting'
@@ -82,7 +79,9 @@ export function OutputManager({ onActivate, onClose, onExitSplit, onSetSecondary
 
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
-      <Text bold color={t.color.primary}>Output streams</Text>
+      <Text bold color={t.color.primary}>
+        Output streams
+      </Text>
       {rows.map((row, index) => {
         const style = listRowStyle(t, index === selected)
         const status = row.stream.producing ? 'running' : row.stream.status

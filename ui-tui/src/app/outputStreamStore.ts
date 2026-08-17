@@ -69,8 +69,12 @@ export class OutputSessionIdentityCollisionError extends Error {
 
   constructor(sessionId: string, expectedSessionKey: string, actualSessionKey: string) {
     super(
-      'session identity collision for runtime ' + sessionId +
-      ': expected ' + expectedSessionKey + ', found ' + actualSessionKey
+      'session identity collision for runtime ' +
+        sessionId +
+        ': expected ' +
+        expectedSessionKey +
+        ', found ' +
+        actualSessionKey
     )
     this.name = 'OutputSessionIdentityCollisionError'
   }
@@ -277,7 +281,9 @@ export const markOutputTransportReady = () => {
 export const removeOutputSession = (sessionId: string) => {
   const stream = state.streams[sessionId]
 
-  if (!stream) {return}
+  if (!stream) {
+    return
+  }
 
   updateStream({ ...stream, hasLifecycleEvent: true, producing: false, status: 'closed', unreadCount: 0 })
 
@@ -297,14 +303,17 @@ export const removeOutputSession = (sessionId: string) => {
 export const observeOutputEvent = (event: OutputEvent, sessionId: string, options: ObserveOutputOptions) => {
   const rule = EVENT_RULES[event.type]
 
-  if (!rule || !sessionId) {return}
+  if (!rule || !sessionId) {
+    return
+  }
 
   const now = options.now ?? Date.now()
   const paints = rule.paints && (event.type !== 'message.delta' || Boolean(getString(event.payload, ['text'])))
   const stream = getOrCreateStream(sessionId)
 
-  if (state.layout.primarySessionId == null)
-    {state = { ...state, layout: { ...state.layout, primarySessionId: sessionId } }}
+  if (state.layout.primarySessionId == null) {
+    state = { ...state, layout: { ...state.layout, primarySessionId: sessionId } }
+  }
 
   const terminal = isTerminal(stream.status)
   const startsNewRound = event.type === 'message.start'
@@ -328,8 +337,9 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
     nextStream = appendEntry(nextStream, makeEntry(event, rule, now), event.type, hasCompletionText(event.payload))
   }
 
-  if (paints && sessionId !== state.layout.primarySessionId)
-    {nextStream = { ...nextStream, unreadCount: nextStream.unreadCount + 1 }}
+  if (paints && sessionId !== state.layout.primarySessionId) {
+    nextStream = { ...nextStream, unreadCount: nextStream.unreadCount + 1 }
+  }
 
   updateStream(nextStream)
   updateConflict(sessionId, paints)
@@ -346,7 +356,9 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
   )
 
   for (const details of detailsList) {
-    if (!details.sessionId) {continue}
+    if (!details.sessionId) {
+      continue
+    }
 
     if (details.sessionKey) {
       const existingSessionKey = sessionKeysByRuntime.get(details.sessionId)
@@ -360,7 +372,9 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
   }
 
   for (const details of detailsList) {
-    if (!details.sessionId) {continue}
+    if (!details.sessionId) {
+      continue
+    }
 
     let sessionId = details.sessionId
 
@@ -400,27 +414,34 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
 }
 
 export const resolveOutputConflict = (decision: OutputConflictDecision, resolvedConflict?: OutputConflict) => {
-  if (resolvedConflict && state.conflict && state.conflict.episode !== resolvedConflict.episode) {return}
+  if (resolvedConflict && state.conflict && state.conflict.episode !== resolvedConflict.episode) {
+    return
+  }
   const conflict = state.conflict ?? resolvedConflict
 
-  if (!conflict) {return}
+  if (!conflict) {
+    return
+  }
   let layout = state.layout
 
-  if (decision === 'prioritize-candidate')
-    {layout = { mode: 'single', primarySessionId: conflict.candidateSessionId, secondarySessionId: null }}
-  else if (decision === 'split')
-    {layout = {
+  if (decision === 'prioritize-candidate') {
+    layout = { mode: 'single', primarySessionId: conflict.candidateSessionId, secondarySessionId: null }
+  } else if (decision === 'split') {
+    layout = {
       mode: 'split',
       primarySessionId: conflict.primarySessionId,
       secondarySessionId: conflict.candidateSessionId
-    }}
+    }
+  }
 
   state = { ...state, conflict: null, conflictHandled: hadMultipleProducers, layout }
   publish()
 }
 
 export const setSecondaryOutput = (sessionId: string) => {
-  if (!sessionId) {return}
+  if (!sessionId) {
+    return
+  }
   getOrCreateStream(sessionId)
   const primarySessionId = state.layout.primarySessionId ?? sessionId
   state =
@@ -506,7 +527,8 @@ export const commitOutputPrimaryTransition = (transition: SessionTransition) => 
     return
   }
 
-  const preservesLivePair = (transition.kind === 'activate-live' || transition.kind === 'new-live') &&
+  const preservesLivePair =
+    (transition.kind === 'activate-live' || transition.kind === 'new-live') &&
     Boolean(previousSessionId && previousSessionId !== transition.nextSessionId)
 
   updateStream(nextWithIdentity)
@@ -533,7 +555,9 @@ function assertOutputSessionProvenance(sessionId: string, sessionKey: string) {
 function remapOutputSession(previousSessionId: string, nextSessionId: string, sessionKey: string) {
   const previous = state.streams[previousSessionId]
 
-  if (!previous || previousSessionId === nextSessionId) {return}
+  if (!previous || previousSessionId === nextSessionId) {
+    return
+  }
 
   assertOutputSessionProvenance(nextSessionId, sessionKey)
   const destination = state.streams[nextSessionId]
@@ -566,7 +590,7 @@ function remapOutputSession(previousSessionId: string, nextSessionId: string, se
   const streams = { ...state.streams }
   delete streams[previousSessionId]
   streams[nextSessionId] = stream
-  const remap = (sessionId: null | string) => sessionId === previousSessionId ? nextSessionId : sessionId
+  const remap = (sessionId: null | string) => (sessionId === previousSessionId ? nextSessionId : sessionId)
 
   const conflict = state.conflict
     ? {
@@ -591,7 +615,9 @@ function remapOutputSession(previousSessionId: string, nextSessionId: string, se
 function getOrCreateStream(sessionId: string): OutputStream {
   const existing = state.streams[sessionId]
 
-  if (existing) {return existing}
+  if (existing) {
+    return existing
+  }
 
   const stream: OutputStream = {
     bytes: 0,
@@ -633,10 +659,14 @@ function updateConflict(sessionId: string, paints: boolean) {
 
   hadMultipleProducers = true
 
-  if (!paints || state.conflict || state.conflictHandled) {return}
+  if (!paints || state.conflict || state.conflictHandled) {
+    return
+  }
   const primarySessionId = state.layout.primarySessionId
 
-  if (!primarySessionId || primarySessionId === sessionId) {return}
+  if (!primarySessionId || primarySessionId === sessionId) {
+    return
+  }
   const episode = state.episode + 1
   state = { ...state, conflict: { candidateSessionId: sessionId, episode, primarySessionId }, episode }
 }
@@ -715,7 +745,9 @@ function limitEntries(stream: OutputStream): OutputStream {
   while (entries.length > OUTPUT_ENTRY_LIMIT || bytes > OUTPUT_BYTE_LIMIT) {
     const removed = entries.shift()
 
-    if (!removed) {break}
+    if (!removed) {
+      break
+    }
     bytes -= entryBytes(removed)
     omitted = true
   }
@@ -736,7 +768,9 @@ function limitEntries(stream: OutputStream): OutputStream {
     while (entries.length > OUTPUT_ENTRY_LIMIT || bytes > OUTPUT_BYTE_LIMIT) {
       const removed = entries.splice(1, 1)[0]
 
-      if (!removed) {break}
+      if (!removed) {
+        break
+      }
       bytes -= entryBytes(removed)
     }
   }
@@ -775,12 +809,16 @@ function hasCompletionText(payload: Record<string, unknown> | undefined): boolea
 }
 
 function getString(payload: Record<string, unknown> | undefined, keys: readonly string[]): string | undefined {
-  if (!payload) {return undefined}
+  if (!payload) {
+    return undefined
+  }
 
   for (const key of keys) {
     const value = payload[key]
 
-    if (typeof value === 'string' && value) {return value}
+    if (typeof value === 'string' && value) {
+      return value
+    }
   }
 
   return undefined
@@ -802,7 +840,9 @@ function readSession(item: unknown): {
   status?: string
   title?: string
 } {
-  if (!item || typeof item !== 'object') {return {}}
+  if (!item || typeof item !== 'object') {
+    return {}
+  }
   const record = item as Record<string, unknown>
 
   return {

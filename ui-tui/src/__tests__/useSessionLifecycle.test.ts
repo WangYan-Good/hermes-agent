@@ -330,7 +330,9 @@ describe('atomic live session activation', () => {
     turnController.turnTools = ['shell ls']
     let history = [{ role: 'assistant' as const, text: 'old transcript' }]
 
-    const setHistoryItems = (value: typeof history) => { history = value }
+    const setHistoryItems = (value: typeof history) => {
+      history = value
+    }
     const snapshot = createLiveSessionTransitionStateAdapter({ getHistoryItems: () => history, setHistoryItems })
     const outputBefore = structuredClone(getOutputStreamsState())
     const turnBefore = structuredClone(getTurnState())

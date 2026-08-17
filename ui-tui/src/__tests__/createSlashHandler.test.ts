@@ -40,7 +40,6 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().sessions).toBe(true)
   })
 
-
   it('opens output manager locally in dashboard mode', () => {
     envState.dashboardTuiMode = true
     const ctx = buildCtx()
@@ -51,7 +50,6 @@ describe('createSlashHandler', () => {
   })
 
   it('resumes a prior session by id when /resume has an argument', () => {
-
     const ctx = buildCtx()
     expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
     expect(ctx.session.resumeById).toHaveBeenCalledWith('sid-old')

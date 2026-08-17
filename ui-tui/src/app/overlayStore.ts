@@ -6,16 +6,18 @@ import type { OverlayState } from './interfaces.js'
 import { $outputConflict, type OutputConflict } from './outputStreamStore.js'
 import { $uiState } from './uiStore.js'
 
-export const outputConflictBlocksComposer = (
-  conflict: null | OutputConflict,
-  dashboardMode = DASHBOARD_TUI_MODE
-) => Boolean(dashboardMode && conflict)
-
-
+export const outputConflictBlocksComposer = (conflict: null | OutputConflict, dashboardMode = DASHBOARD_TUI_MODE) =>
+  Boolean(dashboardMode && conflict)
 
 export const hasGlobalControlPrompt = (overlay: OverlayState) =>
   Boolean(
-    overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.secret || overlay.subscription || overlay.sudo
+    overlay.approval ||
+    overlay.billing ||
+    overlay.clarify ||
+    overlay.confirm ||
+    overlay.secret ||
+    overlay.subscription ||
+    overlay.sudo
   )
 
 const buildOverlayState = (): OverlayState => ({
@@ -45,25 +47,28 @@ export const $overlayState = atom<OverlayState>(buildOverlayState())
 
 export const $isBlocked = computed(
   [$overlayState, $outputConflict],
-  ({
-    agents,
-    approval,
-    billing,
-    clarify,
-    confirm,
-    journey,
-    modelPicker,
-    pager,
-    petPicker,
-    pluginsHub,
-    outputs,
-    secret,
-    sessions,
-    skillsHub,
-    subscription,
-    sudo,
-    widget
-  }, conflict) =>
+  (
+    {
+      agents,
+      approval,
+      billing,
+      clarify,
+      confirm,
+      journey,
+      modelPicker,
+      pager,
+      petPicker,
+      pluginsHub,
+      outputs,
+      secret,
+      sessions,
+      skillsHub,
+      subscription,
+      sudo,
+      widget
+    },
+    conflict
+  ) =>
     Boolean(
       agents ||
       approval ||
@@ -81,7 +86,8 @@ export const $isBlocked = computed(
       skillsHub ||
       subscription ||
       sudo ||
-      widget || outputConflictBlocksComposer(conflict)
+      widget ||
+      outputConflictBlocksComposer(conflict)
     )
 )
 
