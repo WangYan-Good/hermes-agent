@@ -5,6 +5,7 @@ import React, { useMemo, useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
+import { createOutputStreamRouter } from '../app/outputStreamRouter.js'
 
 const ref = <T,>(current: T) => ({ current })
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
@@ -32,6 +33,7 @@ describe('voice.submit_mode live composer rendering', () => {
                 method === 'config.get' ? { config: { voice: { submit_mode: 'draft' } } } : null
               )
             },
+            outputRouter: createOutputStreamRouter({ dashboardMode: false }),
             session: {
               STARTUP_RESUME_ID: '',
               colsRef: ref(80),
