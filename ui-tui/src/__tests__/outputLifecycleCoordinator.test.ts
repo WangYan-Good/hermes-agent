@@ -186,4 +186,81 @@ describe('output lifecycle coordinator', () => {
 
     expect(lifecycle.disconnect('runtime-only')).toBeNull()
   })
+
+  it('preserves lifecycle, focus, fallback, and layout invariants through reconnect', () => {
+    const router = createOutputStreamRouter({ dashboardMode: true })
+    const lifecycle = createOutputLifecycleCoordinator(router)
+
+    lifecycle.syncActiveSessions(
+      [
+        { id: 'sid-a', session_key: 'stored-a', status: 'working', title: 'Alpha' },
+        { id: 'sid-b', session_key: 'stored-b', status: 'working', title: 'Beta' },
+        { id: 'sid-c', session_key: 'stored-c', status: 'waiting', title: 'Gamma' }
+      ],
+      'sid-a'
+    )
+    router.route({ session_id: 'sid-a', type: 'message.start' }, 'sid-a')
+    router.route({ session_id: 'sid-b', type: 'message.start' }, 'sid-a')
+    router.route({ payload: { text: 'B is still running' }, session_id: 'sid-b', type: 'message.delta' }, 'sid-a')
+    router.flush()
+    setSecondaryOutput('sid-b')
+
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'split',
+      primarySessionId: 'sid-a',
+      secondarySessionId: 'sid-b'
+    })
+
+    router.route(
+      { payload: { status: 'complete', text: 'A final' }, session_id: 'sid-a', type: 'message.complete' },
+      'sid-a'
+    )
+    lifecycle.syncActiveSessions(
+      [
+        { id: 'sid-a', session_key: 'stored-a', status: 'idle', title: 'Alpha' },
+        { id: 'sid-b', session_key: 'stored-b', status: 'working', title: 'Beta' },
+        { id: 'sid-c', session_key: 'stored-c', status: 'waiting', title: 'Gamma' }
+      ],
+      'sid-a'
+    )
+
+    expect(getOutputStreamsState().streams['sid-a']).toMatchObject({ producing: false, status: 'completed' })
+    expect(getOutputStreamsState().streams['sid-b']).toMatchObject({ producing: true, status: 'running' })
+
+    lifecycle.commitTransition({ kind: 'activate-live', nextSessionId: 'sid-b', previousSessionId: 'sid-a' })
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'split',
+      primarySessionId: 'sid-b',
+      secondarySessionId: 'sid-a'
+    })
+
+    expect(lifecycle.applyCloseResult('sid-b', { closed: true })).toBe(true)
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'single',
+      primarySessionId: 'sid-a',
+      secondarySessionId: null
+    })
+
+    lifecycle.commitTransition({ kind: 'activate-live', nextSessionId: 'sid-c', previousSessionId: 'sid-b' })
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'split',
+      primarySessionId: 'sid-c',
+      secondarySessionId: 'sid-a'
+    })
+
+    expect(lifecycle.disconnect('sid-c')).toBe('stored-c')
+    expect(lifecycle.ready()).toBe(true)
+
+    const reconnected = getOutputStreamsState()
+    expect(reconnected.layout).toEqual({
+      mode: 'split',
+      primarySessionId: 'sid-c',
+      secondarySessionId: 'sid-a'
+    })
+    expect(reconnected.streams['sid-a']?.status).toBe('completed')
+    expect(reconnected.streams['sid-b']?.status).toBe('closed')
+    expect([reconnected.layout.primarySessionId, reconnected.layout.secondarySessionId]).not.toContain('sid-b')
+
+    router.dispose()
+  })
 })

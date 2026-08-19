@@ -16279,9 +16279,8 @@ def _resolve_chat_argv(
         _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
     _apply_tui_python_env(env)
     env.setdefault("NODE_ENV", "production")
-    # Browser chat uses a fixed alternate-screen viewport. Ink owns the
-    # transcript/output ScrollBoxes, so forward wheel events to it without
-    # enabling click/drag/hover terminal tracking.
+    # Browser chat uses xterm's primary buffer and native scrollback. Keep
+    # terminal mouse tracking disabled so xterm retains wheel/selection input.
     from hermes_cli.dashboard_tui_env import apply_dashboard_tui_render_env
     apply_dashboard_tui_render_env(env)
     # The dashboard terminal is xterm.js, which always renders 24-bit RGB.

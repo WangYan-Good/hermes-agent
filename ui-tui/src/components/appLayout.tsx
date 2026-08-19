@@ -52,8 +52,8 @@ const MIN_GUTTER_BODY_COLS = 72
 
 export type AppScreenMode = 'alternate' | 'inline'
 
-export const appScreenMode = (inlineMode: boolean, dashboardMode: boolean): AppScreenMode =>
-  inlineMode && !dashboardMode ? 'inline' : 'alternate'
+export const appScreenMode = (inlineMode: boolean, _dashboardMode: boolean): AppScreenMode =>
+  inlineMode ? 'inline' : 'alternate'
 
 export const petSpacerAllocation = (rows: number, isolateLiveOutput: boolean, liveOutputActive: boolean) => {
   const safeRows = Math.max(0, rows)
@@ -562,11 +562,9 @@ export const AppLayout = memo(function AppLayout({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  // Dashboard panes require a viewport-bounded root: their ScrollBoxes own
-  // history and clipping, while the alternate screen lets Ink address rows
-  // absolutely. Relative updates in the primary buffer can lose their anchor
-  // while live output grows or wraps and then overwrite settled transcript.
-  // Standalone users may still opt into inline mode for native scrollback.
+  // Inline mode keeps output in the primary buffer so the host terminal owns
+  // scrollback. Dashboard chat opts into this because its host is xterm.js;
+  // standalone terminals continue to follow their existing INLINE_MODE value.
   const screenMode = appScreenMode(INLINE_MODE, dashboardMode)
   const Shell = screenMode === 'inline' ? Fragment : AlternateScreen
   const shellProps = screenMode === 'inline' ? {} : { mouseTracking }

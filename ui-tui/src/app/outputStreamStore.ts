@@ -7,7 +7,7 @@ export const OUTPUT_BYTE_LIMIT = 64 * 1024
 export const OUTPUT_SPLIT_MIN_COLS = 110
 
 export type OutputEntryKind = 'message' | 'status' | 'subagent' | 'system' | 'tool'
-export type OutputTerminalStatus = 'closed' | 'completed' | 'disconnected' | 'error'
+export type OutputTerminalStatus = 'closed' | 'completed' | 'disconnected' | 'error' | 'interrupted'
 export type OutputConflictDecision = 'keep-primary' | 'open-manager' | 'prioritize-candidate' | 'split'
 
 export interface OutputEntry {
@@ -93,7 +93,14 @@ interface EventRule {
   terminal: boolean
 }
 
-const TERMINAL_STATUSES = new Set<OutputTerminalStatus>(['closed', 'completed', 'disconnected', 'error'])
+const TERMINAL_STATUSES = new Set<OutputTerminalStatus>([
+  'closed',
+  'completed',
+  'disconnected',
+  'error',
+  'interrupted'
+])
+
 const OMITTED_ENTRY_ID = 'omitted'
 const OMITTED_TEXT = '[Earlier output omitted]'
 
@@ -303,11 +310,12 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
   const paints = rule.paints && (event.type !== 'message.delta' || Boolean(getString(event.payload, ['text'])))
   const stream = getOrCreateStream(sessionId)
 
-  if (state.layout.primarySessionId == null)
+  if (state.layout.primarySessionId == null && stream.status !== 'closed')
     {state = { ...state, layout: { ...state.layout, primarySessionId: sessionId } }}
 
   const terminal = isTerminal(stream.status)
   const startsNewRound = event.type === 'message.start'
+  const reopensTerminal = startsNewRound && (stream.status === 'completed' || stream.status === 'interrupted')
   const nextStatus = getStatus(event.payload, rule.status)
 
   let nextStream: OutputStream = {
@@ -318,10 +326,10 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
     producing:
       rule.producing == null
         ? stream.producing
-        : rule.terminal || !terminal || startsNewRound
+        : rule.terminal || !terminal || reopensTerminal
           ? rule.producing
           : stream.producing,
-    status: nextStatus != null && (rule.terminal || !terminal) ? nextStatus : stream.status
+    status: nextStatus != null && (rule.terminal || !terminal || reopensTerminal) ? nextStatus : stream.status
   }
 
   if (paints && options.buffer) {
@@ -377,7 +385,8 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
     }
 
     const stream = getOrCreateStream(sessionId)
-    const status = stream.producing ? stream.status : (details.status ?? stream.status)
+    const sessionStatus = normalizeOutputStatus(details.status)
+    const status = stream.producing ? stream.status : (sessionStatus ?? stream.status)
     updateStream({
       ...stream,
       model: details.model ?? stream.model,
@@ -392,8 +401,10 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
   }
 
   if (state.layout.primarySessionId == null && currentSessionId) {
-    getOrCreateStream(currentSessionId)
-    state = { ...state, layout: { ...state.layout, primarySessionId: currentSessionId } }
+    const current = getOrCreateStream(currentSessionId)
+
+    if (current.status !== 'closed')
+      {state = { ...state, layout: { ...state.layout, primarySessionId: currentSessionId } }}
   }
 
   publish()
@@ -421,7 +432,9 @@ export const resolveOutputConflict = (decision: OutputConflictDecision, resolved
 
 export const setSecondaryOutput = (sessionId: string) => {
   if (!sessionId) {return}
-  getOrCreateStream(sessionId)
+  const stream = getOrCreateStream(sessionId)
+
+  if (stream.status === 'closed') {return}
   const primarySessionId = state.layout.primarySessionId ?? sessionId
   state =
     primarySessionId === sessionId
@@ -450,8 +463,11 @@ export const capturePrimaryOutputSnapshot = (
   }
 
   const now = Date.now()
-  const entries = snapshotEntries(history, streamingText, now)
+  const candidateEntries = snapshotEntries(history, streamingText, now)
   const stream = getOrCreateStream(sessionId)
+  const terminal = isTerminal(stream.status)
+  const entries = terminal ? mergeSnapshotEntries(stream.entries, candidateEntries) : candidateEntries
+  const candidateStatus = normalizeOutputStatus(status) || stream.status
 
   const snapshot = limitEntries({
     ...stream,
@@ -459,9 +475,9 @@ export const capturePrimaryOutputSnapshot = (
     entries,
     hasDisplayOutput: stream.hasDisplayOutput || entries.length > 0,
     lastOutputAt: entries.length ? now : stream.lastOutputAt,
-    omitted: false,
-    preview: entries.at(-1)?.text ?? stream.preview,
-    status: status || stream.status,
+    omitted: terminal ? stream.omitted : false,
+    preview: candidateEntries.at(-1)?.text ?? stream.preview,
+    status: terminal ? stream.status : candidateStatus,
     title: title || stream.title,
     unreadCount: 0
   })
@@ -506,17 +522,21 @@ export const commitOutputPrimaryTransition = (transition: SessionTransition) => 
     return
   }
 
-  const preservesLivePair = (transition.kind === 'activate-live' || transition.kind === 'new-live') &&
-    Boolean(previousSessionId && previousSessionId !== transition.nextSessionId)
-
   updateStream(nextWithIdentity)
+
+  const preservesLivePair = transition.kind === 'activate-live' || transition.kind === 'new-live'
+
+  const partnerSessionId = preservesLivePair
+    ? selectTransitionPartner(transition.nextSessionId, previousSessionId)
+    : null
+
   state = {
     ...state,
     conflict: null,
     layout: {
-      mode: preservesLivePair ? 'split' : 'single',
+      mode: partnerSessionId ? 'split' : 'single',
       primarySessionId: transition.nextSessionId,
-      secondarySessionId: preservesLivePair ? previousSessionId : null
+      secondarySessionId: partnerSessionId
     }
   }
   publish()
@@ -619,6 +639,23 @@ function updateStream(stream: OutputStream) {
   state = { ...state, streams: { ...state.streams, [stream.sessionId]: stream } }
 }
 
+function selectTransitionPartner(nextSessionId: string, previousSessionId: null | string): null | string {
+  if (
+    previousSessionId !== nextSessionId &&
+    isLayoutEligibleSession(previousSessionId, state.streams)
+  ) {
+    return previousSessionId
+  }
+
+  for (const sessionId of [state.layout.primarySessionId, state.layout.secondarySessionId]) {
+    if (sessionId !== nextSessionId && isLayoutEligibleSession(sessionId, state.streams)) {
+      return sessionId
+    }
+  }
+
+  return null
+}
+
 function updateConflict(sessionId: string, paints: boolean) {
   const producing = Object.values(state.streams).filter(stream => stream.producing)
 
@@ -707,6 +744,43 @@ function snapshotEntries(history: readonly Msg[], streamingText: string, timesta
   return entries
 }
 
+function mergeSnapshotEntries(existing: readonly OutputEntry[], candidate: readonly OutputEntry[]): OutputEntry[] {
+  const durable = existing.filter(entry => entry.id !== OMITTED_ENTRY_ID)
+
+  if (!durable.length) {
+    return [...candidate]
+  }
+
+  if (!candidate.length) {
+    return [...durable]
+  }
+
+  const candidateKeys = new Set(candidate.map(snapshotEntryKey))
+  const candidateCoversDurable = durable.every(entry => candidateKeys.has(snapshotEntryKey(entry)))
+
+  if (candidateCoversDurable && candidate.length >= durable.length) {
+    return [...candidate]
+  }
+
+  const merged = [...durable]
+  const mergedKeys = new Set(durable.map(snapshotEntryKey))
+
+  for (const entry of candidate) {
+    const key = snapshotEntryKey(entry)
+
+    if (!mergedKeys.has(key)) {
+      merged.push(entry)
+      mergedKeys.add(key)
+    }
+  }
+
+  return merged
+}
+
+function snapshotEntryKey(entry: OutputEntry): string {
+  return `${entry.kind}\u0000${entry.text}`
+}
+
 function limitEntries(stream: OutputStream): OutputStream {
   let entries = stream.entries.filter(entry => entry.id !== OMITTED_ENTRY_ID)
   let omitted = stream.omitted
@@ -761,7 +835,15 @@ function makeEntry(event: OutputEvent, rule: EventRule, timestamp: number): Outp
 }
 
 function getStatus(payload: Record<string, unknown> | undefined, fallback: null | string): null | string {
-  return getString(payload, ['status']) ?? fallback
+  return normalizeOutputStatus(getString(payload, ['status']) ?? fallback)
+}
+
+function normalizeOutputStatus(status: null | string | undefined): null | string {
+  if (!status) {
+    return null
+  }
+
+  return status === 'complete' ? 'completed' : status
 }
 
 function getText(payload: Record<string, unknown>, fallback: string): string {
@@ -794,6 +876,35 @@ function isTerminal(status: string): status is OutputTerminalStatus {
   return TERMINAL_STATUSES.has(status as OutputTerminalStatus)
 }
 
+function isLayoutEligibleSession(
+  sessionId: null | string,
+  streams: Record<string, OutputStream>
+): sessionId is string {
+  return Boolean(sessionId && streams[sessionId] && streams[sessionId].status !== 'closed')
+}
+
+function normalizeOutputLayout(
+  layout: OutputLayout,
+  streams: Record<string, OutputStream>
+): OutputLayout {
+  const primarySessionId = isLayoutEligibleSession(layout.primarySessionId, streams)
+    ? layout.primarySessionId
+    : null
+
+  const secondarySessionId = isLayoutEligibleSession(layout.secondarySessionId, streams) &&
+    layout.secondarySessionId !== primarySessionId
+    ? layout.secondarySessionId
+    : null
+
+  if (primarySessionId && secondarySessionId) {
+    return { mode: 'split', primarySessionId, secondarySessionId }
+  }
+
+  const remainingSessionId = primarySessionId ?? secondarySessionId
+
+  return { mode: 'single', primarySessionId: remainingSessionId, secondarySessionId: null }
+}
+
 function readSession(item: unknown): {
   model?: string
   preview?: string
@@ -816,6 +927,7 @@ function readSession(item: unknown): {
 }
 
 function publish() {
+  state = { ...state, layout: normalizeOutputLayout(state.layout, state.streams) }
   $outputStreams.set(state.streams)
   $outputConflict.set(state.conflict)
   $outputLayout.set(state.layout)

@@ -142,10 +142,11 @@ const appLayoutProps: AppLayoutProps = {
 }
 
 describe('dashboard output pane layout', () => {
-  it('keeps dashboard output on a fixed alternate-screen viewport even when inline mode is requested', () => {
-    expect(appScreenMode(true, true)).toBe('alternate')
+  it('uses inline rendering whenever inline mode is requested', () => {
+    expect(appScreenMode(true, true)).toBe('inline')
     expect(appScreenMode(true, false)).toBe('inline')
     expect(appScreenMode(false, true)).toBe('alternate')
+    expect(appScreenMode(false, false)).toBe('alternate')
   })
 
   it('reserves narrow pet rows in whichever dashboard window is visible at the bottom', () => {
@@ -240,10 +241,18 @@ describe('dashboard output pane layout', () => {
 
   it('keeps completed primary output visible and calls out another running pane', () => {
     seedThreeStreamsAndSplit()
-    observeOutputEvent({ payload: { text: 'done' }, type: 'message.complete' }, 'sid-a', {
+    observeOutputEvent({ payload: { status: 'complete', text: 'done' }, type: 'message.complete' }, 'sid-a', {
       buffer: false,
       now: 3
     })
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'idle', title: 'Alpha' },
+        { id: 'sid-b', status: 'working', title: 'Beta' },
+        { id: 'sid-c', status: 'working', title: 'Gamma' }
+      ],
+      'sid-a'
+    )
 
     const output = renderToText(
       <SplitOutputPane cols={120} onFocusSession={vi.fn()} renderPrimary={() => <Text>FINAL RESULT</Text>} />
