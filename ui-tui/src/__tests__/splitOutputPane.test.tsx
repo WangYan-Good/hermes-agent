@@ -142,10 +142,11 @@ const appLayoutProps: AppLayoutProps = {
 }
 
 describe('dashboard output pane layout', () => {
-  it('keeps dashboard output on a fixed alternate-screen viewport even when inline mode is requested', () => {
-    expect(appScreenMode(true, true)).toBe('alternate')
+  it('uses inline rendering whenever inline mode is requested', () => {
+    expect(appScreenMode(true, true)).toBe('inline')
     expect(appScreenMode(true, false)).toBe('inline')
     expect(appScreenMode(false, true)).toBe('alternate')
+    expect(appScreenMode(false, false)).toBe('alternate')
   })
 
   it('reserves narrow pet rows in whichever dashboard window is visible at the bottom', () => {
