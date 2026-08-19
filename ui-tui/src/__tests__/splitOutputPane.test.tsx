@@ -241,10 +241,18 @@ describe('dashboard output pane layout', () => {
 
   it('keeps completed primary output visible and calls out another running pane', () => {
     seedThreeStreamsAndSplit()
-    observeOutputEvent({ payload: { text: 'done' }, type: 'message.complete' }, 'sid-a', {
+    observeOutputEvent({ payload: { status: 'complete', text: 'done' }, type: 'message.complete' }, 'sid-a', {
       buffer: false,
       now: 3
     })
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'idle', title: 'Alpha' },
+        { id: 'sid-b', status: 'working', title: 'Beta' },
+        { id: 'sid-c', status: 'working', title: 'Gamma' }
+      ],
+      'sid-a'
+    )
 
     const output = renderToText(
       <SplitOutputPane cols={120} onFocusSession={vi.fn()} renderPrimary={() => <Text>FINAL RESULT</Text>} />

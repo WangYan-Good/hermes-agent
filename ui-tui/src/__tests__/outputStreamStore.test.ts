@@ -8,6 +8,8 @@ import {
   markOutputTransportDisconnected,
   markOutputTransportReady,
   observeOutputEvent,
+  OUTPUT_BYTE_LIMIT,
+  OUTPUT_ENTRY_LIMIT,
   removeOutputSession,
   resetOutputStreams,
   resolveOutputConflict,
@@ -105,6 +107,88 @@ describe('output stream state', () => {
     expect(messages).toEqual([expect.objectContaining({ complete: true, text: 'final' })])
   })
 
+  it('canonicalizes the gateway complete status when a message finishes', () => {
+    observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: false, now: 1 })
+    observeOutputEvent(
+      { payload: { status: 'complete', text: 'done' }, type: 'message.complete' },
+      'sid-a',
+      { buffer: true, now: 2 }
+    )
+
+    expect(getOutputStreamsState().streams['sid-a']).toMatchObject({
+      producing: false,
+      status: 'completed'
+    })
+  })
+
+  it('keeps a canonical completed status across an idle active-list sync', () => {
+    observeOutputEvent(
+      { payload: { status: 'complete', text: 'done' }, type: 'message.complete' },
+      'sid-a',
+      { buffer: true, now: 1 }
+    )
+
+    syncOutputSessions([{ id: 'sid-a', status: 'idle' }], 'sid-a')
+
+    expect(getOutputStreamsState().streams['sid-a']?.status).toBe('completed')
+  })
+
+  it('keeps an interrupted completion terminal across an idle active-list sync', () => {
+    observeOutputEvent(
+      { payload: { status: 'interrupted', text: 'partial' }, type: 'message.complete' },
+      'sid-a',
+      { buffer: true, now: 1 }
+    )
+
+    expect(getOutputStreamsState().streams['sid-a']).toMatchObject({
+      producing: false,
+      status: 'interrupted'
+    })
+
+    syncOutputSessions([{ id: 'sid-a', status: 'idle' }], 'sid-a')
+
+    expect(getOutputStreamsState().streams['sid-a']?.status).toBe('interrupted')
+  })
+
+  it('keeps an error completion terminal across an idle active-list sync', () => {
+    observeOutputEvent(
+      { payload: { status: 'error', text: 'failed' }, type: 'message.complete' },
+      'sid-a',
+      { buffer: true, now: 1 }
+    )
+
+    syncOutputSessions([{ id: 'sid-a', status: 'idle' }], 'sid-a')
+
+    expect(getOutputStreamsState().streams['sid-a']).toMatchObject({ producing: false, status: 'error' })
+  })
+
+  it.each([
+    { completionStatus: undefined, expectedTerminal: 'completed' },
+    { completionStatus: 'interrupted', expectedTerminal: 'interrupted' }
+  ])(
+    'reopens $expectedTerminal as running only when a new message starts',
+    ({ completionStatus, expectedTerminal }) => {
+      observeOutputEvent(
+        {
+          payload: { ...(completionStatus ? { status: completionStatus } : {}), text: 'first turn' },
+          type: 'message.complete'
+        },
+        'sid-a',
+        { buffer: true, now: 1 }
+      )
+      expect(getOutputStreamsState().streams['sid-a']?.status).toBe(expectedTerminal)
+
+      observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: true, now: 2 })
+      expect(getOutputStreamsState().streams['sid-a']).toMatchObject({ producing: true, status: 'running' })
+
+      observeOutputEvent({ payload: { text: 'next turn' }, type: 'message.delta' }, 'sid-a', {
+        buffer: true,
+        now: 3
+      })
+      expect(getOutputStreamsState().streams['sid-a']).toMatchObject({ producing: true, status: 'running' })
+    }
+  )
+
   it('merges deltas and caps by entries and bytes with an omission marker', () => {
     for (let i = 0; i < 220; i += 1) {
       observeOutputEvent({ payload: { text: `row-${i}-${'x'.repeat(400)}` }, type: 'message.interim' }, 'sid-b', {
@@ -130,6 +214,22 @@ describe('output stream state', () => {
     observeOutputEvent({ payload: { message: 'failed' }, type: 'error' }, 'sid-b', { buffer: true, now: 1 })
     observeOutputEvent({ type: 'message.start' }, 'sid-b', { buffer: true, now: 2 })
     expect(getOutputStreamsState().streams['sid-b']?.status).toBe('error')
+  })
+
+  it.each(['closed', 'disconnected', 'error'])('does not reopen %s through an ordinary message start', status => {
+    if (status === 'closed') {
+      syncOutputSessions([{ id: 'sid-b', status: 'idle' }], 'sid-b')
+      removeOutputSession('sid-b')
+    } else if (status === 'disconnected') {
+      syncOutputSessions([{ id: 'sid-b', status: 'idle' }], 'sid-b')
+      markOutputTransportDisconnected()
+    } else {
+      observeOutputEvent({ payload: { message: 'failed' }, type: 'error' }, 'sid-b', { buffer: true, now: 1 })
+    }
+
+    observeOutputEvent({ type: 'message.start' }, 'sid-b', { buffer: true, now: 2 })
+
+    expect(getOutputStreamsState().streams['sid-b']).toMatchObject({ producing: false, status })
   })
 
   it('ends a new round after an error without leaving a false competing producer', () => {
@@ -221,6 +321,104 @@ describe('output stream state', () => {
       expect.objectContaining({ complete: true, kind: 'message', text: 'question' }),
       expect.objectContaining({ complete: false, kind: 'message', text: 'partial answer' })
     ])
+  })
+
+  it('keeps a closed stream terminal when a smaller ready snapshot is captured', () => {
+    observeOutputEvent({ payload: { text: 'durable one' }, type: 'message.interim' }, 'sid-a', {
+      buffer: true,
+      now: 1
+    })
+    observeOutputEvent({ payload: { text: 'durable two' }, type: 'message.interim' }, 'sid-a', {
+      buffer: true,
+      now: 2
+    })
+    removeOutputSession('sid-a')
+
+    capturePrimaryOutputSnapshot(
+      'sid-a',
+      'Alpha',
+      'ready',
+      [{ role: 'assistant', text: 'smaller snapshot' }],
+      ''
+    )
+
+    expect(getOutputStreamsState().streams['sid-a']?.status).toBe('closed')
+  })
+
+  it('merges a smaller terminal snapshot without losing durable output', () => {
+    observeOutputEvent({ payload: { text: 'durable one' }, type: 'message.interim' }, 'sid-a', {
+      buffer: true,
+      now: 1
+    })
+    observeOutputEvent({ payload: { text: 'durable two' }, type: 'message.interim' }, 'sid-a', {
+      buffer: true,
+      now: 2
+    })
+    removeOutputSession('sid-a')
+    const before = getOutputStreamsState().streams['sid-a']!.entries
+
+    capturePrimaryOutputSnapshot(
+      'sid-a',
+      'Alpha',
+      'ready',
+      [{ role: 'assistant', text: 'snapshot addition' }],
+      ''
+    )
+
+    const entries = getOutputStreamsState().streams['sid-a']!.entries
+    expect(entries.length).toBeGreaterThanOrEqual(before.length)
+    expect(entries.map(entry => entry.text)).toEqual(
+      expect.arrayContaining(['durable one', 'durable two', 'snapshot addition'])
+    )
+  })
+
+  it('enriches an empty completed primary with its transcript snapshot', () => {
+    observeOutputEvent(
+      { payload: { status: 'complete', text: 'done' }, type: 'message.complete' },
+      'sid-a',
+      { buffer: false, now: 1 }
+    )
+    expect(getOutputStreamsState().streams['sid-a']?.entries).toEqual([])
+
+    capturePrimaryOutputSnapshot(
+      'sid-a',
+      'Alpha',
+      'ready',
+      [
+        { role: 'user', text: 'question' },
+        { role: 'assistant', text: 'complete answer' }
+      ],
+      ''
+    )
+
+    const stream = getOutputStreamsState().streams['sid-a']!
+    expect(stream.status).toBe('completed')
+    expect(stream.entries.map(entry => entry.text)).toEqual(['question', 'complete answer'])
+  })
+
+  it('keeps terminal snapshot merges within the output capacity limits', () => {
+    for (let i = 0; i < 220; i += 1) {
+      observeOutputEvent(
+        { payload: { text: `durable-${i}-${'x'.repeat(400)}` }, type: 'message.interim' },
+        'sid-a',
+        { buffer: true, now: i + 1 }
+      )
+    }
+
+    removeOutputSession('sid-a')
+
+    capturePrimaryOutputSnapshot(
+      'sid-a',
+      'Alpha',
+      'ready',
+      Array.from({ length: 220 }, (_, i) => ({ role: 'assistant' as const, text: `snapshot-${i}` })),
+      ''
+    )
+
+    const stream = getOutputStreamsState().streams['sid-a']!
+    expect(stream.entries.length).toBeLessThanOrEqual(OUTPUT_ENTRY_LIMIT)
+    expect(stream.bytes).toBeLessThanOrEqual(OUTPUT_BYTE_LIMIT)
+    expect(stream.omitted).toBe(true)
   })
   it('syncs active session model, preview, status, and title without changing the selected layout', () => {
     syncOutputSessions(
