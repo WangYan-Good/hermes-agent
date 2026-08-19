@@ -493,7 +493,7 @@ describe('output stream state', () => {
     })
   })
 
-  it('marks only a closed visible stream ended and preserves its final buffer', () => {
+  it('closes a visible secondary without leaving it in the layout', () => {
     syncOutputSessions(
       [
         { id: 'sid-a', status: 'working', title: 'Alpha' },
@@ -516,9 +516,209 @@ describe('output stream state', () => {
     removeOutputSession('sid-b')
 
     const state = getOutputStreamsState()
-    expect(state.layout.secondarySessionId).toBe('sid-b')
+    expect(state.layout).toEqual({ mode: 'single', primarySessionId: 'sid-a', secondarySessionId: null })
     expect(state.streams['sid-b']).toMatchObject({ entries: before, producing: false, status: 'closed' })
     expect(state.streams['sid-c']).toMatchObject({ producing: true, status: 'running' })
+  })
+
+  it('promotes a valid secondary immediately when the primary closes', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working' },
+        { id: 'sid-b', status: 'working' }
+      ],
+      'sid-a'
+    )
+    setSecondaryOutput('sid-b')
+
+    removeOutputSession('sid-a')
+
+    const state = getOutputStreamsState()
+    expect(state.layout).toEqual({ mode: 'single', primarySessionId: 'sid-b', secondarySessionId: null })
+    expect(state.streams['sid-a']).toMatchObject({ producing: false, status: 'closed' })
+  })
+
+  it('preserves the former secondary when primary close falls back to a waiting session', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working' },
+        { id: 'sid-b', status: 'working' },
+        { id: 'sid-c', status: 'waiting' }
+      ],
+      'sid-a'
+    )
+    setSecondaryOutput('sid-b')
+
+    removeOutputSession('sid-a')
+    commitOutputPrimaryTransition({ kind: 'activate-live', nextSessionId: 'sid-c', previousSessionId: 'sid-a' })
+
+    const state = getOutputStreamsState()
+    expect(state.layout).toEqual({ mode: 'split', primarySessionId: 'sid-c', secondarySessionId: 'sid-b' })
+    expect(state.streams['sid-a']?.status).toBe('closed')
+  })
+
+  it('does not reuse a closed previous session as the transition secondary', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working' },
+        { id: 'sid-c', status: 'waiting' }
+      ],
+      'sid-a'
+    )
+    removeOutputSession('sid-a')
+
+    commitOutputPrimaryTransition({ kind: 'activate-live', nextSessionId: 'sid-c', previousSessionId: 'sid-a' })
+
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'single',
+      primarySessionId: 'sid-c',
+      secondarySessionId: null
+    })
+  })
+
+  it('leaves a valid split unchanged when an unrelated waiting session closes', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working' },
+        { id: 'sid-b', status: 'working' },
+        { id: 'sid-c', status: 'waiting' }
+      ],
+      'sid-a'
+    )
+    setSecondaryOutput('sid-b')
+
+    removeOutputSession('sid-c')
+
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'split',
+      primarySessionId: 'sid-a',
+      secondarySessionId: 'sid-b'
+    })
+  })
+
+  it('buffers late output for a closed session without restoring lifecycle or layout membership', () => {
+    syncOutputSessions([{ id: 'sid-a', status: 'working' }], 'sid-a')
+    observeOutputEvent({ payload: { text: 'durable' }, type: 'message.interim' }, 'sid-a', {
+      buffer: true,
+      now: 1
+    })
+    removeOutputSession('sid-a')
+    const beforeEntries = getOutputStreamsState().streams['sid-a']!.entries.length
+
+    observeOutputEvent({ payload: { text: 'late' }, type: 'message.delta' }, 'sid-a', {
+      buffer: true,
+      now: 2
+    })
+
+    const state = getOutputStreamsState()
+    expect(state.streams['sid-a']).toMatchObject({ producing: false, status: 'closed' })
+    expect(state.streams['sid-a']!.entries.length).toBeGreaterThan(beforeEntries)
+    expect(state.layout).toEqual({ mode: 'single', primarySessionId: null, secondarySessionId: null })
+  })
+
+  it.each(['completed', 'interrupted', 'error', 'disconnected'])(
+    'keeps a %s stream eligible for a split layout',
+    status => {
+      syncOutputSessions(
+        [
+          { id: 'sid-a', status: 'working' },
+          { id: 'sid-b', status: 'working' }
+        ],
+        'sid-a'
+      )
+      setSecondaryOutput('sid-b')
+      observeOutputEvent({ type: 'message.start' }, 'sid-b', { buffer: true, now: 1 })
+
+      if (status === 'disconnected') {
+        markOutputTransportDisconnected()
+      } else if (status === 'error') {
+        observeOutputEvent({ payload: { message: 'failed' }, type: 'error' }, 'sid-a', { buffer: true, now: 2 })
+      } else {
+        observeOutputEvent(
+          { payload: { status, text: 'done' }, type: 'message.complete' },
+          'sid-a',
+          { buffer: true, now: 2 }
+        )
+      }
+
+      expect(getOutputStreamsState().layout).toEqual({
+        mode: 'split',
+        primarySessionId: 'sid-a',
+        secondarySessionId: 'sid-b'
+      })
+    }
+  )
+
+  it('keeps focus transitions paired with the valid previous primary', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working' },
+        { id: 'sid-b', status: 'working' }
+      ],
+      'sid-a'
+    )
+    setSecondaryOutput('sid-b')
+
+    commitOutputPrimaryTransition({ kind: 'activate-live', nextSessionId: 'sid-b', previousSessionId: 'sid-a' })
+
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'split',
+      primarySessionId: 'sid-b',
+      secondarySessionId: 'sid-a'
+    })
+  })
+
+  it('keeps new-live transitions paired with the valid previous primary', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working' },
+        { id: 'sid-b', status: 'working' },
+        { id: 'sid-c', status: 'idle' }
+      ],
+      'sid-a'
+    )
+    setSecondaryOutput('sid-b')
+
+    commitOutputPrimaryTransition({ kind: 'new-live', nextSessionId: 'sid-c', previousSessionId: 'sid-a' })
+
+    const state = getOutputStreamsState()
+    expect(state.layout).toEqual({ mode: 'split', primarySessionId: 'sid-c', secondarySessionId: 'sid-a' })
+    expect(state.streams['sid-b']).toBeDefined()
+  })
+
+  it('does not resolve a stale conflict into a closed candidate', () => {
+    observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: false, now: 1 })
+    observeOutputEvent({ payload: { text: 'B' }, type: 'message.delta' }, 'sid-b', { buffer: true, now: 2 })
+    const conflict = structuredClone(getOutputStreamsState().conflict!)
+
+    removeOutputSession('sid-b')
+    resolveOutputConflict('split', conflict)
+
+    expect(getOutputStreamsState().conflict).toBeNull()
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'single',
+      primarySessionId: 'sid-a',
+      secondarySessionId: null
+    })
+  })
+
+  it('does not allow setSecondaryOutput to select a closed stream', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working' },
+        { id: 'sid-b', status: 'working' }
+      ],
+      'sid-a'
+    )
+    removeOutputSession('sid-b')
+
+    setSecondaryOutput('sid-b')
+
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'single',
+      primarySessionId: 'sid-a',
+      secondarySessionId: null
+    })
   })
 
   it('keeps live fields when a stale active-list poll arrives after a delta', () => {

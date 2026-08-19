@@ -310,7 +310,7 @@ export const observeOutputEvent = (event: OutputEvent, sessionId: string, option
   const paints = rule.paints && (event.type !== 'message.delta' || Boolean(getString(event.payload, ['text'])))
   const stream = getOrCreateStream(sessionId)
 
-  if (state.layout.primarySessionId == null)
+  if (state.layout.primarySessionId == null && stream.status !== 'closed')
     {state = { ...state, layout: { ...state.layout, primarySessionId: sessionId } }}
 
   const terminal = isTerminal(stream.status)
@@ -401,8 +401,10 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
   }
 
   if (state.layout.primarySessionId == null && currentSessionId) {
-    getOrCreateStream(currentSessionId)
-    state = { ...state, layout: { ...state.layout, primarySessionId: currentSessionId } }
+    const current = getOrCreateStream(currentSessionId)
+
+    if (current.status !== 'closed')
+      {state = { ...state, layout: { ...state.layout, primarySessionId: currentSessionId } }}
   }
 
   publish()
@@ -430,7 +432,9 @@ export const resolveOutputConflict = (decision: OutputConflictDecision, resolved
 
 export const setSecondaryOutput = (sessionId: string) => {
   if (!sessionId) {return}
-  getOrCreateStream(sessionId)
+  const stream = getOrCreateStream(sessionId)
+
+  if (stream.status === 'closed') {return}
   const primarySessionId = state.layout.primarySessionId ?? sessionId
   state =
     primarySessionId === sessionId
@@ -518,17 +522,21 @@ export const commitOutputPrimaryTransition = (transition: SessionTransition) => 
     return
   }
 
-  const preservesLivePair = (transition.kind === 'activate-live' || transition.kind === 'new-live') &&
-    Boolean(previousSessionId && previousSessionId !== transition.nextSessionId)
-
   updateStream(nextWithIdentity)
+
+  const preservesLivePair = transition.kind === 'activate-live' || transition.kind === 'new-live'
+
+  const partnerSessionId = preservesLivePair
+    ? selectTransitionPartner(transition.nextSessionId, previousSessionId)
+    : null
+
   state = {
     ...state,
     conflict: null,
     layout: {
-      mode: preservesLivePair ? 'split' : 'single',
+      mode: partnerSessionId ? 'split' : 'single',
       primarySessionId: transition.nextSessionId,
-      secondarySessionId: preservesLivePair ? previousSessionId : null
+      secondarySessionId: partnerSessionId
     }
   }
   publish()
@@ -629,6 +637,23 @@ function getOrCreateStream(sessionId: string): OutputStream {
 
 function updateStream(stream: OutputStream) {
   state = { ...state, streams: { ...state.streams, [stream.sessionId]: stream } }
+}
+
+function selectTransitionPartner(nextSessionId: string, previousSessionId: null | string): null | string {
+  if (
+    previousSessionId !== nextSessionId &&
+    isLayoutEligibleSession(previousSessionId, state.streams)
+  ) {
+    return previousSessionId
+  }
+
+  for (const sessionId of [state.layout.primarySessionId, state.layout.secondarySessionId]) {
+    if (sessionId !== nextSessionId && isLayoutEligibleSession(sessionId, state.streams)) {
+      return sessionId
+    }
+  }
+
+  return null
 }
 
 function updateConflict(sessionId: string, paints: boolean) {
@@ -851,6 +876,35 @@ function isTerminal(status: string): status is OutputTerminalStatus {
   return TERMINAL_STATUSES.has(status as OutputTerminalStatus)
 }
 
+function isLayoutEligibleSession(
+  sessionId: null | string,
+  streams: Record<string, OutputStream>
+): sessionId is string {
+  return Boolean(sessionId && streams[sessionId] && streams[sessionId].status !== 'closed')
+}
+
+function normalizeOutputLayout(
+  layout: OutputLayout,
+  streams: Record<string, OutputStream>
+): OutputLayout {
+  const primarySessionId = isLayoutEligibleSession(layout.primarySessionId, streams)
+    ? layout.primarySessionId
+    : null
+
+  const secondarySessionId = isLayoutEligibleSession(layout.secondarySessionId, streams) &&
+    layout.secondarySessionId !== primarySessionId
+    ? layout.secondarySessionId
+    : null
+
+  if (primarySessionId && secondarySessionId) {
+    return { mode: 'split', primarySessionId, secondarySessionId }
+  }
+
+  const remainingSessionId = primarySessionId ?? secondarySessionId
+
+  return { mode: 'single', primarySessionId: remainingSessionId, secondarySessionId: null }
+}
+
 function readSession(item: unknown): {
   model?: string
   preview?: string
@@ -873,6 +927,7 @@ function readSession(item: unknown): {
 }
 
 function publish() {
+  state = { ...state, layout: normalizeOutputLayout(state.layout, state.streams) }
   $outputStreams.set(state.streams)
   $outputConflict.set(state.conflict)
   $outputLayout.set(state.layout)
