@@ -12,7 +12,7 @@ import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
 import { openExternalUrl } from './lib/openExternalUrl.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
-import { resetTerminalModes } from './lib/terminalModes.js'
+import { resetTerminalModes, startupScreenSequence } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')
@@ -39,13 +39,13 @@ process.on('exit', () => {
   resetTerminalModes()
 })
 
-// Desktop terminals benefit from a clean startup slate because the TUI usually
-// runs in AlternateScreen. On Termux we keep prior output intact so users can
-// review/copy earlier assistant replies after reopening the app.
-if (TERMUX_TUI_MODE) {
-  process.stdout.write('\n')
-} else {
-  process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
+// Dashboard AlternateScreen owns its own clear + cursor-home sequence. Avoid
+// wiping xterm's primary buffer immediately before that mount; standalone
+// desktop and Termux startup behavior remains unchanged.
+const startupSequence = startupScreenSequence(TERMUX_TUI_MODE, DASHBOARD_TUI_MODE)
+
+if (startupSequence) {
+  process.stdout.write(startupSequence)
 }
 
 const gw = new GatewayClient()

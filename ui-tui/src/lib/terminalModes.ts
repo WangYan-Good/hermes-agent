@@ -25,6 +25,21 @@ type ResettableStream = Pick<NodeJS.WriteStream, 'isTTY' | 'write'> & {
   fd?: number
 }
 
+/**
+ * Initial bytes written before Ink mounts.
+ *
+ * Dashboard initialization belongs to AlternateScreen, so clearing here
+ * would briefly wipe xterm's primary buffer before the alternate buffer is
+ * ready. Standalone desktop and Termux behavior remains unchanged.
+ */
+export function startupScreenSequence(termuxMode: boolean, dashboardMode: boolean): string {
+  if (dashboardMode) {
+    return ''
+  }
+
+  return termuxMode ? '\n' : '\x1b[2J\x1b[H\x1b[3J'
+}
+
 // OSC 10/11 set the terminal's DEFAULT foreground/background — so every cell,
 // including text rendered with no explicit color (markdown body, borders,
 // third-party output), takes the skin instead of the host profile's defaults.

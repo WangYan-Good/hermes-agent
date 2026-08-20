@@ -168,6 +168,12 @@ export const coreCommands: SlashCommand[] = [
     help: 'set mouse tracking preset [on|off|toggle|wheel|buttons|all]',
     name: 'mouse',
     run: (arg, ctx) => {
+      if (DASHBOARD_TUI_MODE) {
+        ctx.transcript.sys('dashboard mouse tracking is managed and fixed to wheel')
+
+        return
+      }
+
       const current = ctx.ui.mouseTracking
       const next = mouseModeFromArg(arg, current)
 
