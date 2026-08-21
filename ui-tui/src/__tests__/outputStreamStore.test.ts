@@ -7,9 +7,11 @@ import {
   getOutputStreamsState,
   markOutputTransportDisconnected,
   markOutputTransportReady,
+  mergeWatchedOutputSnapshot,
   observeOutputEvent,
   OUTPUT_BYTE_LIMIT,
   OUTPUT_ENTRY_LIMIT,
+  removeOutputLayoutReference,
   removeOutputSession,
   resetOutputStreams,
   resolveOutputConflict,
@@ -888,6 +890,113 @@ describe('output stream state', () => {
       )
     ).toThrow(/session identity collision/i)
     expect(getOutputStreamsState()).toEqual(before)
+  })
+
+  it('removes a watched session from layout without closing or deleting its cached stream', () => {
+    syncOutputSessions(
+      [
+        { id: 'sid-a', session_key: 'stored-a', status: 'working' },
+        { id: 'sid-b', session_key: 'stored-b', status: 'idle' }
+      ],
+      'sid-a'
+    )
+    observeOutputEvent({ payload: { text: 'cached B' }, type: 'message.interim' }, 'sid-b', {
+      buffer: true,
+      now: 10
+    })
+    setSecondaryOutput('sid-b')
+    const statusBefore = getOutputStreamsState().streams['sid-b']!.status
+
+    removeOutputLayoutReference('sid-b')
+
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'single',
+      primarySessionId: 'sid-a',
+      secondarySessionId: null
+    })
+    expect(getOutputStreamsState().streams['sid-b']).toMatchObject({ status: statusBefore })
+    expect(getOutputStreamsState().streams['sid-b']!.entries.map(entry => entry.text)).toEqual(['cached B'])
+  })
+
+  it('clears a stale conflict when an invalid watched candidate never entered layout', () => {
+    observeOutputEvent({ type: 'message.start' }, 'sid-a', { buffer: false, now: 1 })
+    observeOutputEvent({ payload: { text: 'remote output' }, type: 'message.delta' }, 'sid-b', {
+      buffer: true,
+      now: 2
+    })
+    expect(getOutputStreamsState().conflict?.candidateSessionId).toBe('sid-b')
+
+    removeOutputLayoutReference('sid-b')
+
+    expect(getOutputStreamsState().conflict).toBeNull()
+    expect(getOutputStreamsState().layout).toEqual({
+      mode: 'single',
+      primarySessionId: 'sid-a',
+      secondarySessionId: null
+    })
+    expect(getOutputStreamsState().streams['sid-b']!.entries.map(entry => entry.text)).toEqual(['remote output'])
+  })
+
+  it('losslessly merges watched history with live output within store limits', () => {
+    syncOutputSessions([{ id: 'sid-b', session_key: 'stored-b', status: 'working' }], null)
+    observeOutputEvent({ payload: { text: 'future live' }, type: 'message.interim' }, 'sid-b', {
+      buffer: true,
+      now: 10
+    })
+
+    mergeWatchedOutputSnapshot('sid-b', 'stored-b', 'Beta', 'idle', [
+      { role: 'user', text: 'old question' },
+      { role: 'assistant', text: 'old answer' }
+    ])
+
+    const stream = getOutputStreamsState().streams['sid-b']!
+    expect(stream.entries.map(entry => entry.text)).toEqual(['old question', 'old answer', 'future live'])
+    expect(stream.sessionKey).toBe('stored-b')
+    expect(stream.entries.length).toBeLessThanOrEqual(OUTPUT_ENTRY_LIMIT)
+    expect(stream.bytes).toBeLessThanOrEqual(OUTPUT_BYTE_LIMIT)
+  })
+
+  it('bounds oversized watched snapshots without discarding newer durable output', () => {
+    observeOutputEvent({ payload: { text: 'new durable output' }, type: 'message.interim' }, 'sid-b', {
+      buffer: true,
+      now: 10
+    })
+
+    mergeWatchedOutputSnapshot(
+      'sid-b',
+      'stored-b',
+      'Beta',
+      'idle',
+      Array.from({ length: OUTPUT_ENTRY_LIMIT + 20 }, (_, index) => ({
+        role: index % 2 ? 'assistant' : 'user',
+        text: `${index}-${'x'.repeat(500)}`
+      }))
+    )
+
+    const stream = getOutputStreamsState().streams['sid-b']!
+    expect(stream.entries.some(entry => entry.text === 'new durable output')).toBe(true)
+    expect(stream.entries.length).toBeLessThanOrEqual(OUTPUT_ENTRY_LIMIT)
+    expect(stream.bytes).toBeLessThanOrEqual(OUTPUT_BYTE_LIMIT)
+  })
+
+  it('preserves repeated visible text from a newer watched turn during snapshot merge', () => {
+    mergeWatchedOutputSnapshot('sid-b', 'stored-b', 'Beta', 'idle', [
+      { role: 'assistant', text: 'same answer' }
+    ])
+    observeOutputEvent({ type: 'message.start' }, 'sid-b', { buffer: true, now: 20 })
+    observeOutputEvent({ payload: { text: 'same answer' }, type: 'message.delta' }, 'sid-b', {
+      buffer: true,
+      now: 21
+    })
+
+    mergeWatchedOutputSnapshot('sid-b', 'stored-b', 'Beta', 'working', [
+      { role: 'assistant', text: 'same answer' }
+    ])
+
+    expect(getOutputStreamsState().streams['sid-b']!.entries.map(entry => entry.text)).toEqual([
+      'same answer',
+      'same answer'
+    ])
   })
 
   it.each([

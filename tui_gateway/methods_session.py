@@ -1223,6 +1223,104 @@ def _(rid, params: dict) -> dict:
     )
 
 
+@method("session.output_snapshot")
+def _(rid, params: dict) -> dict:
+    """Return a bounded visible transcript tail for one authorized watch."""
+
+    subscriber_sid = str(params.get("subscriber_session_id") or "").strip()
+    target_sid = str(params.get("session_id") or "").strip()
+    if not subscriber_sid or not target_sid:
+        return _err(
+            rid,
+            4000,
+            "subscriber_session_id and session_id are required",
+            {"reason": "invalid_params"},
+        )
+
+    requester = current_transport() or _stdio_transport
+    with _sessions_lock:
+        subscriber = _sessions.get(subscriber_sid)
+        if subscriber is None:
+            return _err(rid, 4007, "subscriber session not found", {"reason": "not_found"})
+        if subscriber.get("_closing") or subscriber.get("_finalized"):
+            return _err(rid, 4091, "subscriber session is closing", {"reason": "closing"})
+        if subscriber.get("transport") is not requester:
+            return _err(
+                rid,
+                4031,
+                "requester does not own subscriber session",
+                {"reason": "not_owner"},
+            )
+        target = _sessions.get(target_sid)
+        if target is None:
+            return _err(rid, 4007, "target session not found", {"reason": "not_found"})
+        if _output_observer_rejection(target) is not None:
+            return _err(
+                rid,
+                4032,
+                "output subscription is no longer authorized",
+                {"reason": "not_subscribed"},
+            )
+
+        subscriber_incarnation = _output_session_incarnation(subscriber)
+        target_incarnation = _output_session_incarnation(target)
+        subscription = _output_subscriptions.subscription_for(
+            requester,
+            target_sid,
+            subscriber_session_incarnation=subscriber_incarnation,
+            target_session_incarnation=target_incarnation,
+        )
+        if subscription is None:
+            return _err(
+                rid,
+                4032,
+                "output subscription required",
+                {"reason": "not_subscribed"},
+            )
+
+    with target["history_lock"]:
+        running = bool(target.get("running"))
+        display_history_prefix = tuple(target.get("display_history_prefix") or ())
+        history = tuple(target.get("history") or ())
+
+    # Snapshotting happens outside the registry lock. Revalidate every exact
+    # identity before returning copied text so close, hidden, owner transfer,
+    # unsubscribe, or same-SID replacement cannot leak a stale snapshot.
+    with _sessions_lock:
+        if (
+            _sessions.get(subscriber_sid) is not subscriber
+            or subscriber.get("transport") is not requester
+            or subscriber.get("_closing")
+            or subscriber.get("_finalized")
+            or _sessions.get(target_sid) is not target
+            or _output_observer_rejection(target) is not None
+            or not _output_subscriptions.contains(subscription)
+        ):
+            return _err(
+                rid,
+                4032,
+                "output subscription changed",
+                {"reason": "not_subscribed"},
+            )
+
+    mode = "active_live_only" if running else "snapshot"
+    messages = (
+        []
+        if running
+        else _bounded_visible_output_snapshot(display_history_prefix, history)
+    )
+    return _ok(
+        rid,
+        {
+            "messages": messages,
+            "mode": mode,
+            "session_id": target_sid,
+            "status": _session_live_status(target_sid, target),
+            "stored_session_id": _session_lookup_key(target, fallback=target_sid),
+        },
+    )
+
+
 @method("session.activate")
 def _(rid, params: dict) -> dict:
     """Attach the frontend to an already-live TUI session.
