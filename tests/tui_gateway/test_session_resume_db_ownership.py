@@ -300,11 +300,22 @@ def test_resume_drops_half_built_session_when_init_session_raises(
         profile_dbs.append(db)
         return db
 
-    def _fake_init_session(sid, key, agent, history, session_db=None, **_kwargs):
+    def _fake_init_session(
+        sid,
+        key,
+        agent,
+        history,
+        session_db=None,
+        on_published=None,
+        **_kwargs,
+    ):
         # Same ordering as the real one: register, THEN read through the db.
         captured["sid"] = sid
+        session = {"agent": agent, "session_key": key}
         with server._sessions_lock:
-            server._sessions[sid] = {"agent": agent, "session_key": key}
+            server._sessions[sid] = session
+            if on_published is not None:
+                on_published(session)
         raise RuntimeError("database is locked")
 
     monkeypatch.setattr("hermes_state.SessionDB", _factory)
