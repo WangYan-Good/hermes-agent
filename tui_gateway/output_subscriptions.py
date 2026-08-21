@@ -1,9 +1,4 @@
-"""Output-subscription authorization state for the TUI gateway.
-
-Phase 3B-1 stores subscription contracts and lifecycle state only.  A
-subscription does *not* imply event delivery; session events continue to use
-the existing owner-only ``write_json`` routing until the later fan-out phase.
-"""
+"""Output-subscription authorization state for the TUI gateway."""
 
 from __future__ import annotations
 
@@ -222,6 +217,51 @@ class OutputSubscriptionRegistry:
                 record.subscriber_transport
                 for record in records
                 if record.target_session_id == target_session_id
+            )
+
+    def subscriptions_for_session(
+        self,
+        target_session_id: str,
+        *,
+        target_session_incarnation: object,
+    ) -> tuple[OutputSubscription, ...]:
+        """Snapshot exact contracts for one live target incarnation."""
+
+        with self._lock:
+            return tuple(
+                record
+                for record in self._by_target_incarnation.get(
+                    target_session_incarnation, set()
+                )
+                if record.target_session_id == target_session_id
+                and record.target_session_incarnation is target_session_incarnation
+            )
+
+    def contains(self, record: OutputSubscription) -> bool:
+        """Return whether the exact immutable contract is still authorized."""
+
+        with self._lock:
+            return record in self._by_transport.get(
+                record.subscriber_transport, set()
+            )
+
+    def authorizes_delivery(self, record: OutputSubscription) -> bool:
+        """Validate effective transport authorization for an exact target.
+
+        A transport may own multiple anchor Sessions.  Removing one anchor
+        must not discard queued output while another live anchor still grants
+        the same transport access to the same target incarnation.
+        """
+
+        with self._lock:
+            return any(
+                candidate.target_session_id == record.target_session_id
+                and candidate.target_session_incarnation
+                is record.target_session_incarnation
+                and candidate.profile_scope == record.profile_scope
+                for candidate in self._by_transport.get(
+                    record.subscriber_transport, set()
+                )
             )
 
     def session_ids_for_transport(self, transport: object) -> frozenset[str]:

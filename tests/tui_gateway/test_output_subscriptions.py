@@ -1,9 +1,4 @@
-"""Contracts for the Phase 3B-1 output-subscription authorization state.
-
-Phase 3B-1 deliberately does not deliver events to subscribers.  These tests
-lock down classification, authorization, and lifecycle cleanup before event
-fan-out is introduced in a later phase.
-"""
+"""Contracts for output-subscription authorization and lifecycle state."""
 
 from concurrent.futures import ThreadPoolExecutor
 import threading
@@ -1753,10 +1748,8 @@ def test_queued_prompt_owner_rebind_clears_old_anchor_subscriptions(
     )
 
 
-@pytest.mark.parametrize(
-    "event", ["message.delta", "secret.request", "approval.request"]
-)
-def test_subscribe_contract_does_not_change_owner_only_event_routing(
+@pytest.mark.parametrize("event", ["secret.request", "approval.request"])
+def test_subscribe_contract_keeps_control_event_routing_owner_only(
     gateway_subscription_state, event
 ):
     observer = RecordingTransport()
