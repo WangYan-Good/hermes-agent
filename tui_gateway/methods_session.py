@@ -75,7 +75,8 @@ def _(rid, params: dict) -> dict:
     lease = None  # claimed lazily on the first turn (_ensure_active_session_slot)
 
     with _sessions_lock:
-        _sessions[sid] = {
+        initially_hidden = is_truthy_value(params.get("hidden", False))
+        _sessions[sid] = _prepare_output_session_record({
             "agent": None,
             "agent_error": None,
             "agent_ready": ready,
@@ -98,7 +99,7 @@ def _(rid, params: dict) -> dict:
             "create_service_tier_override": create_service_tier_override,
             "parent_session_id": parent_session_id,
             "pending_title": title or None,
-            "pending_hidden": is_truthy_value(params.get("hidden", False)),
+            "pending_hidden": initially_hidden,
             "profile_home": str(profile_home) if profile_home is not None else None,
             "running": False,
             "session_key": key,
@@ -108,7 +109,7 @@ def _(rid, params: dict) -> dict:
             "tool_progress_mode": _load_tool_progress_mode(),
             "tool_started_at": {},
             "transport": current_transport() or _stdio_transport,
-        }
+        }, hidden=initially_hidden)
         _register_session_cwd(_sessions[sid])
 
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop
@@ -482,6 +483,7 @@ def _(rid, params: dict) -> dict:
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
                 profile_home=profile_home,
                 lazy=True,
+                hidden=bool(found.get("hidden", False)),
             )
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _ok(rid, _reuse_live_payload(*live))
@@ -548,6 +550,7 @@ def _(rid, params: dict) -> dict:
                 source=source,
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
                 profile_home=profile_home,
+                hidden=bool(found.get("hidden", False)),
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
             )
@@ -644,6 +647,7 @@ def _(rid, params: dict) -> dict:
                 close_on_disconnect=is_truthy_value(params.get("close_on_disconnect", False)),
                 display_history_prefix=prefix,
                 profile_home=profile_home,
+                hidden=bool(found.get("hidden", False)),
                 model_override=overrides.get("model_override"),
                 resume_runtime_overrides=overrides or None,
             )
@@ -745,6 +749,14 @@ def _(rid, params: dict) -> dict:
             if secret_token is not None:
                 reset_secret_scope(secret_token)
 
+        published_session = None
+        resume_init_error = None
+        failed_session_to_teardown = None
+
+        def _remember_published_session(session_record):
+            nonlocal published_session
+            published_session = session_record
+
         # Double-checked locking: another concurrent resume may have created the
         # live session while we were building. Re-check under the lock; if it won,
         # discard our just-built agent and reuse theirs (no worker/poller wired yet).
@@ -790,6 +802,11 @@ def _(rid, params: dict) -> dict:
                         cwd=profile_resume_cwd,
                         session_db=db,
                         source=source,
+                        profile_home=(
+                            str(profile_home) if profile_home is not None else None
+                        ),
+                        hidden=bool(found.get("hidden", False)),
+                        on_published=_remember_published_session,
                     )
                     # Ownership TRANSFER — the registered session's agent now
                     # holds this handle for its whole life, and _init_session
@@ -825,11 +842,6 @@ def _(rid, params: dict) -> dict:
                             "model_override"
                         ]
                     _sessions[sid]["display_history_prefix"] = display_history_prefix
-                    # Remember the profile home so each turn re-binds HERMES_HOME (the
-                    # agent persists to its own db, but mid-turn home reads — memory,
-                    # skills — must resolve to the resumed profile too).
-                    if profile_home is not None:
-                        _sessions[sid]["profile_home"] = str(profile_home)
                     _sessions[sid]["active_session_lease"] = lease
             except Exception as e:
                 # _init_session registers _sessions[sid] BEFORE its first read
@@ -839,15 +851,28 @@ def _(rid, params: dict) -> dict:
                 # holds, and the live-session fast path above would then serve
                 # that dead session on every later resume of this id
                 # ("'NoneType' object has no attribute 'execute'", permanently).
-                # owns_db still True means ownership never transferred, so the
-                # registration is ours to undo.
-                if owns_db:
-                    with _sessions_lock:
-                        _sessions.pop(sid, None)
-                if lease is not None:
-                    lease.release()
-                return _err(rid, 5000, f"resume failed: {e}")
-            session = _sessions.get(sid) or {}
+                # Session publication and database-handle ownership are separate
+                # lifecycles. Preserve the exact object published by THIS attempt;
+                # a same-sid replacement must neither be detached nor torn down.
+                if published_session is not None:
+                    failed_session_to_teardown = _detach_failed_session_attempt(
+                        sid, published_session
+                    )
+                resume_init_error = e
+            else:
+                session = _sessions.get(sid) or {}
+
+        # Finalization can flush state, invoke plugins, and close resources. Keep
+        # that slow work outside the global resume lock, mirroring session.close.
+        if resume_init_error is not None:
+            if failed_session_to_teardown is not None:
+                _teardown_popped_session(
+                    failed_session_to_teardown,
+                    end_reason="resume_init_failed",
+                )
+            if lease is not None:
+                lease.release()
+            return _err(rid, 5000, f"resume failed: {resume_init_error}")
     finally:
         # Every return that does NOT reach the transfer above abandons this
         # handle — session-not-found, both "resume failed" paths, the live-session
@@ -992,6 +1017,7 @@ def _(rid, params: dict) -> dict:
     without closing siblings.
     """
     current = str(params.get("current_session_id") or "")
+    requester = current_transport() or _stdio_transport
     try:
         with _sessions_lock:
             snapshot = list(_sessions.items())
@@ -1013,12 +1039,188 @@ def _(rid, params: dict) -> dict:
     # Keep the natural creation/insertion order from ``_sessions``.  The
     # frontend marks the focused session with ``current``; it should not jump to
     # the top just because the user switched to it.
-    rows = [
-        _session_live_item(sid, session, current)
-        for sid, session in snapshot
+    owned_profile_scopes = {
+        _canonical_output_profile_scope(session)
+        for _sid, session in snapshot
         if not session.get("_finalized")
-    ]
+        and not session.get("_closing")
+        and session.get("transport") is requester
+    }
+    rows = []
+    for sid, session in snapshot:
+        if session.get("_finalized"):
+            continue
+        item = _session_live_item(sid, session, current)
+        owned = session.get("transport") is requester
+        item["owned"] = owned
+        item["watchable"] = (
+            not owned
+            and _canonical_output_profile_scope(session) in owned_profile_scopes
+            and _output_observer_rejection(session) is None
+        )
+        rows.append(item)
     return _ok(rid, {"sessions": rows})
+
+
+@method("session.output_subscribe")
+def _(rid, params: dict) -> dict:
+    """Authorize this transport to observe explicitly selected live sessions.
+
+    Phase 3B-1 records authorization and lifecycle state only. Session events
+    remain owner-only until the later output fan-out phase.
+    """
+
+    subscriber_sid = str(params.get("subscriber_session_id") or "").strip()
+    raw_session_ids = params.get("session_ids")
+    if not subscriber_sid or not isinstance(raw_session_ids, list):
+        return _err(
+            rid,
+            4000,
+            "subscriber_session_id and session_ids are required",
+            {"reason": "invalid_params"},
+        )
+
+    requester = current_transport() or _stdio_transport
+    accepted = []
+    rejected = []
+    seen = set()
+
+    # Global lock order: _sessions_lock -> the registry's private lock. The
+    # registry never performs transport I/O, so this bounded section cannot
+    # block on a client.
+    with _sessions_lock:
+        subscriber = _sessions.get(subscriber_sid)
+        if subscriber is None:
+            return _err(
+                rid,
+                4007,
+                "subscriber session not found",
+                {"reason": "not_found"},
+            )
+        if subscriber.get("_closing") or subscriber.get("_finalized"):
+            return _err(
+                rid,
+                4091,
+                "subscriber session is closing",
+                {"reason": "closing"},
+            )
+        if subscriber.get("transport") is not requester:
+            return _err(
+                rid,
+                4031,
+                "requester does not own subscriber session",
+                {"reason": "not_owner"},
+            )
+
+        subscriber_incarnation = _output_session_incarnation(subscriber)
+        profile_scope = _canonical_output_profile_scope(subscriber)
+        for raw_sid in raw_session_ids:
+            target_sid = str(raw_sid or "").strip()
+            if not target_sid or target_sid in seen:
+                continue
+            seen.add(target_sid)
+
+            target = _sessions.get(target_sid)
+            if target is None:
+                rejected.append({"session_id": target_sid, "reason": "not_found"})
+                continue
+
+            if _canonical_output_profile_scope(target) != profile_scope:
+                rejected.append(
+                    {"session_id": target_sid, "reason": "profile_mismatch"}
+                )
+                continue
+            reason = _output_observer_rejection(target)
+            if reason is not None:
+                rejected.append({"session_id": target_sid, "reason": reason})
+                continue
+
+            outcome = _subscribe_output_target(
+                profile_scope=profile_scope,
+                subscriber_session_id=subscriber_sid,
+                subscriber_session_incarnation=subscriber_incarnation,
+                subscriber_transport=requester,
+                target_session_id=target_sid,
+                target_session_key=_session_lookup_key(target, fallback=target_sid),
+                target_session_incarnation=_output_session_incarnation(target),
+            )
+            if outcome == "limit":
+                rejected.append(
+                    {"session_id": target_sid, "reason": "subscription_limit"}
+                )
+                continue
+            accepted.append((target_sid, target))
+
+    subscriptions = [
+        _output_subscription_metadata(target_sid, target)
+        for target_sid, target in accepted
+    ]
+    return _ok(rid, {"subscriptions": subscriptions, "rejected": rejected})
+
+
+@method("session.output_unsubscribe")
+def _(rid, params: dict) -> dict:
+    """Remove this owner transport's output subscription contracts."""
+
+    subscriber_sid = str(params.get("subscriber_session_id") or "").strip()
+    raw_session_ids = params.get("session_ids")
+    if not subscriber_sid or not isinstance(raw_session_ids, list):
+        return _err(
+            rid,
+            4000,
+            "subscriber_session_id and session_ids are required",
+            {"reason": "invalid_params"},
+        )
+
+    requester = current_transport() or _stdio_transport
+    unsubscribed = []
+    not_subscribed = []
+    seen = set()
+
+    with _sessions_lock:
+        subscriber = _sessions.get(subscriber_sid)
+        if subscriber is None:
+            return _err(
+                rid,
+                4007,
+                "subscriber session not found",
+                {"reason": "not_found"},
+            )
+        if subscriber.get("_closing") or subscriber.get("_finalized"):
+            return _err(
+                rid,
+                4091,
+                "subscriber session is closing",
+                {"reason": "closing"},
+            )
+        if subscriber.get("transport") is not requester:
+            return _err(
+                rid,
+                4031,
+                "requester does not own subscriber session",
+                {"reason": "not_owner"},
+            )
+
+        subscriber_incarnation = _output_session_incarnation(subscriber)
+        for raw_sid in raw_session_ids:
+            target_sid = str(raw_sid or "").strip()
+            if not target_sid or target_sid in seen:
+                continue
+            seen.add(target_sid)
+            if _output_subscriptions.unsubscribe(
+                requester,
+                target_sid,
+                subscriber_session_id=subscriber_sid,
+                subscriber_session_incarnation=subscriber_incarnation,
+            ):
+                unsubscribed.append(target_sid)
+            else:
+                not_subscribed.append(target_sid)
+
+    return _ok(
+        rid,
+        {"unsubscribed": unsubscribed, "not_subscribed": not_subscribed},
+    )
 
 
 @method("session.activate")
@@ -1195,8 +1397,38 @@ def _(rid, params: dict) -> dict:
     if err:
         return err
     hidden = is_truthy_value(params.get("hidden", True))
+    sid = str(params.get("session_id") or "")
+    with _sessions_lock:
+        if _sessions.get(sid) is not session:
+            return _err(rid, 4001, "session not found")
+        incarnation = _output_session_incarnation(session)
+        previous_hidden = bool(session.get("hidden", False))
+        had_pending_hidden = "pending_hidden" in session
+        previous_pending_hidden = session.get("pending_hidden")
+        # Authorization changes before durable I/O: once a hide starts, no new
+        # output can cross the boundary while SQLite is busy or failing.
+        if hidden:
+            session["hidden"] = True
+            _output_subscriptions.remove_session(
+                sid, target_session_incarnation=incarnation
+            )
+
+    def _restore_live_hidden_state() -> None:
+        with _sessions_lock:
+            if (
+                _sessions.get(sid) is not session
+                or _output_session_incarnation(session) is not incarnation
+            ):
+                return
+            session["hidden"] = previous_hidden
+            if had_pending_hidden:
+                session["pending_hidden"] = previous_pending_hidden
+            else:
+                session.pop("pending_hidden", None)
+
     with _session_db(session) as db:
         if db is None:
+            _restore_live_hidden_state()
             return _db_unavailable_error(rid, code=5007)
         key = session["session_key"]
         try:
@@ -1206,8 +1438,17 @@ def _(rid, params: dict) -> dict:
                 # intent so _ensure_session_db_row is born hidden, mirroring the
                 # pending_title deferral.
                 session["pending_hidden"] = hidden
+            else:
+                session.pop("pending_hidden", None)
+            with _sessions_lock:
+                if (
+                    _sessions.get(sid) is session
+                    and _output_session_incarnation(session) is incarnation
+                ):
+                    session["hidden"] = hidden
             return _ok(rid, {"hidden": hidden, "session_key": key})
         except Exception as e:
+            _restore_live_hidden_state()
             return _err(rid, 5007, str(e))
 
 

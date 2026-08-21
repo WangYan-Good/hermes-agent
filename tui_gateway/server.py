@@ -38,6 +38,11 @@ from agent.replay_cleanup import sanitize_replay_history
 from agent.skill_commands import describe_skill_invocation
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from tui_gateway import git_probe
+from tui_gateway.output_subscriptions import (
+    MAX_OUTPUT_SUBSCRIPTIONS_PER_TRANSPORT,
+    OutputSubscription,
+    OutputSubscriptionRegistry,
+)
 from tui_gateway.turn_marker import (
     clear_turn_marker,
     read_turn_marker,
@@ -141,6 +146,10 @@ except Exception:
 from tui_gateway.render import make_stream_renderer, render_diff, render_message
 
 _sessions: dict[str, dict] = {}
+_output_subscriptions = OutputSubscriptionRegistry(
+    max_subscriptions_per_transport=MAX_OUTPUT_SUBSCRIPTIONS_PER_TRANSPORT
+)
+_OUTPUT_SESSION_INCARNATION_KEY = "_output_incarnation"
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
@@ -954,7 +963,9 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     worker.close()
 
 
-def _pop_session_by_id(sid: str) -> dict | None:
+def _pop_session_by_id(
+    sid: str, *, expected_session: dict | None = None
+) -> dict | None:
     """Atomically detach one live session from the registry.
 
     Detaching is the ownership claim for teardown: once the record is no
@@ -962,13 +973,27 @@ def _pop_session_by_id(sid: str) -> dict | None:
     this operation separate from ``_teardown_session`` because finalization can
     flush SQLite state, invoke plugins, commit memory, interrupt delegations,
     and close agents/workers.  None of that slow external work belongs under
-    the global ``_session_resume_lock``.
+    the global ``_session_resume_lock``. When ``expected_session`` is provided,
+    a replacement registered under the same runtime id is left untouched.
     """
     with _sessions_lock:
         session = _sessions.get(sid)
+        if expected_session is not None and session is not expected_session:
+            return None
         if session is not None:
             session["_closing"] = True
             _sessions.pop(sid, None)
+            incarnation = _output_session_incarnation(session)
+            _output_subscriptions.remove_session(
+                sid, target_session_incarnation=incarnation
+            )
+            owner_transport = session.get("transport")
+            if owner_transport is not None:
+                _output_subscriptions.remove_anchor(
+                    owner_transport,
+                    sid,
+                    subscriber_session_incarnation=incarnation,
+                )
     if session is None:
         return None
     # The session is already out of _sessions here, so downstream teardown
@@ -1529,6 +1554,38 @@ def _profile_home(profile: str | None) -> Path | None:
     return home if (home / "state.db").exists() or home.exists() else None
 
 
+def _canonical_output_profile_scope(session: dict) -> str:
+    """Return the canonical profile-home boundary for an output subscription."""
+
+    raw_home = session.get("profile_home") or _hermes_home
+    path = Path(str(raw_home)).expanduser()
+    try:
+        path = path.resolve(strict=False)
+    except OSError:
+        path = path.absolute()
+    return os.path.normcase(str(path))
+
+
+def _prepare_output_session_record(
+    session: dict, *, hidden: bool | None = None
+) -> dict:
+    """Attach process-local output identity before a Session is published."""
+
+    if _OUTPUT_SESSION_INCARNATION_KEY not in session:
+        session[_OUTPUT_SESSION_INCARNATION_KEY] = object()
+    if hidden is None:
+        session.setdefault("hidden", bool(session.get("pending_hidden", False)))
+    else:
+        session["hidden"] = bool(hidden)
+    return session
+
+
+def _output_session_incarnation(session: dict) -> object:
+    """Return the opaque identity for one exact live Session object."""
+
+    return _prepare_output_session_record(session)[_OUTPUT_SESSION_INCARNATION_KEY]
+
+
 def _profile_scoped(handler):
     """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
 
@@ -1686,6 +1743,8 @@ def unregister_live_transport(transport: Transport | None) -> None:
     """Stop tracking a transport (call on disconnect). Idempotent."""
     with _live_transports_lock:
         _live_transports.discard(transport)
+    if transport is not None:
+        _output_subscriptions.remove_transport(transport)
 
 
 def _broadcast_global_event(event: str, payload: dict | None = None) -> None:
@@ -7027,41 +7086,46 @@ def _init_session(
     session_db=None,
     source: str | None = None,
     profile_home: str | None = None,
+    hidden: bool = False,
+    on_published: Callable[[dict], None] | None = None,
 ):
     now = time.time()
+    session = _prepare_output_session_record({
+        "agent": agent,
+        "session_key": key,
+        "history": history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "inflight_turn": None,
+        "created_at": now,
+        "last_active": now,
+        "running": False,
+        "attached_images": [],
+        "image_counter": 0,
+        "cwd": cwd or _completion_cwd(),
+        "cols": cols,
+        "slash_worker": None,
+        "show_reasoning": _load_show_reasoning(),
+        "source": _resolve_session_source(source),
+        "tool_progress_mode": _load_tool_progress_mode(),
+        "edit_snapshots": {},
+        "tool_started_at": {},
+        # Profile-scoped HERMES_HOME for app-global remote mode; None =
+        # launch profile. SessionBranch copies the parent's value so the
+        # child stays on the same state.db.
+        "profile_home": profile_home,
+        # Per-session model override set by an in-session /model switch.
+        # Honored on rebuild (/new, resume) so a switch in THIS session
+        # never leaks into siblings via process-global env vars.
+        "model_override": None,
+        # Pin async event emissions to whichever transport created the
+        # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
+        "transport": current_transport() or _stdio_transport,
+    }, hidden=hidden)
     with _sessions_lock:
-        _sessions[sid] = {
-            "agent": agent,
-            "session_key": key,
-            "history": history,
-            "history_lock": threading.Lock(),
-            "history_version": 0,
-            "inflight_turn": None,
-            "created_at": now,
-            "last_active": now,
-            "running": False,
-            "attached_images": [],
-            "image_counter": 0,
-            "cwd": cwd or _completion_cwd(),
-            "cols": cols,
-            "slash_worker": None,
-            "show_reasoning": _load_show_reasoning(),
-            "source": _resolve_session_source(source),
-            "tool_progress_mode": _load_tool_progress_mode(),
-            "edit_snapshots": {},
-            "tool_started_at": {},
-            # Profile-scoped HERMES_HOME for app-global remote mode; None =
-            # launch profile. SessionBranch copies the parent's value so the
-            # child stays on the same state.db.
-            "profile_home": profile_home,
-            # Per-session model override set by an in-session /model switch.
-            # Honored on rebuild (/new, resume) so a switch in THIS session
-            # never leaks into siblings via process-global env vars.
-            "model_override": None,
-            # Pin async event emissions to whichever transport created the
-            # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
-            "transport": current_transport() or _stdio_transport,
-        }
+        _sessions[sid] = session
+        if on_published is not None:
+            on_published(session)
     _init_owns_db = False
     if session_db is not None:
         db = session_db
@@ -8143,6 +8207,7 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     lower-priority follow-ups this cycle — the user's message wins). Mirrors the
     claim-under-lock pattern used by the goal-continuation re-fire.
     """
+    queued_transport = None
     with session["history_lock"]:
         if session.get("_closing"):
             return False
@@ -8155,8 +8220,12 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
         if not queued_prompts:
             session.pop("queued_prompts", None)
         session["running"] = True
-        if queued.get("transport") is not None:
-            session["transport"] = queued["transport"]
+        queued_transport = queued.get("transport")
+    if queued_transport is not None:
+        if not _set_session_owner_transport(sid, session, queued_transport):
+            # Preserve the helper's historical behavior for isolated session
+            # records used outside the live registry (notably unit tests).
+            session["transport"] = queued_transport
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
@@ -8386,13 +8455,14 @@ def _deferred_session_record(
     display_history_prefix: list | None = None,
     profile_home: Path | None = None,
     lazy: bool = False,
+    hidden: bool = False,
     model_override=None,
     resume_runtime_overrides: dict | None = None,
 ) -> dict:
     """A live-session record whose AIAgent is built later (lazy watch / cold
     resume) — _init_session's shape minus the agent."""
     now = time.time()
-    return {
+    return _prepare_output_session_record({
         "agent": None,
         "agent_error": None,
         "agent_ready": threading.Event(),
@@ -8425,7 +8495,7 @@ def _deferred_session_record(
         "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {},
         "transport": current_transport() or _stdio_transport,
-    }
+    }, hidden=hidden)
 
 
 def _claim_or_reuse_live(
@@ -8441,7 +8511,7 @@ def _claim_or_reuse_live(
                 lease.release()
             return live
         with _sessions_lock:
-            _sessions[sid] = record
+            _sessions[sid] = _prepare_output_session_record(record)
             _register_session_cwd(_sessions[sid])
     return None
 
@@ -8514,8 +8584,7 @@ def _schedule_resume_hydration(
                 {"message": message, "phase": "history", "status": "failed"},
             )
             _emit("error", sid, {"message": message})
-            with _sessions_lock:
-                discarded = _sessions.pop(sid, None) if _sessions.get(sid) is session else None
+            discarded = _pop_session_by_id(sid, expected_session=session)
             lease = (discarded or {}).get("active_session_lease")
             if lease is not None:
                 lease.release()
@@ -8599,6 +8668,83 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     }
 
 
+_OUTPUT_OBSERVER_INELIGIBLE_SOURCES = frozenset(
+    {"internal", "kanban", "tool", "tool-sidecar", "tool_sidecar"}
+)
+
+
+def _output_observer_rejection(session: dict) -> str | None:
+    """Return a stable rejection reason, or ``None`` for a watchable session."""
+
+    if session.get("_closing") or session.get("_finalized"):
+        return "closing"
+    if session.get("observer_eligible") is False:
+        return "not_observer_eligible"
+    if session.get("hidden") or session.get("pending_hidden"):
+        return "not_observer_eligible"
+    if _session_source(session).strip().lower() in _OUTPUT_OBSERVER_INELIGIBLE_SOURCES:
+        return "not_observer_eligible"
+    return None
+
+
+def _output_subscription_metadata(sid: str, session: dict) -> dict:
+    """Return the intentionally small, non-control subscription payload."""
+
+    item = _session_live_item(sid, session)
+    return {
+        "last_active": item["last_active"],
+        "model": item["model"],
+        "session_id": sid,
+        "status": item["status"],
+        "stored_session_id": item["session_key"],
+        "title": item["title"],
+    }
+
+
+def _subscribe_output_target(
+    *,
+    profile_scope: str,
+    subscriber_session_id: str,
+    subscriber_session_incarnation: object,
+    subscriber_transport: Transport,
+    target_session_id: str,
+    target_session_key: str,
+    target_session_incarnation: object,
+) -> str:
+    """Store one Phase 3B-1 contract without enabling event delivery."""
+
+    return _output_subscriptions.subscribe(
+        OutputSubscription(
+            profile_scope=profile_scope,
+            subscriber_session_id=subscriber_session_id,
+            subscriber_session_incarnation=subscriber_session_incarnation,
+            subscriber_transport=subscriber_transport,
+            target_session_id=target_session_id,
+            target_session_key=target_session_key,
+            target_session_incarnation=target_session_incarnation,
+        )
+    )
+
+
+def _set_session_owner_transport(sid: str, session: dict, transport: Transport) -> bool:
+    """Rebind an owner while revoking subscriptions authorized by the old owner."""
+
+    with _sessions_lock:
+        if _sessions.get(sid) is not session:
+            return False
+        previous = session.get("transport")
+        if previous is transport:
+            return True
+        if previous is not None:
+            _output_subscriptions.remove_anchor(
+                previous,
+                sid,
+                subscriber_session_incarnation=_output_session_incarnation(session),
+            )
+        session["transport"] = transport
+        return True
+
+
 def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
     agent = session.get("agent")
     return str(
@@ -8607,6 +8753,33 @@ def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
         or fallback
         or ""
     )
+
+
+def _detach_failed_session_attempt(sid: str, failed_session: dict) -> dict:
+    """Detach one failed publication without touching a same-sid replacement."""
+
+    popped = _pop_session_by_id(sid, expected_session=failed_session)
+    if popped is not None:
+        return popped
+
+    # A replacement owns the runtime id now. Remove only contracts bound to the
+    # failed object's opaque identity. SID, durable key, and transport may all
+    # have been reused by the replacement already.
+    incarnation = _output_session_incarnation(failed_session)
+    _output_subscriptions.remove_session(
+        sid,
+        target_session_incarnation=incarnation,
+    )
+    owner_transport = failed_session.get("transport")
+    if owner_transport is not None:
+        _output_subscriptions.remove_anchor(
+            owner_transport,
+            sid,
+            subscriber_session_incarnation=incarnation,
+        )
+    failed_session["_closing"] = True
+    failed_session["_sid"] = sid
+    return failed_session
 
 
 def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
@@ -8727,11 +8900,11 @@ def _live_session_payload(
     transport: Transport | None = None,
     omit_messages: bool = False,
 ) -> dict:
+    if transport is not None:
+        _set_session_owner_transport(sid, session, transport)
     with session["history_lock"]:
         if cols is not None:
             session["cols"] = cols
-        if transport is not None:
-            session["transport"] = transport
         if touch:
             session["last_active"] = time.time()
         in_memory_history = list(session.get("display_history_prefix") or []) + list(

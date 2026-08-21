@@ -605,7 +605,7 @@ class ComputeHost:
             # If _init_session's side machinery (slash worker, approval notify) is
             # unavailable, keep a minimal host-owned session rather than failing
             # the turn after the expensive agent build succeeded.
-            server._sessions[sid] = {
+            server._sessions[sid] = server._prepare_output_session_record({
                 "agent": agent,
                 "session_key": key,
                 "history": list(history),
@@ -627,7 +627,7 @@ class ComputeHost:
                 "model_override": frame.get("model_override"),
                 "source": server._sanitize_client_source(frame.get("source")),
                 "transport": self._transport,
-            }
+            })
         session = server._sessions[sid]
         session["transport"] = self._transport
         session["profile_home"] = profile_home or session.get("profile_home")
