@@ -42,7 +42,9 @@ from tui_gateway.output_subscriptions import (
     MAX_OUTPUT_SUBSCRIPTIONS_PER_TRANSPORT,
     OutputSubscription,
     OutputSubscriptionRegistry,
+    classify_session_event,
 )
+from tui_gateway.output_delivery import ObserverDeliveryManager
 from tui_gateway.turn_marker import (
     clear_turn_marker,
     read_turn_marker,
@@ -149,7 +151,9 @@ _sessions: dict[str, dict] = {}
 _output_subscriptions = OutputSubscriptionRegistry(
     max_subscriptions_per_transport=MAX_OUTPUT_SUBSCRIPTIONS_PER_TRANSPORT
 )
+_output_delivery = ObserverDeliveryManager(_output_subscriptions)
 _OUTPUT_SESSION_INCARNATION_KEY = "_output_incarnation"
+_OUTPUT_SESSION_EMIT_LOCK_KEY = "_output_emit_lock"
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
@@ -1573,6 +1577,8 @@ def _prepare_output_session_record(
 
     if _OUTPUT_SESSION_INCARNATION_KEY not in session:
         session[_OUTPUT_SESSION_INCARNATION_KEY] = object()
+    if _OUTPUT_SESSION_EMIT_LOCK_KEY not in session:
+        session[_OUTPUT_SESSION_EMIT_LOCK_KEY] = threading.RLock()
     if hidden is None:
         session.setdefault("hidden", bool(session.get("pending_hidden", False)))
     else:
@@ -1720,7 +1726,39 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
 
 
 def _emit(event: str, sid: str, payload: dict | None = None):
-    write_json(_event_frame(event, sid, payload))
+    frame = _event_frame(event, sid, payload)
+    session = _sessions.get(sid)
+    if (
+        session is None
+        or classify_session_event(event) != "output"
+        or session.get("transport") is None
+    ):
+        write_json(frame)
+        return
+
+    session = _prepare_output_session_record(session)
+    emit_lock = session[_OUTPUT_SESSION_EMIT_LOCK_KEY]
+    with emit_lock:
+        # Owner delivery remains synchronous and first.  A replacement under
+        # the same runtime SID gets a different incarnation and therefore a
+        # different subscriber set.
+        owner_transport = session.get("transport")
+        if owner_transport is None:
+            write_json(frame)
+            return
+        owner_transport.write(frame)
+        incarnation = session[_OUTPUT_SESSION_INCARNATION_KEY]
+        subscriptions = _output_subscriptions.subscriptions_for_session(
+            sid,
+            target_session_incarnation=incarnation,
+        )
+        delivered_transports = {owner_transport}
+        for subscription in subscriptions:
+            observer_transport = subscription.subscriber_transport
+            if observer_transport in delivered_transports:
+                continue
+            delivered_transports.add(observer_transport)
+            _output_delivery.enqueue(subscription, frame)
 
 
 # Live client transports, one per connected WS peer (maintained by tui_gateway.ws).
@@ -1744,6 +1782,7 @@ def unregister_live_transport(transport: Transport | None) -> None:
     with _live_transports_lock:
         _live_transports.discard(transport)
     if transport is not None:
+        _output_delivery.remove_transport(transport)
         _output_subscriptions.remove_transport(transport)
 
 

@@ -29,7 +29,7 @@ import json
 import logging
 import socket
 import threading
-from typing import Any
+from typing import Any, Callable
 
 from tui_gateway import server
 
@@ -224,6 +224,86 @@ class WSTransport:
             batch.append(json.dumps(obj, ensure_ascii=False))
         await self._safe_send_many(batch)
         return not self._closed
+
+    def write_observer_batch(
+        self,
+        frames: list[dict],
+        *,
+        timeout: float = _WS_WRITE_TIMEOUT_S,
+        validators: list[Callable[[], bool] | None] | None = None,
+    ) -> bool:
+        """Await physical observer delivery without using the token buffer.
+
+        Observer workers are already off the event-loop thread.  Scheduling
+        one serialized batch directly behind ``_send_lock`` gives their
+        bounded queue real backpressure instead of merely transferring output
+        into :attr:`_pending_tokens`.
+        """
+
+        if self._closed:
+            return False
+        try:
+            on_loop = asyncio.get_running_loop() is self._loop
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            raise RuntimeError(
+                "write_observer_batch must run outside the WebSocket event loop"
+            )
+
+        from agent.async_utils import safe_schedule_threadsafe
+
+        lines = [json.dumps(frame, ensure_ascii=False) for frame in frames]
+        if validators is None:
+            validators = [None] * len(lines)
+        if len(validators) != len(lines):
+            raise ValueError("observer validators must match frame count")
+        fut = safe_schedule_threadsafe(
+            self._safe_send_observer_many(list(zip(lines, validators, strict=True))),
+            self._loop,
+        )
+        if fut is None:
+            return False
+        try:
+            fut.result(timeout=max(0.001, float(timeout)))
+        except concurrent.futures.TimeoutError:
+            fut.cancel()
+            return False
+        except Exception as exc:
+            self._closed = True
+            _log.warning(
+                "ws observer send failed peer=%s error_type=%s error=%s",
+                self._peer,
+                type(exc).__name__,
+                exc,
+            )
+            return False
+        return not self._closed
+
+    async def _safe_send_observer_many(
+        self,
+        deliveries: list[tuple[str, Callable[[], bool] | None]],
+    ) -> None:
+        """Send authorized observer frames, rechecking under the wire lock."""
+
+        async with self._send_lock:
+            if self._closed:
+                return
+            try:
+                for line, validator in deliveries:
+                    if self._closed:
+                        return
+                    if validator is not None and not validator():
+                        continue
+                    await self._ws.send_text(line)
+            except Exception as exc:
+                self._closed = True
+                _log.warning(
+                    "ws observer send failed peer=%s error_type=%s error=%s",
+                    self._peer,
+                    type(exc).__name__,
+                    exc,
+                )
 
     async def _safe_send_many(self, lines: list[str]) -> None:
         """Send one indivisible batch of pre-serialized frames in wire order."""
