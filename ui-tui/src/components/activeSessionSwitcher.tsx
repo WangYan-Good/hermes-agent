@@ -203,7 +203,10 @@ export const closeFallbackAfterClose = (
     return { action: 'stay' }
   }
 
-  const next = remaining.find(s => s.id !== closedId)
+  // A cross-tab session owned by another transport is visible in active_list,
+  // but closing the current session must not implicitly Take Control of it.
+  // Older gateways omit `owned`, so only an explicit false is excluded.
+  const next = remaining.find(s => s.id !== closedId && s.owned !== false)
 
   return next ? { action: 'activate', sessionId: next.id } : { action: 'new' }
 }

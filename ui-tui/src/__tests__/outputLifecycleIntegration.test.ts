@@ -17,6 +17,7 @@ import {
   setSecondaryOutput,
   syncOutputSessions
 } from '../app/outputStreamStore.js'
+import { createOutputSubscriptionCoordinator, resetOutputSubscriptionState } from '../app/outputSubscriptionCoordinator.js'
 import { resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { resetTurnState } from '../app/turnStore.js'
@@ -89,6 +90,7 @@ describe('dashboard output lifecycle integration', () => {
   beforeEach(() => {
     resetOverlayState()
     resetOutputStreams()
+    resetOutputSubscriptionState()
     resetTurnState()
     resetUiState()
     turnController.fullReset()
@@ -147,10 +149,11 @@ describe('dashboard output lifecycle integration', () => {
     const recoverSidRef = ref<null | string>('stored-a')
 
     const onEvent = createGatewayEventHandler({
-      composer: { setInput: vi.fn() },
+      composer: { cancelQueued: vi.fn(), setInput: vi.fn() },
       gateway: { gw, rpc: vi.fn(async () => null) },
       outputRouter,
       outputLifecycle,
+      outputSubscriptions: createOutputSubscriptionCoordinator(vi.fn()),
       session: {
         STARTUP_RESUME_ID: '',
         colsRef: ref(100),
@@ -270,10 +273,11 @@ describe('dashboard output lifecycle integration', () => {
     const recoverSidRef = ref<null | string>('stored-a')
 
     const onEvent = createGatewayEventHandler({
-      composer: { setInput: vi.fn() },
+      composer: { cancelQueued: vi.fn(), setInput: vi.fn() },
       gateway: { gw, rpc: vi.fn(async () => null) },
       outputRouter,
       outputLifecycle,
+      outputSubscriptions: createOutputSubscriptionCoordinator(vi.fn()),
       session: {
         STARTUP_RESUME_ID: '',
         colsRef: ref(100),

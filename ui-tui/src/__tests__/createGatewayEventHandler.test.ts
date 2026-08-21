@@ -5,6 +5,11 @@ import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
 import { createOutputLifecycleCoordinator } from '../app/outputLifecycleCoordinator.js'
 import { createOutputStreamRouter } from '../app/outputStreamRouter.js'
 import { getOutputStreamsState, markOutputTransportDisconnected, resetOutputStreams } from '../app/outputStreamStore.js'
+import {
+  createOutputSubscriptionCoordinator,
+  getOutputSubscriptionState,
+  resetOutputSubscriptionState
+} from '../app/outputSubscriptionCoordinator.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
@@ -27,6 +32,7 @@ const buildCtx = (appended: Msg[]) => {
 
   return ({
     composer: {
+      cancelQueued: vi.fn(),
       dequeue: () => undefined,
       queueEditRef: ref<null | number>(null),
       sendQueued: vi.fn(),
@@ -37,6 +43,7 @@ const buildCtx = (appended: Msg[]) => {
       rpc: vi.fn(async () => null)
     },
     outputLifecycle: createOutputLifecycleCoordinator(outputRouter),
+    outputSubscriptions: createOutputSubscriptionCoordinator(vi.fn()),
     outputRouter,
     session: {
       STARTUP_RESUME_ID: '',
@@ -72,9 +79,29 @@ describe('createGatewayEventHandler', () => {
     resetOverlayState()
     resetUiState()
     resetOutputStreams()
+    resetOutputSubscriptionState()
     resetTurnState()
     turnController.fullReset()
     patchUiState({ showReasoning: true })
+  })
+
+  it('marks the old owner read-only when Take Control arrives as an owner-only event', () => {
+    const ctx = buildCtx([])
+    patchUiState({ busy: true, sid: 'sid-a' })
+    ctx.outputSubscriptions.syncActiveSessions(
+      [{ id: 'sid-a', owned: true, status: 'working', watchable: false }],
+      'sid-a'
+    )
+
+    createGatewayEventHandler(ctx)({
+      payload: { new_owner: true, reason: 'take_control' },
+      session_id: 'sid-a',
+      type: 'session.owner_lost'
+    })
+
+    expect(getOutputSubscriptionState().sessions['sid-a']?.owned).toBe(false)
+    expect(ctx.composer.cancelQueued).toHaveBeenCalledOnce()
+    expect(getUiState()).toMatchObject({ busy: false, status: 'read-only · Take Control to continue' })
   })
 
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {

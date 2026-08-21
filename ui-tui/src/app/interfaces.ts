@@ -36,6 +36,7 @@ import type { ControlPrompt } from './controlPromptQueue.js'
 import type { OutputLifecycleCoordinator } from './outputLifecycleCoordinator.js'
 import type { OutputStreamRouter } from './outputStreamRouter.js'
 import type { OutputConflictDecision } from './outputStreamStore.js'
+import type { OutputSubscriptionCoordinator } from './outputSubscriptionCoordinator.js'
 
 export interface StateSetter<T> {
   (value: SetStateAction<T>): void
@@ -475,11 +476,13 @@ export interface InputHandlerResult {
 
 export interface GatewayEventHandlerContext {
   composer: {
+    cancelQueued: () => void
     setInput: StateSetter<string>
   }
   gateway: GatewayServices
   outputRouter: OutputStreamRouter
   outputLifecycle: OutputLifecycleCoordinator
+  outputSubscriptions: OutputSubscriptionCoordinator
   session: {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
@@ -569,6 +572,8 @@ export interface AppLayoutActions {
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
   decideOutputConflict: (decision: OutputConflictDecision) => Promise<boolean> | void
   focusOutputSession: (sessionId: string) => Promise<boolean>
+  takeControlOutputSession: (sessionId: string) => Promise<boolean>
+  toggleOutputWatch: (sessionId: string) => Promise<boolean>
   newLiveSession: () => void
   newPromptSession: (prompt: string, modelArg?: string) => void
   onModelSelect: (value: string) => void
@@ -635,6 +640,8 @@ export interface AppOverlaysProps {
   onActiveSessionSelect: (sessionId: string) => Promise<boolean>
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
   onOutputFocus: (sessionId: string) => Promise<boolean>
+  onOutputTakeControl: (sessionId: string) => Promise<boolean>
+  onOutputWatch: (sessionId: string) => Promise<boolean>
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void

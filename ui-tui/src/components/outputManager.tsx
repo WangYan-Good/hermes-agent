@@ -3,32 +3,42 @@ import { useStore } from '@nanostores/react'
 import { useState } from 'react'
 
 import { $outputLayout, $outputStreams, type OutputStream } from '../app/outputStreamStore.js'
+import { $outputSubscriptionState, type OutputSessionRole } from '../app/outputSubscriptionCoordinator.js'
 import type { Theme } from '../theme.js'
 
 import { listRowStyle } from './overlayPrimitives.js'
 
 export interface OutputManagerProps {
-  onActivate: (sessionId: string) => Promise<boolean>
+  onFocus: (sessionId: string) => Promise<boolean>
   onClose: () => void
   onExitSplit: () => void
   onSetSecondary: (sessionId: string) => void
+  onTakeControl: (sessionId: string) => Promise<boolean>
+  onWatch: (sessionId: string) => Promise<boolean>
   t: Theme
 }
 
-export const outputFocusDirection = (key: {
-  leftArrow: boolean
-  meta: boolean
-  rightArrow: boolean
-}): -1 | 0 | 1 => (key.meta && key.leftArrow ? -1 : key.meta && key.rightArrow ? 1 : 0)
+export const outputFocusDirection = (key: { leftArrow: boolean; meta: boolean; rightArrow: boolean }): -1 | 0 | 1 =>
+  key.meta && key.leftArrow ? -1 : key.meta && key.rightArrow ? 1 : 0
 
 interface OutputManagerRow {
-  role: 'primary' | 'secondary' | 'waiting'
+  placement: 'primary' | 'secondary' | 'waiting'
+  role: OutputSessionRole
   stream: OutputStream
 }
 
-export function OutputManager({ onActivate, onClose, onExitSplit, onSetSecondary, t }: OutputManagerProps) {
+export function OutputManager({
+  onClose,
+  onExitSplit,
+  onFocus,
+  onSetSecondary,
+  onTakeControl,
+  onWatch,
+  t
+}: OutputManagerProps) {
   const streams = useStore($outputStreams)
   const layout = useStore($outputLayout)
+  const subscriptions = useStore($outputSubscriptionState)
   const [selected, setSelected] = useState(0)
 
   const rows: OutputManagerRow[] = Object.values(streams)
@@ -39,12 +49,20 @@ export function OutputManager({ onActivate, onClose, onExitSplit, onSetSecondary
       return rank(a) - rank(b) || b.lastOutputAt - a.lastOutputAt
     })
     .map(stream => ({
-      role:
+      placement:
         stream.sessionId === layout.primarySessionId
           ? 'primary'
           : stream.sessionId === layout.secondarySessionId
             ? 'secondary'
             : 'waiting',
+      role:
+        stream.status === 'closed'
+          ? 'Closed'
+          : subscriptions.sessions[stream.sessionId]?.owned
+            ? 'Owned'
+            : subscriptions.effective[stream.sessionId]
+              ? 'Watched'
+              : 'Inactive',
       stream
     }))
 
@@ -64,14 +82,32 @@ export function OutputManager({ onActivate, onClose, onExitSplit, onSetSecondary
     }
 
     if (key.return && current) {
-      return void onActivate(current.stream.sessionId).then(ok => {
+      return void onFocus(current.stream.sessionId).then(ok => {
         if (ok !== false) {
           onClose()
         }
       })
     }
 
-    if (ch.toLowerCase() === 's' && current) {
+    if (ch.toLowerCase() === 'w' && current && current.role !== 'Owned' && current.role !== 'Closed') {
+      return void onWatch(current.stream.sessionId)
+    }
+
+    if (
+      ch.toLowerCase() === 't' &&
+      current &&
+      current.role !== 'Owned' &&
+      current.role !== 'Closed' &&
+      (current.role === 'Watched' || subscriptions.sessions[current.stream.sessionId]?.watchable === true)
+    ) {
+      return void onTakeControl(current.stream.sessionId).then(ok => {
+        if (ok !== false) {
+          onClose()
+        }
+      })
+    }
+
+    if (ch.toLowerCase() === 's' && current && (current.role === 'Owned' || current.role === 'Watched')) {
       return onSetSecondary(current.stream.sessionId)
     }
 
@@ -82,7 +118,9 @@ export function OutputManager({ onActivate, onClose, onExitSplit, onSetSecondary
 
   return (
     <Box flexDirection="column" paddingX={1} paddingY={1}>
-      <Text bold color={t.color.primary}>Output streams</Text>
+      <Text bold color={t.color.primary}>
+        Output streams
+      </Text>
       {rows.map((row, index) => {
         const style = listRowStyle(t, index === selected)
         const status = row.stream.producing ? 'running' : row.stream.status
@@ -90,7 +128,7 @@ export function OutputManager({ onActivate, onClose, onExitSplit, onSetSecondary
         return (
           <Box flexDirection="column" key={row.stream.sessionId}>
             <Text backgroundColor={style.backgroundColor} bold={index === selected} color={style.color}>
-              {`${index === selected ? '▸ ' : '  '}${row.stream.title} · ${status} · ${row.role}`}
+              {`${index === selected ? '▸ ' : '  '}${row.stream.title} · ${status} · ${row.role} · ${row.placement}`}
             </Text>
             <Text color={t.color.muted} wrap="truncate-end">
               {`${row.stream.unreadCount ? `${row.stream.unreadCount} unread · ` : ''}${row.stream.preview || '(no output yet)'}`}
@@ -98,7 +136,9 @@ export function OutputManager({ onActivate, onClose, onExitSplit, onSetSecondary
           </Box>
         )
       })}
-      <Text color={t.color.muted}>↑↓ select · Enter activate · s secondary · x exit split · Esc close</Text>
+      <Text color={t.color.muted}>
+        ↑↓ select · Enter focus · w watch · t Take Control · s secondary · x exit split · Esc close
+      </Text>
     </Box>
   )
 }

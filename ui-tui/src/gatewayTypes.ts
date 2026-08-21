@@ -203,11 +203,13 @@ export interface SessionActiveItem {
   last_active?: number
   message_count?: number
   model?: string
+  owned?: boolean
   preview?: string
   session_key?: string
   started_at?: number
   status: LiveSessionStatus
   title?: string
+  watchable?: boolean
 }
 
 export interface SessionActiveListResponse {
@@ -619,6 +621,11 @@ export interface SpawnTreeLoadResponse {
 
 export type GatewayEvent =
   | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
+  | {
+      payload?: { new_owner?: boolean; reason?: string }
+      session_id: string
+      type: 'session.owner_lost'
+    }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
   | { payload: SessionInfo; session_id?: string; type: 'session.info' }
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }

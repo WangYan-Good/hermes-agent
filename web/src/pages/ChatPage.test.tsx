@@ -302,6 +302,48 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("keeps PTY identity across refresh but isolates independent tabs", async () => {
+    const { ptyAttachToken } = await import("@/lib/pty-attach-token");
+    let seed = 0;
+    vi.spyOn(crypto, "getRandomValues").mockImplementation((values) => {
+      (values as Uint8Array).fill(++seed);
+      return values;
+    });
+    const tabA = new Map<string, string>();
+    const tabB = new Map<string, string>();
+    const storage = (values: Map<string, string>): Storage => ({
+      get length() {
+        return values.size;
+      },
+      clear: () => values.clear(),
+      getItem: (key: string) => values.get(key) ?? null,
+      key: (index: number) => [...values.keys()][index] ?? null,
+      removeItem: (key: string) => void values.delete(key),
+      setItem: (key: string, value: string) => void values.set(key, value),
+    });
+
+    localStorageMock.setItem(
+      "hermes.pty.token.chat",
+      "legacy-cross-tab-token",
+    );
+    const defaultTabToken = ptyAttachToken();
+
+    expect(defaultTabToken).not.toBe("legacy-cross-tab-token");
+    expect(sessionStorage.getItem("hermes.pty.token.chat")).toBe(
+      defaultTabToken,
+    );
+
+    const a1 = ptyAttachToken(false, storage(tabA));
+    const aRefresh = ptyAttachToken(false, storage(tabA));
+    const b1 = ptyAttachToken(false, storage(tabB));
+    const aFresh = ptyAttachToken(true, storage(tabA));
+
+    expect(aRefresh).toBe(a1);
+    expect(b1).not.toBe(a1);
+    expect(aFresh).not.toBe(a1);
+    expect(ptyAttachToken(false, storage(tabB))).toBe(b1);
+  });
+
   it("lets xterm encode wheel events and forwards only SGR wheel reports", async () => {
     const { default: ChatPage } = await import("./ChatPage");
 

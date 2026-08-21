@@ -72,7 +72,13 @@ export function PromptZone({
   showOutputConflict
 }: Pick<
   AppOverlaysProps,
-  'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onOutputConflictDecision' | 'onSecretSubmit' | 'onSudoSubmit' | 'showOutputConflict'
+  | 'cols'
+  | 'onApprovalChoice'
+  | 'onClarifyAnswer'
+  | 'onOutputConflictDecision'
+  | 'onSecretSubmit'
+  | 'onSudoSubmit'
+  | 'showOutputConflict'
 >) {
   const overlay = useStore($overlayState)
   const conflict = useStore($outputConflict)
@@ -204,6 +210,8 @@ export function FloatingOverlays({
   onModelSelect,
   onNewLiveSession,
   onOutputFocus,
+  onOutputTakeControl,
+  onOutputWatch,
   onNewPromptSession,
   onResumeSelect,
   pagerPageSize
@@ -220,6 +228,8 @@ export function FloatingOverlays({
   | 'onResumeSelect'
   | 'pagerPageSize'
   | 'onOutputFocus'
+  | 'onOutputTakeControl'
+  | 'onOutputWatch'
 >) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
@@ -274,10 +284,12 @@ export function FloatingOverlays({
       render: () => (
         <FloatBox color={theme.color.border}>
           <OutputManager
-            onActivate={onOutputFocus}
             onClose={() => patchOverlayState({ outputs: false })}
             onExitSplit={exitOutputSplit}
+            onFocus={onOutputFocus}
             onSetSecondary={setSecondaryOutput}
+            onTakeControl={onOutputTakeControl}
+            onWatch={onOutputWatch}
             t={theme}
           />
         </FloatBox>

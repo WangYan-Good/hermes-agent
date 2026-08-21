@@ -19,6 +19,10 @@ import {
   syncOutputSessions
 } from '../app/outputStreamStore.js'
 import {
+  createOutputSubscriptionCoordinator,
+  resetOutputSubscriptionState
+} from '../app/outputSubscriptionCoordinator.js'
+import {
   $isBlocked,
   getOverlayState,
   outputConflictBlocksComposer,
@@ -261,6 +265,7 @@ const seedThreeStreamsAndSplit = () => {
 
 beforeEach(() => {
   resetOutputStreams()
+  resetOutputSubscriptionState()
   resetOverlayState()
   resetTurnState()
   resetUiState()
@@ -277,6 +282,8 @@ const appLayoutProps: AppLayoutProps = {
     closeLiveSession: async () => null,
     decideOutputConflict: () => {},
     focusOutputSession: async () => true,
+    takeControlOutputSession: async () => true,
+    toggleOutputWatch: async () => true,
     newLiveSession: () => {},
     newPromptSession: () => {},
     onModelSelect: () => {},
@@ -617,6 +624,47 @@ describe('dashboard output pane layout', () => {
     expect(output).toContain('Beta · read-only')
     expect(output).toContain('SECONDARY BODY')
     expect(output).toContain('waiting: Gamma')
+  })
+
+  it('renders the focused watched secondary as the readonly narrow tab without activating it', () => {
+    seedThreeStreamsAndSplit()
+    const coordinator = createOutputSubscriptionCoordinator(vi.fn())
+
+    coordinator.syncActiveSessions(
+      [
+        { id: 'sid-a', owned: true, status: 'working', watchable: false },
+        { id: 'sid-b', owned: false, status: 'working', watchable: true }
+      ],
+      'sid-a'
+    )
+    coordinator.setFocusedSession('sid-b')
+
+    const output = renderToText(
+      <SplitOutputPane cols={109} onFocusSession={vi.fn()} renderPrimary={() => <Text>PRIMARY</Text>} />
+    )
+
+    expect(output).toContain('Beta · focused read-only')
+    expect(output).toContain('SECONDARY BODY')
+    expect(output).not.toContain('PRIMARY')
+  })
+
+  it('replaces the production Composer with a Take Control guard after owner loss', () => {
+    patchUiState({ sid: 'sid-a' })
+    const coordinator = createOutputSubscriptionCoordinator(vi.fn())
+
+    coordinator.syncActiveSessions(
+      [{ id: 'sid-a', owned: true, status: 'working', watchable: false }],
+      'sid-a'
+    )
+    coordinator.ownerLost('sid-a')
+
+    const output = renderToText(
+      <GatewayProvider value={{ gw: { request: async () => null } as GatewayClient, rpc: async () => null }}>
+        <AppLayout {...appLayoutProps} dashboardMode />
+      </GatewayProvider>
+    )
+
+    expect(output).toContain('read-only output · open Output Manager and press t to Take Control')
   })
 
   it('renders a bounded readonly tail while preserving older entries in the store', () => {

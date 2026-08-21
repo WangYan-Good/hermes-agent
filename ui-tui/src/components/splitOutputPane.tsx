@@ -10,6 +10,7 @@ import {
   type OutputLayout,
   type OutputStream
 } from '../app/outputStreamStore.js'
+import { $outputSubscriptionState } from '../app/outputSubscriptionCoordinator.js'
 import { $uiTheme } from '../app/uiStore.js'
 import type { Theme } from '../theme.js'
 
@@ -128,6 +129,7 @@ const terminalStatuses = new Set(['closed', 'completed', 'disconnected', 'error'
 export function SplitOutputPane({ cols, onFocusSession, renderPrimary }: SplitOutputPaneProps) {
   const layout = useStore($outputLayout)
   const streams = useStore($outputStreams)
+  const subscriptions = useStore($outputSubscriptionState)
   const t = useStore($uiTheme)
   const primary = layout.primarySessionId ? streams[layout.primarySessionId] : undefined
   const secondary = layout.secondarySessionId ? streams[layout.secondarySessionId] : undefined
@@ -162,29 +164,52 @@ export function SplitOutputPane({ cols, onFocusSession, renderPrimary }: SplitOu
 
   const mode = outputPaneMode(cols)
   const primaryTitle = primary?.title || layout.primarySessionId || 'Current'
+  const secondaryFocused = subscriptions.focusedSessionId === secondary.sessionId
 
   return (
     <Box flexDirection="column" flexGrow={1}>
       {mode === 'tabs' ? (
         <>
           <Box flexShrink={0} paddingX={1}>
-            <Text bold color={t.color.label}>
-              {primaryTitle} · focused
+            <Text
+              bold={!secondaryFocused}
+              color={!secondaryFocused ? t.color.label : t.color.muted}
+              onClick={() => layout.primarySessionId && void onFocusSession(layout.primarySessionId)}
+            >
+              {primaryTitle} · {!secondaryFocused ? 'focused' : 'owned'}
             </Text>
             <Text color={t.color.muted}> │ </Text>
-            <Text color={t.color.muted} onClick={() => void onFocusSession(secondary.sessionId)}>
-              {secondary.title} · read-only
+            <Text
+              bold={secondaryFocused}
+              color={secondaryFocused ? t.color.label : t.color.muted}
+              onClick={() => void onFocusSession(secondary.sessionId)}
+            >
+              {secondary.title} · {secondaryFocused ? 'focused read-only' : 'read-only'}
             </Text>
           </Box>
           <Box flexDirection="column" flexGrow={1}>
-            {renderPrimary(cols)}
+            {secondaryFocused ? (
+              <ReadonlyOutputPane
+                onFocus={() => void onFocusSession(secondary.sessionId)}
+                stream={secondary}
+                t={t}
+                width={cols}
+              />
+            ) : (
+              renderPrimary(cols)
+            )}
           </Box>
         </>
       ) : (
         <Box flexDirection="row" flexGrow={1}>
           <Box flexDirection="column" flexGrow={1} width={outputPaneWidths(cols).primary}>
-            <Text bold color={t.color.label} wrap="truncate-end">
-              {primaryTitle} · focused
+            <Text
+              bold={!secondaryFocused}
+              color={!secondaryFocused ? t.color.label : t.color.muted}
+              onClick={() => layout.primarySessionId && void onFocusSession(layout.primarySessionId)}
+              wrap="truncate-end"
+            >
+              {primaryTitle} · {!secondaryFocused ? 'focused' : 'owned'}
             </Text>
             {renderPrimary(outputPaneWidths(cols).primary)}
           </Box>

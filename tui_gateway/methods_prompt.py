@@ -272,6 +272,25 @@ def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
     raw_text = params.get("text", "")
     text = sanitize_user_prompt_text(raw_text) if isinstance(raw_text, str) else raw_text
+    t = current_transport()
+    session = None
+    # dispatch() binds the process-local stdio transport too; it remains the
+    # implicit local owner. Only remote/request-scoped transports require the
+    # live owner check before any side effect.
+    explicit_transport = t is not None and type(t).__name__ != "StdioTransport"
+    if explicit_transport:
+        session, err = _sess_nowait(params, rid)
+        if err:
+            return err
+        # WebSocket requests always carry an explicit transport and must be
+        # authorized before even voice-control side effects are applied.
+        if session.get("transport") is not t:
+            return _err(
+                rid,
+                4031,
+                "requester does not own session",
+                {"reason": "not_owner"},
+            )
     # Typed bare stop phrase while backend voice mode is active ends the
     # voice chat instead of sending "stop" to the agent — the typed twin of
     # the spoken stop phrase (PR #73106), applied at the ONE server-side
@@ -302,6 +321,13 @@ def _(rid, params: dict) -> dict:
             _voice_emit("voice.transcript", {"stop_phrase": True, "typed": True})
             logger.info("prompt.submit: typed stop phrase — voice chat ended")
             return _ok(rid, {"voice_stopped": True})
+    if session is None:
+        # The local stdio entry path is intentionally unbound. Preserve its
+        # pre-session typed voice-stop behavior, then resolve a session for
+        # ordinary prompt submission.
+        session, err = _sess_nowait(params, rid)
+        if err:
+            return err
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
     if params.get("interrupted"):
         # Client-side barge-in (desktop VAD / typing over playback) — latch it
@@ -309,9 +335,6 @@ def _(rid, params: dict) -> dict:
         from tools.tts_streaming import mark_speech_interrupted
 
         mark_speech_interrupted()
-    session, err = _sess_nowait(params, rid)
-    if err:
-        return err
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         return _err(rid, 4090, limit_message)
     # Which desktop window this message was typed into. Rewritten on every
@@ -334,11 +357,6 @@ def _(rid, params: dict) -> dict:
         )
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
-    # Re-bind to the current client transport for this request. This keeps
-    # streaming events on the active websocket even if an earlier disconnect
-    # or fallback moved the session transport to stdio.
-    if (t := current_transport()) is not None:
-        _set_session_owner_transport(sid, session, t)
     while True:
         busy_transport = None
         with session["history_lock"]:
