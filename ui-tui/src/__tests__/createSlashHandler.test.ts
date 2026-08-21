@@ -40,7 +40,6 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().sessions).toBe(true)
   })
 
-
   it('opens output manager locally in dashboard mode', () => {
     envState.dashboardTuiMode = true
     const ctx = buildCtx()
@@ -51,7 +50,6 @@ describe('createSlashHandler', () => {
   })
 
   it('resumes a prior session by id when /resume has an argument', () => {
-
     const ctx = buildCtx()
     expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
     expect(ctx.session.resumeById).toHaveBeenCalledWith('sid-old')
@@ -180,6 +178,37 @@ describe('createSlashHandler', () => {
     expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
 
     vi.useRealTimers()
+  })
+
+  it.each(['/mouse', '/mouse on', '/mouse wheel', '/mouse off', '/mouse all', '/mouse buttons', '/mouse toggle'])(
+    'keeps Dashboard wheel tracking managed for %s',
+    command => {
+      envState.dashboardTuiMode = true
+      patchUiState({ mouseTracking: 'wheel' })
+      const ctx = buildCtx()
+
+      expect(createSlashHandler(ctx)(command)).toBe(true)
+      expect(getUiState().mouseTracking).toBe('wheel')
+      expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringMatching(/dashboard.*wheel/i))
+    }
+  )
+
+  it.each([
+    ['/mouse on', 'all'],
+    ['/mouse off', 'off'],
+    ['/mouse wheel', 'wheel'],
+    ['/mouse buttons', 'buttons'],
+    ['/mouse all', 'all'],
+    ['/mouse toggle', 'off']
+  ] as const)('keeps standalone mouse configuration behavior for %s', (command, expected) => {
+    envState.dashboardTuiMode = false
+    patchUiState({ mouseTracking: 'wheel' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(command)).toBe(true)
+    expect(getUiState().mouseTracking).toBe(expected)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', { key: 'mouse', value: expected })
   })
 
   it('routes /status to live session.status instead of slash worker', async () => {

@@ -21,6 +21,9 @@ class FakeWebglAddon {
 }
 
 class FakeTerminal {
+  static instances: FakeTerminal[] = [];
+
+  dataHandler: ((data: string) => void) | null = null;
   options: Record<string, unknown>;
   rows = 24;
   cols = 80;
@@ -28,16 +31,19 @@ class FakeTerminal {
     registerOscHandler: vi.fn(),
   };
   unicode = { activeVersion: "" };
+  wheelHandler: ((event: WheelEvent) => boolean) | null = null;
 
   constructor(options: Record<string, unknown>) {
     this.options = options;
+    FakeTerminal.instances.push(this);
   }
 
   attachCustomKeyEventHandler() {
     return true;
   }
 
-  attachCustomWheelEventHandler() {
+  attachCustomWheelEventHandler(handler: (event: WheelEvent) => boolean) {
+    this.wheelHandler = handler;
     return true;
   }
 
@@ -53,7 +59,8 @@ class FakeTerminal {
 
   loadAddon() {}
 
-  onData() {
+  onData(handler: (data: string) => void) {
+    this.dataHandler = handler;
     return { dispose() {} };
   }
 
@@ -79,7 +86,9 @@ class FakeTerminal {
 
   refresh() {}
 
-  write() {}
+  scrollLines() {}
+
+  write = vi.fn();
 }
 
 const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
@@ -227,6 +236,7 @@ async function render(ui: ReactNode) {
 }
 
 beforeEach(() => {
+  FakeTerminal.instances = [];
   FakeWebSocket.instances = [];
   maybeReloadForLoopbackWsAuthFailure.mockClear();
   apiMocks.buildWsUrl.mockReset();
@@ -292,6 +302,47 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("lets xterm encode wheel events and forwards only SGR wheel reports", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    const terminal = FakeTerminal.instances[0];
+
+    await act(async () => socket.onopen?.());
+    socket.send.mockClear();
+
+    const wheelEvent = {
+      deltaY: 100,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    } as unknown as WheelEvent;
+
+    expect(terminal.wheelHandler?.(wheelEvent)).toBe(true);
+    expect(wheelEvent.preventDefault).not.toHaveBeenCalled();
+    expect(wheelEvent.stopPropagation).not.toHaveBeenCalled();
+
+    terminal.dataHandler?.("\x1b[<64;12;8M");
+    terminal.dataHandler?.("\x1b[<0;12;8M");
+
+    expect(socket.send).toHaveBeenCalledTimes(1);
+    expect(socket.send).toHaveBeenCalledWith("\x1b[<64;12;8M");
+
+    socket.readyState = 3;
+    socket.send.mockClear();
+    terminal.write.mockClear();
+    terminal.dataHandler?.("\x1b[<65;12;8M");
+
+    expect(socket.send).not.toHaveBeenCalled();
+    expect(terminal.write).not.toHaveBeenCalled();
+  });
+
   it("treats loopback 4401 closes as stale-token reload candidates", async () => {
     const { default: ChatPage } = await import("./ChatPage");
 

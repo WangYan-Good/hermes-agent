@@ -39,6 +39,10 @@ import { latchChatActivation } from "@/lib/chat-activation";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { normalizeSessionTitle } from "@/lib/chat-title";
 import { createPtyCompositionForwarder } from "@/lib/pty-composition";
+import {
+  classifyPtyInput,
+  shouldForwardClassifiedPtyInput,
+} from "@/lib/pty-mouse-input";
 import { PtyResumeSanitizer } from "@/lib/pty-resume-sanitizer";
 import {
   PTY_CONNECTING_TIMEOUT_MS,
@@ -47,7 +51,6 @@ import {
   PTY_RESUME_SANITIZE_WINDOW_MS,
   PTY_TICKET_TIMEOUT_MS,
   type PtyConnectionState,
-  shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
 } from "@/lib/pty-reconnect";
 import {
@@ -600,8 +603,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // is false; enabling it gives users a single-action selection
       // path on top of the modifier-based bypass above.
       rightClickSelectsWord: true,
-      // Browser-embedded chat runs the TUI in inline mode. Keep transcript
-      // history in xterm.js so the browser wheel can scroll it directly.
+      // The Dashboard TUI owns transcript scrolling inside its fixed
+      // alternate-screen viewport. This scrollback only preserves primary
+      // buffer content outside that active TUI surface.
       scrollback: 5000,
       theme: terminalTheme,
     });
@@ -841,21 +845,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     fitRef.current = fit;
     term.loadAddon(fit);
 
-    // Dashboard chat should scroll the browser-side transcript, not send
-    // mouse-wheel protocol bytes through the PTY.
-    term.attachCustomWheelEventHandler((ev) => {
-      const delta = ev.deltaY;
-      if (!delta) {
-        return false;
-      }
-
-      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
-      term.scrollLines(delta > 0 ? step : -step);
-
-      ev.preventDefault();
-      ev.stopPropagation();
-      return false;
-    });
+    // AlternateScreen enables wheel-only SGR mouse tracking. Let xterm encode
+    // the browser event so Ink's ScrollBox, not xterm scrollback, owns it.
+    term.attachCustomWheelEventHandler(() => true);
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -1425,40 +1417,26 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setPtyState("ended");
     };
 
-    // Keystrokes → PTY.
-    //
-    // IMPORTANT:
-    // The embedded web chat has occasionally surfaced stray letters/digits
-    // in the input line after a turn completes. The most likely culprit is
-    // browser-side terminal control traffic being forwarded back into the
-    // PTY as if it were user text. SGR mouse tracking is the highest-risk
-    // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
-    // ordinary bytes to the backend.
-    //
-    // For the browser embed we prefer input stability over terminal-style
-    // mouse reporting, so we drop SGR mouse reports entirely instead of
-    // forwarding them into Hermes. Keyboard input, paste, and resize still
-    // behave normally.
-      // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
-      const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
+      // Keystrokes and wheel-only SGR mouse reports → PTY. Click, release,
+      // and motion reports remain filtered so terminal control traffic cannot
+      // surface as stray input when the Dashboard only needs wheel scrolling.
       const forwardPtyData = (data: string, useMobileReplacement = true) => {
-        // Mouse reports (scroll wheel etc.) are not typed input — swallow
-        // them before the blocked-input check so scrolling a disconnected
-        // terminal doesn't trip the "reconnecting" notice.
-        if (SGR_MOUSE_RE.test(data)) {
-          return;
-        }
+        const input = classifyPtyInput(data);
 
-        if (
-          ws.readyState !== WebSocket.OPEN ||
-          shouldBlockPtyInput(ptyStateRef.current)
-        ) {
-          if (!blockedInputNoticeRef.current) {
+        if (!shouldForwardClassifiedPtyInput(input, ws.readyState, ptyStateRef.current)) {
+          // Mouse reports are never typed input. Drop them silently while the
+          // socket is unavailable instead of showing a reconnect input notice.
+          if (input === "keyboard" && !blockedInputNoticeRef.current) {
             blockedInputNoticeRef.current = true;
             term.write(
               `\r\n\x1b[33m[${PTY_RECONNECT_INPUT_MESSAGE}]\x1b[0m\r\n`,
             );
           }
+          return;
+        }
+
+        if (input === "sgr-wheel") {
+          ws.send(data);
           return;
         }
 
@@ -1478,7 +1456,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // normal onData path.
       sendComposedText = (data) => forwardPtyData(data, false);
       onDataDisposable = term.onData((data) => {
-        if (!SGR_MOUSE_RE.test(data)) {
+        if (classifyPtyInput(data) === "keyboard") {
           compositionForwarder.noteTerminalData(data);
         }
         forwardPtyData(data);

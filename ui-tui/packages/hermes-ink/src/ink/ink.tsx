@@ -75,6 +75,7 @@ import {
   startSelection,
   updateSelection
 } from './selection.js'
+import type { TerminalFocusState } from './terminal-focus-state.js'
 import {
   needsAltScreenResizeScrollbackClear,
   supportsExtendedKeys,
@@ -309,6 +310,9 @@ export default class Ink {
   // expensive tree rebuild defers.
   private pendingResizeRender = false
   private resizeSettleTimer: ReturnType<typeof setTimeout> | null = null
+  // Per-terminal lifecycle: the first focus-in only establishes that this
+  // Ink instance is visible. Recovery is reserved for a real blur→focus.
+  private terminalFocusState: TerminalFocusState = 'unknown'
 
   // Fold synchronous re-entry (selection fanout, onFrame callback)
   // into one follow-up microtask instead of stacking renders.
@@ -601,18 +605,37 @@ export default class Ink {
   }
 
   private handleTerminalFocusChange(isFocused: boolean): void {
-    if (!isFocused || !this.options.stdout.isTTY) {
+    if (!this.options.stdout.isTTY) {
       return
     }
 
-    // Focus-in means the terminal emulator has just made this tab/pane
+    if (!isFocused) {
+      this.terminalFocusState = 'blurred'
+
+      return
+    }
+
+    const recoveringFromBlur = this.terminalFocusState === 'blurred'
+
+    this.terminalFocusState = 'focused'
+
+    if (!recoveringFromBlur) {
+      return
+    }
+
+    // A real blur→focus means the terminal emulator has made this tab/pane
     // visible again. Some emulators throttle or coalesce hidden-tab output;
-    // if we continue with the pre-blur virtual cursor/backbuffer, only the
-    // next small dirty region may repaint and stale status/progress rows can
-    // remain visible. Defer one tick so TerminalFocusProvider subscribers
-    // observe the new focus state first, then do the same recovery as /redraw.
+    // defer one tick so TerminalFocusProvider subscribers observe focus first,
+    // then do the same recovery as /redraw. Re-check focus in case another
+    // focus-out arrived before the microtask ran.
     queueMicrotask(() => {
-      if (this.isUnmounted || this.isPaused || !this.options.stdout.isTTY || this.currentNode === null) {
+      if (
+        this.terminalFocusState !== 'focused' ||
+        this.isUnmounted ||
+        this.isPaused ||
+        !this.options.stdout.isTTY ||
+        this.currentNode === null
+      ) {
         return
       }
 
@@ -1284,18 +1307,22 @@ export default class Ink {
       return
     }
 
-    this.options.stdout.write(ERASE_SCREEN + CURSOR_HOME)
-
     if (this.altScreenActive) {
-      this.resetFramesForAltScreen()
-    } else {
-      this.repaint()
-      // repaint() resets frontFrame to 0×0. Without this flag the next
-      // frame's blit optimization copies from that empty screen and the
-      // diff sees no content. onRender resets the flag at frame end.
-      this.prevFrameContaminated = true
+      // Ctrl+L is also the semantic recovery signal used when a fresh xterm
+      // reattaches after its ANSI replay buffer was truncated. The renderer
+      // may still know it owns the alternate screen while the new terminal is
+      // physically in its primary buffer, so a repaint alone is insufficient.
+      this.reenterAltScreen()
+
+      return
     }
 
+    this.options.stdout.write(ERASE_SCREEN + CURSOR_HOME)
+    this.repaint()
+    // repaint() resets frontFrame to 0×0. Without this flag the next
+    // frame's blit optimization copies from that empty screen and the
+    // diff sees no content. onRender resets the flag at frame end.
+    this.prevFrameContaminated = true
     this.onRender()
   }
 
