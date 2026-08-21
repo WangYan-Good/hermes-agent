@@ -200,6 +200,82 @@ def test_multiple_subscribers_receive_one_copy_and_owner_transport_is_deduplicat
     assert owner.observer_batches == []
 
 
+def test_runtime_watch_stream_takeover_preserves_single_owner_and_isolates_unwatched_transport(
+    fanout_state,
+):
+    """Exercise the production runtime sequence validated with three browser tabs.
+
+    A watches B while C stays unobserved, B streams several ordered frames, and
+    A then explicitly takes control.  The transfer must notify only B's former
+    owner and subsequent output must reach A exactly once through the owner
+    path, never through a stale observation contract.
+    """
+
+    observer_a = ObserverTransport()
+    owner_b = RecordingTransport()
+    unobserved_c = ObserverTransport()
+    target_b = _session(owner_b, key="stored-b")
+    target_b.update({
+        "created_at": time.time(),
+        "display_history_prefix": [],
+        "history": [],
+        "history_lock": threading.RLock(),
+    })
+    server._sessions.update({
+        "sid-a": _session(observer_a, key="stored-a"),
+        "sid-b": target_b,
+        "sid-c": _session(unobserved_c, key="stored-c"),
+    })
+
+    subscribed = _rpc(
+        observer_a,
+        "session.output_subscribe",
+        {"subscriber_session_id": "sid-a", "session_ids": ["sid-b"]},
+    )
+    assert subscribed["result"]["rejected"] == []
+
+    for event, payload in (
+        ("message.start", {"turn": "runtime"}),
+        ("message.delta", {"text": "one"}),
+        ("message.delta", {"text": "two"}),
+        ("message.complete", {"status": "complete"}),
+    ):
+        server._emit(event, "sid-b", payload)
+
+    expected = [
+        "message.start",
+        "message.delta",
+        "message.delta",
+        "message.complete",
+    ]
+    _wait_for(lambda: _event_types(observer_a) == expected)
+    assert _event_types(owner_b) == expected
+    assert unobserved_c.frames == []
+    observer_batch_count = len(observer_a.observer_batches)
+
+    activated = _rpc(
+        observer_a,
+        "session.activate",
+        {"session_id": "sid-b", "omit_messages": True},
+    )
+
+    assert activated["result"]["session_id"] == "sid-b"
+    assert server._sessions["sid-b"]["transport"] is observer_a
+    assert _event_types(owner_b) == [*expected, "session.owner_lost"]
+    assert owner_b.frames[-1]["params"]["payload"] == {
+        "new_owner": True,
+        "reason": "take_control",
+    }
+    assert _event_types(observer_a) == expected
+    assert unobserved_c.frames == []
+
+    server._emit("message.delta", "sid-b", {"text": "after takeover"})
+    _wait_for(lambda: _event_types(observer_a) == [*expected, "message.delta"])
+
+    assert len(observer_a.observer_batches) == observer_batch_count
+    assert unobserved_c.frames == []
+
+
 def test_multiple_anchor_contracts_on_one_observer_transport_are_deduplicated(
     fanout_state,
 ):

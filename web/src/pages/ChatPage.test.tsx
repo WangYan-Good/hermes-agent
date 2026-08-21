@@ -303,7 +303,9 @@ afterEach(async () => {
 
 describe("ChatPage", () => {
   it("keeps PTY identity across refresh but isolates independent tabs", async () => {
-    const { ptyAttachToken } = await import("@/lib/pty-attach-token");
+    const { ptyAttachToken, ptyEventChannel } = await import(
+      "@/lib/pty-attach-token"
+    );
     let seed = 0;
     vi.spyOn(crypto, "getRandomValues").mockImplementation((values) => {
       (values as Uint8Array).fill(++seed);
@@ -337,11 +339,18 @@ describe("ChatPage", () => {
     const aRefresh = ptyAttachToken(false, storage(tabA));
     const b1 = ptyAttachToken(false, storage(tabB));
     const aFresh = ptyAttachToken(true, storage(tabA));
+    const channelA = ptyEventChannel("default", storage(tabA));
+    const channelARefresh = ptyEventChannel("default", storage(tabA));
+    const channelB = ptyEventChannel("default", storage(tabB));
+    const channelAResume = ptyEventChannel("resume:stored-a", storage(tabA));
 
     expect(aRefresh).toBe(a1);
     expect(b1).not.toBe(a1);
     expect(aFresh).not.toBe(a1);
     expect(ptyAttachToken(false, storage(tabB))).toBe(b1);
+    expect(channelARefresh).toBe(channelA);
+    expect(channelB).not.toBe(channelA);
+    expect(channelAResume).not.toBe(channelA);
   });
 
   it("lets xterm encode wheel events and forwards only SGR wheel reports", async () => {
