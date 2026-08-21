@@ -503,6 +503,190 @@ def test_subscribe_rpc_registers_authorized_target_and_returns_sanitized_metadat
     })
 
 
+def test_output_snapshot_requires_owner_and_exact_live_subscription(
+    gateway_subscription_state,
+):
+    owner_a = RecordingTransport()
+    owner_b = RecordingTransport()
+    outsider = RecordingTransport()
+    anchor = _live_session(owner_a, key="stored-a")
+    target = _live_session(owner_b, key="stored-b")
+    server._sessions.update({"sid-a": anchor, "sid-b": target})
+    params = {"subscriber_session_id": "sid-a", "session_id": "sid-b"}
+
+    missing = _rpc(owner_a, "session.output_snapshot", params)
+    assert missing["error"]["data"] == {"reason": "not_subscribed"}
+
+    not_owner = _rpc(outsider, "session.output_snapshot", params)
+    assert not_owner["error"]["data"] == {"reason": "not_owner"}
+
+    _rpc(
+        owner_a,
+        "session.output_subscribe",
+        {"subscriber_session_id": "sid-a", "session_ids": ["sid-b"]},
+    )
+    server._sessions["sid-b"] = _live_session(owner_b, key="stored-b")
+
+    replaced = _rpc(owner_a, "session.output_snapshot", params)
+    assert replaced["error"]["data"] == {"reason": "not_subscribed"}
+
+
+def test_output_snapshot_returns_only_visible_user_and_assistant_text(
+    gateway_subscription_state,
+):
+    owner_a = RecordingTransport()
+    owner_b = RecordingTransport()
+    server._sessions.update({
+        "sid-a": _live_session(owner_a, key="stored-a"),
+        "sid-b": _live_session(
+            owner_b,
+            key="stored-b",
+            display_history_prefix=[
+                {"role": "system", "content": "internal system prompt"},
+                {"role": "user", "content": "  visible question  "},
+            ],
+            history=[
+                {"role": "tool", "content": "/private/path", "tool_call_id": "secret"},
+                {
+                    "role": "assistant",
+                    "content": "visible answer",
+                    "reasoning": "private chain of thought",
+                    "tool_calls": [{"function": {"arguments": "secret args"}}],
+                },
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "visible block"},
+                        {"type": "image_url", "image_url": {"url": "file:///private/image.png"}},
+                    ],
+                },
+            ],
+        ),
+    })
+    _rpc(
+        owner_a,
+        "session.output_subscribe",
+        {"subscriber_session_id": "sid-a", "session_ids": ["sid-b"]},
+    )
+
+    response = _rpc(
+        owner_a,
+        "session.output_snapshot",
+        {"subscriber_session_id": "sid-a", "session_id": "sid-b"},
+    )
+
+    assert response["result"] == {
+        "messages": [
+            {"role": "user", "text": "visible question"},
+            {"role": "assistant", "text": "visible answer"},
+            {"role": "assistant", "text": "visible block"},
+        ],
+        "mode": "snapshot",
+        "session_id": "sid-b",
+        "status": "idle",
+        "stored_session_id": "stored-b",
+    }
+
+
+def test_output_snapshot_returns_bounded_utf8_tail(
+    gateway_subscription_state,
+):
+    owner_a = RecordingTransport()
+    owner_b = RecordingTransport()
+    history = [
+        {"role": "assistant", "content": f"entry-{index:03d}-" + ("界" * 180)}
+        for index in range(240)
+    ]
+    server._sessions.update({
+        "sid-a": _live_session(owner_a, key="stored-a"),
+        "sid-b": _live_session(owner_b, key="stored-b", history=history),
+    })
+    _rpc(
+        owner_a,
+        "session.output_subscribe",
+        {"subscriber_session_id": "sid-a", "session_ids": ["sid-b"]},
+    )
+
+    result = _rpc(
+        owner_a,
+        "session.output_snapshot",
+        {"subscriber_session_id": "sid-a", "session_id": "sid-b"},
+    )["result"]
+
+    assert result["mode"] == "snapshot"
+    assert len(result["messages"]) <= 200
+    assert sum(len(row["text"].encode("utf-8")) for row in result["messages"]) <= 64 * 1024
+    assert result["messages"][-1]["text"].startswith("entry-239-")
+    assert all(not row["text"].startswith("entry-000-") for row in result["messages"])
+
+
+def test_running_output_snapshot_is_future_live_only(
+    gateway_subscription_state,
+):
+    owner_a = RecordingTransport()
+    owner_b = RecordingTransport()
+    server._sessions.update({
+        "sid-a": _live_session(owner_a, key="stored-a"),
+        "sid-b": _live_session(
+            owner_b,
+            key="stored-b",
+            history=[{"role": "assistant", "content": "partial private snapshot"}],
+            running=True,
+        ),
+    })
+    _rpc(
+        owner_a,
+        "session.output_subscribe",
+        {"subscriber_session_id": "sid-a", "session_ids": ["sid-b"]},
+    )
+
+    response = _rpc(
+        owner_a,
+        "session.output_snapshot",
+        {"subscriber_session_id": "sid-a", "session_id": "sid-b"},
+    )
+
+    assert response["result"] == {
+        "messages": [],
+        "mode": "active_live_only",
+        "session_id": "sid-b",
+        "status": "working",
+        "stored_session_id": "stored-b",
+    }
+
+
+def test_output_snapshot_rejects_an_ineligible_target_even_if_a_record_is_stale(
+    gateway_subscription_state,
+):
+    owner_a = RecordingTransport()
+    owner_b = RecordingTransport()
+    target = _live_session(
+        owner_b,
+        key="stored-b",
+        history=[{"role": "assistant", "content": "must stay private"}],
+    )
+    server._sessions.update({
+        "sid-a": _live_session(owner_a, key="stored-a"),
+        "sid-b": target,
+    })
+    _rpc(
+        owner_a,
+        "session.output_subscribe",
+        {"subscriber_session_id": "sid-a", "session_ids": ["sid-b"]},
+    )
+
+    # Exercise output_snapshot's own fail-closed guard independently from the
+    # normal set_hidden path, which also revokes the registry record.
+    target["hidden"] = True
+    response = _rpc(
+        owner_a,
+        "session.output_snapshot",
+        {"subscriber_session_id": "sid-a", "session_id": "sid-b"},
+    )
+
+    assert response["error"]["data"] == {"reason": "not_subscribed"}
+
+
 def test_active_list_reports_requester_relative_owned_and_watchable(
     gateway_subscription_state, tmp_path
 ):

@@ -53,8 +53,10 @@ import { createOutputStreamRouter } from './outputStreamRouter.js'
 import {
   capturePrimaryOutputSnapshot,
   getOutputStreamsState,
+  mergeWatchedOutputSnapshot,
   type OutputConflict,
   type OutputConflictDecision,
+  removeOutputLayoutReference,
   resolveOutputConflict,
   type SessionTransitionHooks
 } from './outputStreamStore.js'
@@ -588,7 +590,22 @@ export function useMainApp(gw: GatewayClient) {
 
   const outputRouter = useMemo(() => createOutputStreamRouter(), [])
   const outputLifecycle = useMemo(() => createOutputLifecycleCoordinator(outputRouter), [outputRouter])
-  const outputSubscriptions = useMemo(() => createOutputSubscriptionCoordinator(rpc), [rpc])
+
+  const outputSubscriptions = useMemo(
+    () =>
+      createOutputSubscriptionCoordinator(rpc, {
+        mergeSnapshot: snapshot =>
+          mergeWatchedOutputSnapshot(
+            snapshot.session_id,
+            snapshot.stored_session_id ?? '',
+            '',
+            snapshot.status,
+            snapshot.messages
+          ),
+        removeLayoutReference: removeOutputLayoutReference
+      }),
+    [rpc]
+  )
 
   const transitionHooks = useMemo<SessionTransitionHooks>(() => ({
     beforeCommit: transition => {

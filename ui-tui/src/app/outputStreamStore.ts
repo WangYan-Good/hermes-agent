@@ -301,6 +301,33 @@ export const removeOutputSession = (sessionId: string) => {
   publish()
 }
 
+export const removeOutputLayoutReference = (sessionId: string) => {
+  if (!sessionId) {return}
+
+  const { primarySessionId, secondarySessionId } = state.layout
+  const referencesLayout = primarySessionId === sessionId || secondarySessionId === sessionId
+
+  const referencesConflict =
+    state.conflict?.candidateSessionId === sessionId || state.conflict?.primarySessionId === sessionId
+
+  if (!referencesLayout && !referencesConflict) {return}
+
+  const remainingSessionId = referencesLayout
+    ? primarySessionId === sessionId
+      ? secondarySessionId
+      : primarySessionId
+    : primarySessionId
+
+  state = {
+    ...state,
+    conflict: referencesConflict ? null : state.conflict,
+    layout: referencesLayout
+      ? { mode: 'single', primarySessionId: remainingSessionId, secondarySessionId: null }
+      : state.layout
+  }
+  publish()
+}
+
 export const observeOutputEvent = (event: OutputEvent, sessionId: string, options: ObserveOutputOptions) => {
   const rule = EVENT_RULES[event.type]
 
@@ -480,6 +507,42 @@ export const capturePrimaryOutputSnapshot = (
     status: terminal ? stream.status : candidateStatus,
     title: title || stream.title,
     unreadCount: 0
+  })
+
+  updateStream(snapshot)
+  publish()
+}
+
+export const mergeWatchedOutputSnapshot = (
+  sessionId: string,
+  sessionKey: string,
+  title: string,
+  status: string,
+  history: readonly Msg[]
+) => {
+  if (!sessionId) {return}
+
+  const stream = getOrCreateStream(sessionId)
+
+  if (stream.sessionKey && sessionKey && stream.sessionKey !== sessionKey) {
+    throw new OutputSessionIdentityCollisionError(sessionId, sessionKey, stream.sessionKey)
+  }
+
+  const now = Date.now()
+  const candidateEntries = snapshotEntries(history, '', now)
+  const entries = mergeSnapshotEntries(candidateEntries, stream.entries)
+  const candidateStatus = normalizeOutputStatus(status) || stream.status
+
+  const snapshot = limitEntries({
+    ...stream,
+    bytes: 0,
+    entries,
+    hasDisplayOutput: stream.hasDisplayOutput || entries.length > 0,
+    lastOutputAt: entries.length ? Math.max(stream.lastOutputAt, now) : stream.lastOutputAt,
+    preview: stream.preview || candidateEntries.at(-1)?.text || '',
+    sessionKey: sessionKey || stream.sessionKey,
+    status: stream.producing || isTerminal(stream.status) ? stream.status : candidateStatus,
+    title: title || stream.title
   })
 
   updateStream(snapshot)

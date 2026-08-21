@@ -207,4 +207,190 @@ describe('output subscription coordinator', () => {
       subscriber_session_id: 'sid-a'
     })
   })
+
+  it('reconciles missing and newly unwatchable targets out of watches and layout', async () => {
+    const removeLayoutReference = vi.fn()
+
+    const rpc = vi.fn(async (_method: string, params: Record<string, unknown>) => ({
+      rejected: [],
+      subscriptions: [{ session_id: (params.session_ids as string[])[0] }]
+    }))
+
+    const coordinator = createOutputSubscriptionCoordinator(rpc, { removeLayoutReference })
+
+    coordinator.syncActiveSessions(sessions(), 'sid-a')
+    await coordinator.watch('sid-b')
+    await coordinator.watch('sid-c')
+    coordinator.setFocusedSession('sid-b')
+
+    coordinator.syncActiveSessions(
+      sessions()
+        .filter(item => item.id !== 'sid-c')
+        .map(item => (item.id === 'sid-b' ? { ...item, watchable: false } : item)),
+      'sid-a'
+    )
+
+    expect(getOutputSubscriptionState()).toMatchObject({ desired: {}, effective: {}, focusedSessionId: null })
+    expect(removeLayoutReference.mock.calls.map(([sessionId]) => sessionId).sort()).toEqual(['sid-b', 'sid-c'])
+  })
+
+  it('changes a watched target to Owned without discarding its valid pane', async () => {
+    const removeLayoutReference = vi.fn()
+
+    const rpc = vi.fn(async (_method: string, params: Record<string, unknown>) => ({
+      rejected: [],
+      subscriptions: [{ session_id: (params.session_ids as string[])[0] }]
+    }))
+
+    const coordinator = createOutputSubscriptionCoordinator(rpc, { removeLayoutReference })
+
+    coordinator.syncActiveSessions(sessions(), 'sid-a')
+    await coordinator.watch('sid-b')
+    coordinator.syncActiveSessions(
+      sessions().map(item => (item.id === 'sid-b' ? { ...item, owned: true, watchable: false } : item)),
+      'sid-b'
+    )
+
+    expect(coordinator.roleFor('sid-b')).toBe('Owned')
+    expect(getOutputSubscriptionState().desired).toEqual({})
+    expect(getOutputSubscriptionState().effective).toEqual({})
+    expect(removeLayoutReference).not.toHaveBeenCalled()
+  })
+
+  it('waits for the controlled session to reattach as owned before reconnect resubscribe', async () => {
+    const rpc = vi.fn(async (_method: string, params: Record<string, unknown>) => ({
+      rejected: [],
+      subscriptions: [{ session_id: (params.session_ids as string[])[0] }]
+    }))
+
+    const coordinator = createOutputSubscriptionCoordinator(rpc)
+
+    coordinator.syncActiveSessions(sessions(), 'sid-a')
+    await coordinator.watch('sid-b')
+    rpc.mockClear()
+    coordinator.gatewayReady()
+
+    coordinator.syncActiveSessions(
+      sessions().map(item =>
+        item.id === 'sid-a'
+          ? { ...item, owned: false, watchable: true }
+          : item.id === 'sid-b'
+            ? { ...item, id: 'sid-b-remapped' }
+            : item
+      ),
+      'sid-a'
+    )
+    await coordinator.settled()
+    expect(rpc).not.toHaveBeenCalled()
+
+    coordinator.syncActiveSessions(
+      sessions().map(item => (item.id === 'sid-b' ? { ...item, id: 'sid-b-remapped' } : item)),
+      'sid-a'
+    )
+    await coordinator.settled()
+
+    expect(rpc).toHaveBeenCalledWith('session.output_subscribe', {
+      session_ids: ['sid-b-remapped'],
+      subscriber_session_id: 'sid-a'
+    })
+  })
+
+  it('merges an authorized idle snapshot after subscribe and ignores live-only snapshots', async () => {
+    const mergeSnapshot = vi.fn()
+
+    const rpc = vi.fn(async (method: string, params: Record<string, unknown>) => {
+      if (method === 'session.output_subscribe') {
+        return { rejected: [], subscriptions: [{ session_id: (params.session_ids as string[])[0] }] }
+      }
+
+      return params.session_id === 'sid-b'
+        ? {
+            messages: [{ role: 'assistant', text: 'stored answer' }],
+            mode: 'snapshot',
+            session_id: 'sid-b',
+            status: 'idle',
+            stored_session_id: 'stored-b'
+          }
+        : { messages: [], mode: 'active_live_only', session_id: 'sid-c', status: 'working' }
+    })
+
+    const coordinator = createOutputSubscriptionCoordinator(rpc, { mergeSnapshot })
+
+    coordinator.syncActiveSessions(sessions(), 'sid-a')
+    await coordinator.watch('sid-b')
+    await coordinator.watch('sid-c')
+
+    expect(rpc).toHaveBeenCalledWith('session.output_snapshot', {
+      session_id: 'sid-b',
+      subscriber_session_id: 'sid-a'
+    })
+    expect(mergeSnapshot).toHaveBeenCalledTimes(1)
+    expect(mergeSnapshot).toHaveBeenCalledWith({
+      messages: [{ role: 'assistant', text: 'stored answer' }],
+      mode: 'snapshot',
+      session_id: 'sid-b',
+      status: 'idle',
+      stored_session_id: 'stored-b'
+    })
+  })
+
+  it('drops a stale snapshot response after runtime replacement', async () => {
+    const snapshotResolvers: ((value: unknown) => void)[] = []
+    const mergeSnapshot = vi.fn()
+
+    const rpc = vi.fn((method: string, params: Record<string, unknown>) => {
+      if (method === 'session.output_subscribe') {
+        return Promise.resolve({ rejected: [], subscriptions: [{ session_id: (params.session_ids as string[])[0] }] })
+      }
+
+      return new Promise(resolve => {
+        snapshotResolvers.push(resolve)
+      })
+    })
+
+    const coordinator = createOutputSubscriptionCoordinator(rpc, { mergeSnapshot })
+
+    coordinator.syncActiveSessions(sessions(), 'sid-a')
+    const watching = coordinator.watch('sid-b')
+
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledWith('session.output_snapshot', expect.anything()))
+
+    coordinator.gatewayReady()
+    coordinator.syncActiveSessions(
+      sessions().map(item => (item.id === 'sid-b' ? { ...item, id: 'sid-b-new' } : item)),
+      'sid-a'
+    )
+    snapshotResolvers[0]?.({
+      messages: [{ role: 'assistant', text: 'stale' }],
+      mode: 'snapshot',
+      session_id: 'sid-b',
+      status: 'idle'
+    })
+    await watching
+
+    expect(mergeSnapshot).not.toHaveBeenCalled()
+  })
+
+  it('keeps an accepted live subscription when the optional snapshot request fails', async () => {
+    const mergeSnapshot = vi.fn()
+
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'session.output_snapshot') {
+        throw new Error('snapshot unavailable')
+      }
+
+      return { rejected: [], subscriptions: [{ session_id: 'sid-b' }] }
+    })
+
+    const coordinator = createOutputSubscriptionCoordinator(rpc, { mergeSnapshot })
+
+    coordinator.syncActiveSessions(sessions(), 'sid-a')
+
+    expect(await coordinator.watch('sid-b')).toBe(true)
+    expect(getOutputSubscriptionState()).toMatchObject({
+      desired: { 'stored-b': { status: 'subscribed' } },
+      effective: { 'sid-b': { anchorSessionId: 'sid-a', sessionKey: 'stored-b' } }
+    })
+    expect(mergeSnapshot).not.toHaveBeenCalled()
+  })
 })

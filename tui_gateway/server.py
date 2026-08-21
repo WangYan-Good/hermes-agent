@@ -326,6 +326,7 @@ _LONG_HANDLERS = frozenset(
         "session.branch",
         "session.compress",
         "session.list",
+        "session.output_snapshot",
         "session.resume",
         # Workspace re-home runs git branch/root subprocess probes against an
         # arbitrary folder — inline they'd stall the reader on a slow mount.
@@ -8774,6 +8775,63 @@ def _output_subscription_metadata(sid: str, session: dict) -> dict:
         "stored_session_id": item["session_key"],
         "title": item["title"],
     }
+
+
+_OUTPUT_SNAPSHOT_ENTRY_LIMIT = 200
+_OUTPUT_SNAPSHOT_BYTE_LIMIT = 64 * 1024
+
+
+def _visible_output_snapshot_text(message: dict) -> str:
+    """Project one transcript message onto client-visible plain text only."""
+
+    if message.get("role") not in {"user", "assistant"}:
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if not isinstance(item, dict) or item.get("type") not in {
+                "input_text",
+                "output_text",
+                "text",
+            }:
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text.strip())
+        return "\n".join(parts)
+    text = message.get("text")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _bounded_visible_output_snapshot(
+    display_history_prefix: tuple, history: tuple
+) -> list[dict]:
+    """Return the newest visible transcript tail within both hard limits."""
+
+    remaining_bytes = _OUTPUT_SNAPSHOT_BYTE_LIMIT
+    newest_first = []
+    for message in reversed(display_history_prefix + history):
+        if len(newest_first) >= _OUTPUT_SNAPSHOT_ENTRY_LIMIT or remaining_bytes <= 0:
+            break
+        if not isinstance(message, dict):
+            continue
+        text = _visible_output_snapshot_text(message)
+        if not text:
+            continue
+        encoded = text.encode("utf-8")
+        if len(encoded) > remaining_bytes:
+            text = encoded[-remaining_bytes:].decode("utf-8", errors="ignore")
+            encoded = text.encode("utf-8")
+        if not text:
+            break
+        newest_first.append({"role": message["role"], "text": text})
+        remaining_bytes -= len(encoded)
+
+    newest_first.reverse()
+    return newest_first
 
 
 def _subscribe_output_target(

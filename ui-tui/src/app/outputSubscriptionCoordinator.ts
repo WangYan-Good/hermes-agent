@@ -20,6 +20,7 @@ export interface EffectiveOutputSubscription {
 }
 
 export interface OutputSubscriptionState {
+  awaitingOwnedReattach: boolean
   controlledSessionId: null | string
   desired: Record<string, DesiredOutputWatch>
   effective: Record<string, EffectiveOutputSubscription>
@@ -29,6 +30,7 @@ export interface OutputSubscriptionState {
 }
 
 const initialState = (): OutputSubscriptionState => ({
+  awaitingOwnedReattach: false,
   controlledSessionId: null,
   desired: {},
   effective: {},
@@ -44,6 +46,19 @@ export const resetOutputSubscriptionState = () => $outputSubscriptionState.set(i
 interface SubscribeResponse {
   rejected?: { reason?: string; session_id?: string }[]
   subscriptions?: { session_id?: string }[]
+}
+
+export interface OutputSnapshotResponse {
+  messages: { role: 'assistant' | 'user'; text: string }[]
+  mode: 'active_live_only' | 'snapshot'
+  session_id: string
+  status: string
+  stored_session_id?: string
+}
+
+export interface OutputSubscriptionHooks {
+  mergeSnapshot?: (snapshot: OutputSnapshotResponse) => void
+  removeLayoutReference?: (sessionId: string) => void
 }
 
 const durableKey = (item: SessionActiveItem) => item.session_key || item.id
@@ -69,7 +84,10 @@ export interface OutputSubscriptionCoordinator {
   watch: (sessionId: string) => Promise<boolean>
 }
 
-export const createOutputSubscriptionCoordinator = (rpc: GatewayRpc): OutputSubscriptionCoordinator => {
+export const createOutputSubscriptionCoordinator = (
+  rpc: GatewayRpc,
+  hooks: OutputSubscriptionHooks = {}
+): OutputSubscriptionCoordinator => {
   const inflight = new Map<string, Promise<boolean>>()
 
   const patch = (update: (state: OutputSubscriptionState) => OutputSubscriptionState) => {
@@ -160,6 +178,32 @@ export const createOutputSubscriptionCoordinator = (rpc: GatewayRpc): OutputSubs
               )
         }))
 
+        if (accepted && hooks.mergeSnapshot) {
+          try {
+            const snapshot = await rpc<OutputSnapshotResponse>('session.output_snapshot', {
+              session_id: runtimeSessionId,
+              subscriber_session_id: acceptedAnchor
+            })
+
+            const latest = getOutputSubscriptionState()
+            const effective = latest.effective[runtimeSessionId]
+
+            if (
+              snapshot?.mode === 'snapshot' &&
+              snapshot.session_id === runtimeSessionId &&
+              latest.generation === generation &&
+              latest.desired[sessionKey]?.runtimeSessionId === runtimeSessionId &&
+              effective?.anchorSessionId === acceptedAnchor &&
+              effective.sessionKey === sessionKey
+            ) {
+              hooks.mergeSnapshot(snapshot)
+            }
+          } catch {
+            // Snapshot is optional history hydration. The exact live
+            // subscription remains authoritative for future output.
+          }
+        }
+
         return accepted
       })()
       .catch(() => {
@@ -218,6 +262,7 @@ export const createOutputSubscriptionCoordinator = (rpc: GatewayRpc): OutputSubs
     gatewayReady: () => {
       patch(state => ({
         ...state,
+        awaitingOwnedReattach: true,
         desired: Object.fromEntries(
           Object.entries(state.desired).map(([key, watch]) => [key, { ...watch, reason: undefined, status: 'pending' }])
         ),
@@ -272,14 +317,32 @@ export const createOutputSubscriptionCoordinator = (rpc: GatewayRpc): OutputSubs
         sessions[currentSessionId] = { ...sessions[currentSessionId], owned: true }
       }
 
+      const removedLayoutReferences = new Set<string>()
+
       patch(state => {
-        const desired = { ...state.desired }
+        const desired: Record<string, DesiredOutputWatch> = {}
         const effective: Record<string, EffectiveOutputSubscription> = {}
 
-        for (const [key, watch] of Object.entries(desired)) {
+        for (const [key, watch] of Object.entries(state.desired)) {
           const runtime = items.find(item => durableKey(item) === key)
 
           if (!runtime) {
+            removedLayoutReferences.add(watch.runtimeSessionId)
+
+            continue
+          }
+
+          if (runtime.owned) {
+            continue
+          }
+
+          if (runtime.watchable === false) {
+            removedLayoutReferences.add(runtime.id)
+
+            if (runtime.id !== watch.runtimeSessionId) {
+              removedLayoutReferences.add(watch.runtimeSessionId)
+            }
+
             continue
           }
 
@@ -300,10 +363,36 @@ export const createOutputSubscriptionCoordinator = (rpc: GatewayRpc): OutputSubs
           }
         }
 
-        return { ...state, controlledSessionId: currentSessionId, desired, effective, sessions }
+        const awaitingOwnedReattach =
+          state.awaitingOwnedReattach && !(currentSessionId && sessions[currentSessionId]?.owned)
+
+        const focusedSessionId =
+          state.focusedSessionId && removedLayoutReferences.has(state.focusedSessionId)
+            ? null
+            : state.focusedSessionId
+
+        return {
+          ...state,
+          awaitingOwnedReattach,
+          controlledSessionId: currentSessionId,
+          desired,
+          effective,
+          focusedSessionId,
+          sessions
+        }
       })
 
-      for (const [key, watch] of Object.entries(getOutputSubscriptionState().desired)) {
+      for (const sessionId of removedLayoutReferences) {
+        hooks.removeLayoutReference?.(sessionId)
+      }
+
+      const current = getOutputSubscriptionState()
+
+      if (current.awaitingOwnedReattach) {
+        return
+      }
+
+      for (const [key, watch] of Object.entries(current.desired)) {
         const item = sessions[watch.runtimeSessionId]
 
         if (watch.status === 'pending' && item?.watchable !== false && !item?.owned) {
