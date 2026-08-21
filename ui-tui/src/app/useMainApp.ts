@@ -58,6 +58,7 @@ import {
   resolveOutputConflict,
   type SessionTransitionHooks
 } from './outputStreamStore.js'
+import { createOutputSubscriptionCoordinator } from './outputSubscriptionCoordinator.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -587,6 +588,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const outputRouter = useMemo(() => createOutputStreamRouter(), [])
   const outputLifecycle = useMemo(() => createOutputLifecycleCoordinator(outputRouter), [outputRouter])
+  const outputSubscriptions = useMemo(() => createOutputSubscriptionCoordinator(rpc), [rpc])
 
   const transitionHooks = useMemo<SessionTransitionHooks>(() => ({
     beforeCommit: transition => {
@@ -660,6 +662,7 @@ export function useMainApp(gw: GatewayClient) {
             // round-trip is needed.
             const currentSid = getUiState().sid
             outputLifecycle.syncActiveSessions(result.sessions, currentSid)
+            outputSubscriptions.syncActiveSessions(result.sessions, currentSid)
 
             const sessionTitle = result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
 
@@ -684,7 +687,7 @@ export function useMainApp(gw: GatewayClient) {
       stopped = true
       clearInterval(timer)
     }
-  }, [gw, outputLifecycle, ui.sid])
+  }, [gw, outputLifecycle, outputSubscriptions, ui.sid])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
@@ -844,11 +847,19 @@ export function useMainApp(gw: GatewayClient) {
       return
     }
 
-    const index = visible.indexOf(getUiState().sid ?? '')
+    const index = visible.indexOf(outputSubscriptions.focusedSessionId() ?? getUiState().sid ?? '')
     const next = visible[(index + direction + visible.length) % visible.length]!
 
-    if (next !== getUiState().sid) {
-      void session.activateLiveSession(next)
+    if (next === getUiState().sid) {
+      outputSubscriptions.setFocusedSession(null)
+    } else if (outputSubscriptions.isOwned(next)) {
+      void session.activateLiveSession(next).then(ok => {
+        if (ok) {
+          outputSubscriptions.setFocusedSession(null)
+        }
+      })
+    } else if (outputSubscriptions.isWatched(next)) {
+      outputSubscriptions.setFocusedSession(next)
     }
   }
 
@@ -880,13 +891,20 @@ export function useMainApp(gw: GatewayClient) {
 
   useEffect(() => () => outputRouter.dispose(), [outputRouter])
 
+  const cancelQueued = useCallback(() => {
+    while (composerRefs.queueRef.current.length) {
+      composerActions.dequeue()
+    }
+  }, [composerActions, composerRefs.queueRef])
+
   const onEvent = useMemo(
     () =>
       createGatewayEventHandler({
-        composer: { setInput: composerActions.setInput },
+        composer: { cancelQueued, setInput: composerActions.setInput },
         gateway,
         outputRouter,
         outputLifecycle,
+        outputSubscriptions,
         session: {
           STARTUP_RESUME_ID,
           colsRef,
@@ -909,10 +927,12 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
+      cancelQueued,
       composerActions.setInput,
       gateway,
       outputRouter,
       outputLifecycle,
+      outputSubscriptions,
       panel,
       session.newSession,
       session.resetSession,
@@ -1188,13 +1208,61 @@ export function useMainApp(gw: GatewayClient) {
 
   const focusOutputSession = useCallback(
     async (sessionId: string) => {
+      const focused = await outputSubscriptions.focus(sessionId, getUiState().sid, session.activateLiveSession)
+
+      if (!focused) {
+        sys('watch this session before focusing its output')
+      }
+
+      return focused
+    },
+    [outputSubscriptions, session, sys]
+  )
+
+  const activateOwnedSession = useCallback(
+    async (sessionId: string) => {
       if (getUiState().sid === sessionId) {
+        outputSubscriptions.setFocusedSession(null)
+
         return true
       }
 
-      return session.activateLiveSession(sessionId)
+      if (!outputSubscriptions.isOwned(sessionId)) {
+        sys('remote session is read-only · use Output Manager to Watch or Take Control')
+
+        return false
+      }
+
+      const activated = await session.activateLiveSession(sessionId)
+
+      if (activated) {
+        outputSubscriptions.setFocusedSession(null)
+      }
+
+      return activated
     },
-    [session]
+    [outputSubscriptions, session, sys]
+  )
+
+  const takeControlOutputSession = useCallback(
+    async (sessionId: string) => {
+      const activated = await session.activateLiveSession(sessionId)
+
+      if (activated) {
+        await outputSubscriptions.takeControlSucceeded(sessionId)
+      }
+
+      return activated
+    },
+    [outputSubscriptions, session]
+  )
+
+  const toggleOutputWatch = useCallback(
+    (sessionId: string) =>
+      outputSubscriptions.isDesired(sessionId)
+        ? outputSubscriptions.unwatch(sessionId)
+        : outputSubscriptions.watch(sessionId),
+    [outputSubscriptions]
   )
 
   const decideOutputConflict = useCallback(
@@ -1212,7 +1280,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const appActions = useMemo(
     () => ({
-      activateLiveSession: session.activateLiveSession,
+      activateLiveSession: activateOwnedSession,
       closeLiveSession,
       answerApproval,
       answerClarify,
@@ -1221,6 +1289,8 @@ export function useMainApp(gw: GatewayClient) {
       clearSelection,
       decideOutputConflict,
       focusOutputSession,
+      takeControlOutputSession,
+      toggleOutputWatch,
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
       onModelSelect,
@@ -1238,6 +1308,7 @@ export function useMainApp(gw: GatewayClient) {
       setStickyPrompt
     }),
     [
+      activateOwnedSession,
       answerApproval,
       answerClarify,
       answerSecret,
@@ -1246,6 +1317,8 @@ export function useMainApp(gw: GatewayClient) {
       closeLiveSession,
       decideOutputConflict,
       focusOutputSession,
+      takeControlOutputSession,
+      toggleOutputWatch,
       newPromptSession,
       onModelSelect,
       session

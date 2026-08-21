@@ -1666,14 +1666,21 @@ def test_owner_transfer_clears_subscriptions_authorized_by_old_anchor(
 ):
     owner_a = RecordingTransport()
     next_owner = RecordingTransport()
+    observer = RecordingTransport()
     server._sessions.update({
         "sid-a": _live_session(owner_a, key="stored-a"),
         "sid-b": _live_session(RecordingTransport(), key="stored-b"),
+        "sid-c": _live_session(observer, key="stored-c"),
     })
     _rpc(
         owner_a,
         "session.output_subscribe",
         {"subscriber_session_id": "sid-a", "session_ids": ["sid-b"]},
+    )
+    _rpc(
+        observer,
+        "session.output_subscribe",
+        {"subscriber_session_id": "sid-c", "session_ids": ["sid-a"]},
     )
 
     response = _rpc(next_owner, "session.activate", {"session_id": "sid-a"})
@@ -1681,9 +1688,17 @@ def test_owner_transfer_clears_subscriptions_authorized_by_old_anchor(
     assert response["result"]["session_id"] == "sid-a"
     assert server._sessions["sid-a"]["transport"] is next_owner
     assert gateway_subscription_state.session_ids_for_transport(owner_a) == frozenset()
+    assert [frame["params"]["type"] for frame in owner_a.frames] == [
+        "session.owner_lost"
+    ]
+    assert owner_a.frames[0]["params"]["payload"] == {
+        "new_owner": True,
+        "reason": "take_control",
+    }
+    assert observer.frames == []
 
 
-def test_prompt_submit_owner_rebind_clears_old_anchor_subscriptions(
+def test_prompt_submit_from_non_owner_is_rejected_without_rebinding(
     gateway_subscription_state, monkeypatch
 ):
     owner_a = RecordingTransport()
@@ -1712,12 +1727,13 @@ def test_prompt_submit_owner_rebind_clears_old_anchor_subscriptions(
         {"session_id": "sid-a", "text": "take ownership"},
     )
 
-    assert response["result"] == {"status": "queued"}
-    assert server._sessions["sid-a"]["transport"] is next_owner
-    assert gateway_subscription_state.session_ids_for_transport(owner_a) == frozenset()
+    assert response["error"]["code"] == 4031
+    assert response["error"]["data"] == {"reason": "not_owner"}
+    assert server._sessions["sid-a"]["transport"] is owner_a
+    assert gateway_subscription_state.session_ids_for_transport(owner_a) == frozenset({"sid-b"})
 
 
-def test_queued_prompt_owner_rebind_clears_old_anchor_subscriptions(
+def test_queued_prompt_is_cancelled_when_its_transport_lost_ownership(
     gateway_subscription_state, monkeypatch
 ):
     queued_owner = RecordingTransport()
@@ -1741,11 +1757,40 @@ def test_queued_prompt_owner_rebind_clears_old_anchor_subscriptions(
 
     assert server._drain_queued_prompt("phase-3b1", "sid-a", session) is True
 
-    assert server._sessions["sid-a"]["transport"] is queued_owner
+    assert server._sessions["sid-a"]["transport"] is current_owner
+    assert session["running"] is False
+    assert session.get("queued_prompt") is None
     assert (
         gateway_subscription_state.session_ids_for_transport(current_owner)
-        == frozenset()
+        == frozenset({"sid-b"})
     )
+
+
+def test_queued_prompt_skips_old_owner_and_dispatches_new_owner_successor(
+    gateway_subscription_state, monkeypatch
+):
+    old_owner = RecordingTransport()
+    current_owner = RecordingTransport()
+    session = _live_session(
+        current_owner,
+        key="stored-a",
+        queued_prompt={"text": "stale", "transport": old_owner},
+        queued_prompts=[{"text": "current", "transport": current_owner}],
+    )
+    server._sessions["sid-a"] = session
+    dispatched = []
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *_args: False)
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text, **_kwargs: dispatched.append(text),
+    )
+
+    assert server._drain_queued_prompt("phase-3b3", "sid-a", session) is True
+
+    assert dispatched == ["current"]
+    assert session.get("queued_prompt") is None
+    assert session.get("queued_prompts") is None
 
 
 @pytest.mark.parametrize("event", ["secret.request", "approval.request"])

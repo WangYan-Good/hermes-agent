@@ -144,6 +144,9 @@ describe('session orchestrator helpers', () => {
     expect(closeFallbackAfterClose('other', 'current', remaining)).toEqual({ action: 'stay' })
     expect(closeFallbackAfterClose('current', 'current', remaining)).toEqual({ action: 'activate', sessionId: 'next' })
     expect(closeFallbackAfterClose('current', 'current', [])).toEqual({ action: 'new' })
+    expect(closeFallbackAfterClose('current', 'current', [{ id: 'remote', owned: false, status: 'working' }])).toEqual({
+      action: 'new'
+    })
   })
 
   it('shows clean draft model labels without picker flags or provider params', () => {

@@ -23,7 +23,16 @@ vi.mock('@hermes/ink', async importOriginal => {
 
 import { GatewayProvider } from '../app/gatewayContext.js'
 import type { SubscriptionOverlayState } from '../app/interfaces.js'
-import { getOutputStreamsState, resetOutputStreams, setSecondaryOutput, syncOutputSessions } from '../app/outputStreamStore.js'
+import {
+  getOutputStreamsState,
+  resetOutputStreams,
+  setSecondaryOutput,
+  syncOutputSessions
+} from '../app/outputStreamStore.js'
+import {
+  createOutputSubscriptionCoordinator,
+  resetOutputSubscriptionState
+} from '../app/outputSubscriptionCoordinator.js'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { resetUiState } from '../app/uiStore.js'
 import { FloatingOverlays } from '../components/appOverlays.js'
@@ -99,7 +108,12 @@ const subscriptionPrompt = (): SubscriptionOverlayState => ({
   }
 })
 
-const floatingOverlays = (onOutputFocus: (sessionId: string) => Promise<boolean>, onRawActivate = vi.fn()) => (
+const floatingOverlays = (
+  onOutputFocus: (sessionId: string) => Promise<boolean>,
+  onRawActivate = vi.fn(),
+  onOutputWatch = vi.fn().mockResolvedValue(true),
+  onOutputTakeControl = vi.fn().mockResolvedValue(true)
+) => (
   <GatewayProvider value={gatewayValue}>
     <FloatingOverlays
       cols={120}
@@ -111,6 +125,8 @@ const floatingOverlays = (onOutputFocus: (sessionId: string) => Promise<boolean>
       onNewLiveSession={vi.fn()}
       onNewPromptSession={vi.fn()}
       onOutputFocus={onOutputFocus}
+      onOutputTakeControl={onOutputTakeControl}
+      onOutputWatch={onOutputWatch}
       onResumeSelect={vi.fn()}
       pagerPageSize={18}
     />
@@ -123,6 +139,7 @@ describe('output manager', () => {
     inputHarness.handler = undefined
     resetOverlayState()
     resetOutputStreams()
+    resetOutputSubscriptionState()
     resetUiState()
     syncOutputSessions(
       [
@@ -133,22 +150,34 @@ describe('output manager', () => {
       'sid-a'
     )
     setSecondaryOutput('sid-b')
+    createOutputSubscriptionCoordinator(vi.fn()).syncActiveSessions(
+      [
+        { id: 'sid-a', owned: true, status: 'working', title: 'Alpha', watchable: false },
+        { id: 'sid-b', owned: false, status: 'idle', title: 'Beta', watchable: true },
+        { id: 'sid-c', owned: false, status: 'working', title: 'Gamma', watchable: true }
+      ],
+      'sid-a'
+    )
   })
 
   it('lists the focused, secondary, and waiting streams', () => {
     const output = renderToText(
       <OutputManager
-        onActivate={vi.fn()}
         onClose={vi.fn()}
         onExitSplit={vi.fn()}
+        onFocus={vi.fn()}
         onSetSecondary={vi.fn()}
+        onTakeControl={vi.fn()}
+        onWatch={vi.fn()}
         t={DEFAULT_THEME}
       />
     )
 
     expect(output).toContain('Alpha')
+    expect(output).toContain('Owned')
     expect(output).toContain('primary')
     expect(output).toContain('Beta')
+    expect(output).toContain('Inactive')
     expect(output).toContain('secondary')
     expect(output).toContain('Gamma')
     expect(output).toContain('waiting')
@@ -223,5 +252,63 @@ describe('output manager', () => {
     expect(outputFocusDirection({ leftArrow: true, meta: true, rightArrow: false })).toBe(-1)
     expect(outputFocusDirection({ leftArrow: false, meta: true, rightArrow: true })).toBe(1)
     expect(outputFocusDirection({ leftArrow: true, meta: false, rightArrow: false })).toBe(0)
+  })
+
+  it('uses w for Watch and t for explicit Take Control without implicit activate', async () => {
+    const onFocus = vi.fn().mockResolvedValue(true)
+    const onWatch = vi.fn().mockResolvedValue(true)
+    const onTakeControl = vi.fn().mockResolvedValue(true)
+
+    patchOverlayState({ outputs: true })
+    const mounted = mountNode(floatingOverlays(onFocus, vi.fn(), onWatch, onTakeControl))
+
+    inputHarness.handler?.('', { downArrow: true })
+    mounted.app.rerender(floatingOverlays(onFocus, vi.fn(), onWatch, onTakeControl))
+    inputHarness.handler?.('w', {})
+    await vi.waitFor(() => expect(onWatch).toHaveBeenCalledWith('sid-b'))
+    expect(onFocus).not.toHaveBeenCalled()
+    expect(onTakeControl).not.toHaveBeenCalled()
+
+    inputHarness.handler?.('t', {})
+    await vi.waitFor(() => expect(onTakeControl).toHaveBeenCalledWith('sid-b'))
+    expect(onFocus).not.toHaveBeenCalled()
+
+    mounted.app.unmount()
+    mounted.app.cleanup()
+  })
+
+  it('allows secondary placement only after the remote stream is watched', async () => {
+    const onSetSecondary = vi.fn()
+
+    const coordinator = createOutputSubscriptionCoordinator(
+      vi.fn(async () => ({ rejected: [], subscriptions: [{ session_id: 'sid-b' }] }))
+    )
+
+    const node = () => (
+      <OutputManager
+        onClose={vi.fn()}
+        onExitSplit={vi.fn()}
+        onFocus={vi.fn()}
+        onSetSecondary={onSetSecondary}
+        onTakeControl={vi.fn()}
+        onWatch={vi.fn()}
+        t={DEFAULT_THEME}
+      />
+    )
+
+    const mounted = mountNode(node())
+
+    inputHarness.handler?.('', { downArrow: true })
+    mounted.app.rerender(node())
+    inputHarness.handler?.('s', {})
+    expect(onSetSecondary).not.toHaveBeenCalled()
+
+    await coordinator.watch('sid-b')
+    mounted.app.rerender(node())
+    inputHarness.handler?.('s', {})
+    expect(onSetSecondary).toHaveBeenCalledWith('sid-b')
+
+    mounted.app.unmount()
+    mounted.app.cleanup()
   })
 })

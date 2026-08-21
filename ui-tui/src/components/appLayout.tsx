@@ -7,6 +7,7 @@ import { Fragment, memo, useEffect, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
+import { $outputSubscriptionState } from '../app/outputSubscriptionCoordinator.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $petBox } from '../app/petFlashStore.js'
 import { useTurnSelector } from '../app/turnStore.js'
@@ -312,6 +313,13 @@ const ComposerPane = memo(function ComposerPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
+  const outputSubscriptions = useStore($outputSubscriptionState)
+
+  const readOnlyOutput = Boolean(
+    (outputSubscriptions.focusedSessionId && outputSubscriptions.focusedSessionId !== ui.sid) ||
+    (ui.sid && outputSubscriptions.sessions[ui.sid]?.owned === false)
+  )
+
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
 
   const promptText = composerPromptText(
@@ -411,13 +419,17 @@ const ComposerPane = memo(function ComposerPane({
           onNewLiveSession={actions.newLiveSession}
           onNewPromptSession={actions.newPromptSession}
           onOutputFocus={actions.focusOutputSession}
+          onOutputTakeControl={actions.takeControlOutputSession}
+          onOutputWatch={actions.toggleOutputWatch}
           onResumeSelect={actions.resumeById}
           pagerPageSize={composer.pagerPageSize}
         />
 
         {composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
 
-        {!isBlocked && (
+        {!isBlocked && readOnlyOutput ? (
+          <Text color={ui.theme.color.warn}>read-only output · open Output Manager and press t to Take Control</Text>
+        ) : !isBlocked ? (
           <>
             {composer.inputBuf.map((line, i) => (
               <Box key={i}>
@@ -476,7 +488,7 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
             </Box>
           </>
-        )}
+        ) : null}
       </Box>
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.muted}>⚕ {ui.status}</Text>}

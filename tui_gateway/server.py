@@ -8246,25 +8246,51 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     lower-priority follow-ups this cycle — the user's message wins). Mirrors the
     claim-under-lock pattern used by the goal-continuation re-fire.
     """
+    claimed_owner_transport = None
     queued_transport = None
+    discarded_unauthorized = False
     with session["history_lock"]:
         if session.get("_closing"):
             return False
-        queued = session.get("queued_prompt")
-        if not queued or session.get("running"):
-            return False
+        while True:
+            queued = session.get("queued_prompt")
+            if not queued or session.get("running"):
+                return discarded_unauthorized
+            queued_transport = queued.get("transport")
+            claimed_owner_transport = session.get("transport")
+            if (
+                queued_transport is None
+                or claimed_owner_transport is None
+                or queued_transport is claimed_owner_transport
+            ):
+                break
+            # A queued message is authority-bearing input, not just buffered
+            # display text. If Take Control moved ownership after it was
+            # queued, discard it instead of silently handing control back to
+            # its original transport. Continue scanning so a valid prompt
+            # already queued by the new owner is not left stranded.
+            queued_prompts = session.get("queued_prompts") or []
+            session["queued_prompt"] = (
+                queued_prompts.pop(0) if queued_prompts else None
+            )
+            if not queued_prompts:
+                session.pop("queued_prompts", None)
+            discarded_unauthorized = True
         queue_generation = int(session.get("_queued_prompt_generation", 0))
         queued_prompts = session.get("queued_prompts") or []
         session["queued_prompt"] = queued_prompts.pop(0) if queued_prompts else None
         if not queued_prompts:
             session.pop("queued_prompts", None)
         session["running"] = True
-        queued_transport = queued.get("transport")
-    if queued_transport is not None:
-        if not _set_session_owner_transport(sid, session, queued_transport):
-            # Preserve the helper's historical behavior for isolated session
-            # records used outside the live registry (notably unit tests).
+    if claimed_owner_transport is None and queued_transport is not None:
+        # Preserve the historical behavior of isolated helper records used
+        # outside the live registry. A published live Session is never
+        # implicitly rebound here; it must already have an explicit owner.
+        with _sessions_lock:
+            registered = _sessions.get(sid) is session
+        if not registered:
             session["transport"] = queued_transport
+            claimed_owner_transport = queued_transport
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
@@ -8283,6 +8309,16 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
                 session["queued_prompts"] = rest
             else:
                 session.pop("queued_prompts", None)
+            session["running"] = False
+            return True
+        current_owner_transport = session.get("transport")
+        if claimed_owner_transport is not current_owner_transport and (
+            current_owner_transport is None
+            or queued_transport is not current_owner_transport
+        ):
+            # Ownership may change after the initial claim. The claimed
+            # prompt is intentionally cancelled; restoring it would make a
+            # later lifecycle pass repeatedly retry unauthorized input.
             session["running"] = False
             return True
     dispatch_failed = False
@@ -8781,7 +8817,29 @@ def _set_session_owner_transport(sid: str, session: dict, transport: Transport) 
                 subscriber_session_incarnation=_output_session_incarnation(session),
             )
         session["transport"] = transport
-        return True
+    if previous is not None:
+        try:
+            previous.write(
+                {
+                    "jsonrpc": "2.0",
+                    "method": "event",
+                    "params": {
+                        "type": "session.owner_lost",
+                        "session_id": sid,
+                        "payload": {
+                            "new_owner": True,
+                            "reason": "take_control",
+                        },
+                    },
+                }
+            )
+        except Exception:
+            logger.debug(
+                "could not notify prior owner for session %s",
+                sid,
+                exc_info=True,
+            )
+    return True
 
 
 def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
