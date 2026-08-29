@@ -209,7 +209,6 @@ export interface SessionActiveItem {
   started_at?: number
   status: LiveSessionStatus
   title?: string
-  watchable?: boolean
 }
 
 export interface SessionActiveListResponse {

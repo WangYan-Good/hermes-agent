@@ -4,8 +4,7 @@ import type { ReactNode } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppOverlaysProps } from '../app/interfaces.js'
-import { $outputConflict, exitOutputSplit, setSecondaryOutput } from '../app/outputStreamStore.js'
-import { $overlayState, hasFloatingPanel, hasGlobalControlPrompt, patchOverlayState } from '../app/overlayStore.js'
+import { $overlayState, hasFloatingPanel, patchOverlayState } from '../app/overlayStore.js'
 import { $uiSessionId, $uiTheme } from '../app/uiStore.js'
 
 import { ActiveSessionSwitcher } from './activeSessionSwitcher.js'
@@ -13,8 +12,6 @@ import { FloatBox } from './appChrome.js'
 import { BillingOverlay } from './billingOverlay.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
-import { OutputConflictPrompt } from './outputConflictPrompt.js'
-import { OutputManager } from './outputManager.js'
 import { OverlayHint } from './overlayControls.js'
 import { listRowStyle } from './overlayPrimitives.js'
 import { PetPicker } from './petPicker.js'
@@ -66,22 +63,10 @@ export function PromptZone({
   cols,
   onApprovalChoice,
   onClarifyAnswer,
-  onOutputConflictDecision,
   onSecretSubmit,
-  onSudoSubmit,
-  showOutputConflict
-}: Pick<
-  AppOverlaysProps,
-  | 'cols'
-  | 'onApprovalChoice'
-  | 'onClarifyAnswer'
-  | 'onOutputConflictDecision'
-  | 'onSecretSubmit'
-  | 'onSudoSubmit'
-  | 'showOutputConflict'
->) {
+  onSudoSubmit
+}: Pick<AppOverlaysProps, 'cols' | 'onApprovalChoice' | 'onClarifyAnswer' | 'onSecretSubmit' | 'onSudoSubmit'>) {
   const overlay = useStore($overlayState)
-  const conflict = useStore($outputConflict)
   const theme = useStore($uiTheme)
 
   if (overlay.approval) {
@@ -190,14 +175,6 @@ export function PromptZone({
     )
   }
 
-  if (showOutputConflict && conflict) {
-    return (
-      <PromptCell cols={cols} id="output-conflict">
-        <OutputConflictPrompt conflict={conflict} onDecision={onOutputConflictDecision} t={theme} />
-      </PromptCell>
-    )
-  }
-
   return null
 }
 
@@ -209,9 +186,6 @@ export function FloatingOverlays({
   onActiveSessionClose,
   onModelSelect,
   onNewLiveSession,
-  onOutputFocus,
-  onOutputTakeControl,
-  onOutputWatch,
   onNewPromptSession,
   onResumeSelect,
   pagerPageSize
@@ -227,9 +201,6 @@ export function FloatingOverlays({
   | 'onNewPromptSession'
   | 'onResumeSelect'
   | 'pagerPageSize'
-  | 'onOutputFocus'
-  | 'onOutputTakeControl'
-  | 'onOutputWatch'
 >) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
@@ -271,25 +242,6 @@ export function FloatingOverlays({
             onNewPrompt={onNewPromptSession}
             onResume={onResumeSelect}
             onSelect={onActiveSessionSelect}
-            t={theme}
-          />
-        </FloatBox>
-      )
-    })
-  }
-
-  if (overlay.outputs && !hasGlobalControlPrompt(overlay)) {
-    widgets.push({
-      id: 'outputs',
-      render: () => (
-        <FloatBox color={theme.color.border}>
-          <OutputManager
-            onClose={() => patchOverlayState({ outputs: false })}
-            onExitSplit={exitOutputSplit}
-            onFocus={onOutputFocus}
-            onSetSecondary={setSecondaryOutput}
-            onTakeControl={onOutputTakeControl}
-            onWatch={onOutputWatch}
             t={theme}
           />
         </FloatBox>

@@ -145,7 +145,8 @@ describe('session orchestrator helpers', () => {
     expect(closeFallbackAfterClose('current', 'current', remaining)).toEqual({ action: 'activate', sessionId: 'next' })
     expect(closeFallbackAfterClose('current', 'current', [])).toEqual({ action: 'new' })
     expect(closeFallbackAfterClose('current', 'current', [{ id: 'remote', owned: false, status: 'working' }])).toEqual({
-      action: 'new'
+      action: 'activate',
+      sessionId: 'remote'
     })
   })
 

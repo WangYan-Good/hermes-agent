@@ -1,22 +1,7 @@
 import { atom, computed } from 'nanostores'
 
-import { DASHBOARD_TUI_MODE } from '../config/env.js'
-
 import type { OverlayState } from './interfaces.js'
-import { $outputConflict, type OutputConflict } from './outputStreamStore.js'
 import { $uiState } from './uiStore.js'
-
-export const outputConflictBlocksComposer = (
-  conflict: null | OutputConflict,
-  dashboardMode = DASHBOARD_TUI_MODE
-) => Boolean(dashboardMode && conflict)
-
-
-
-export const hasGlobalControlPrompt = (overlay: OverlayState) =>
-  Boolean(
-    overlay.approval || overlay.billing || overlay.clarify || overlay.confirm || overlay.secret || overlay.subscription || overlay.sudo
-  )
 
 const buildOverlayState = (): OverlayState => ({
   agents: false,
@@ -31,7 +16,6 @@ const buildOverlayState = (): OverlayState => ({
   journey: false,
   modelPicker: false,
   pager: null,
-  outputs: false,
   petPicker: false,
   pluginsHub: false,
   secret: null,
@@ -44,7 +28,7 @@ const buildOverlayState = (): OverlayState => ({
 export const $overlayState = atom<OverlayState>(buildOverlayState())
 
 export const $isBlocked = computed(
-  [$overlayState, $outputConflict],
+  $overlayState,
   ({
     agents,
     approval,
@@ -56,14 +40,13 @@ export const $isBlocked = computed(
     pager,
     petPicker,
     pluginsHub,
-    outputs,
     secret,
     sessions,
     skillsHub,
     subscription,
     sudo,
     widget
-  }, conflict) =>
+  }) =>
     Boolean(
       agents ||
       approval ||
@@ -75,13 +58,12 @@ export const $isBlocked = computed(
       pager ||
       petPicker ||
       pluginsHub ||
-      outputs ||
       secret ||
       sessions ||
       skillsHub ||
       subscription ||
       sudo ||
-      widget || outputConflictBlocksComposer(conflict)
+      widget
     )
 )
 
@@ -143,7 +125,6 @@ export const hasFloatingPanel = (overlay: OverlayState): boolean =>
     overlay.petPicker ||
     overlay.pluginsHub ||
     overlay.sessions ||
-    overlay.outputs ||
     overlay.skillsHub
   )
 
@@ -177,7 +158,6 @@ export const resetFlowOverlays = () =>
     journey: $overlayState.get().journey,
     modelPicker: $overlayState.get().modelPicker,
     petPicker: $overlayState.get().petPicker,
-    outputs: $overlayState.get().outputs,
     pluginsHub: $overlayState.get().pluginsHub,
     sessions: $overlayState.get().sessions,
     approval: $overlayState.get().approval,

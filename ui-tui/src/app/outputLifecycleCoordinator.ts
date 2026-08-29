@@ -6,14 +6,14 @@ import {
 } from './controlPromptQueue.js'
 import type { OutputStreamRouter } from './outputStreamRouter.js'
 import {
-  commitOutputPrimaryTransition,
+  commitActiveOutputTransition,
   getOutputSessionKey,
   markOutputTransportDisconnected,
   markOutputTransportReady,
   removeOutputSession,
   type SessionTransition,
   syncOutputSessions,
-  validateOutputPrimaryTransition
+  validateActiveOutputTransition
 } from './outputStreamStore.js'
 import { turnController } from './turnController.js'
 
@@ -39,7 +39,7 @@ export const createOutputLifecycleCoordinator = (
 
     return true
   },
-  commitTransition: commitOutputPrimaryTransition,
+  commitTransition: commitActiveOutputTransition,
   disconnect: currentSessionId => {
     const sessionKey = getOutputSessionKey(currentSessionId ?? null)
     outputRouter.disconnect()
@@ -59,5 +59,5 @@ export const createOutputLifecycleCoordinator = (
     return reconnected
   },
   syncActiveSessions: syncOutputSessions,
-  validateTransition: validateOutputPrimaryTransition
+  validateTransition: validateActiveOutputTransition
 })
