@@ -76,7 +76,9 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
   const flushSession = (sessionId: string) => {
     const pending = pendingDeltas.get(sessionId)
 
-    if (!pending || disposed) {return}
+    if (!pending || disposed) {
+      return
+    }
 
     pendingDeltas.delete(sessionId)
     observeOutputEvent(
@@ -87,7 +89,9 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
   }
 
   const flush = () => {
-    if (disposed) {return}
+    if (disposed) {
+      return
+    }
     clearTimer()
 
     for (const sessionId of [...pendingDeltas.keys()]) {
@@ -96,30 +100,42 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
   }
 
   const scheduleFlush = () => {
-    if (timer || disposed) {return}
+    if (timer || disposed) {
+      return
+    }
     timer = setTimeout(flush, batchMs)
     timer.unref?.()
   }
 
   const route = (event: GatewayEvent, activeSessionId: null | string): OutputRoute => {
-    if (disposed) {return 'ignored'}
+    if (disposed) {
+      return 'ignored'
+    }
 
     if (event.type === 'gateway.ready' && disconnected) {
       clearPending()
       disconnected = false
     }
 
-    if (event.type.startsWith('gateway.')) {return 'active'}
+    if (event.type.startsWith('gateway.')) {
+      return 'active'
+    }
 
     const sessionId = event.session_id
     const inactive = Boolean(sessionId && activeSessionId && sessionId !== activeSessionId)
 
     if (inactive) {
-      if (!dashboardMode) {return 'ignored'}
+      if (!dashboardMode) {
+        return 'ignored'
+      }
 
-      if (CONTROL_TYPES.has(event.type)) {return 'inactive-control'}
+      if (CONTROL_TYPES.has(event.type)) {
+        return 'inactive-control'
+      }
 
-      if (!DISPLAY_TYPES.has(event.type)) {return 'ignored'}
+      if (!DISPLAY_TYPES.has(event.type)) {
+        return 'ignored'
+      }
 
       if (event.type === 'message.delta') {
         const text = event.payload?.text

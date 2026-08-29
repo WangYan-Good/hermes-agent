@@ -50,8 +50,12 @@ export class OutputSessionIdentityCollisionError extends Error {
 
   constructor(sessionId: string, expectedSessionKey: string, actualSessionKey: string) {
     super(
-      'session identity collision for runtime ' + sessionId +
-      ': expected ' + expectedSessionKey + ', found ' + actualSessionKey
+      'session identity collision for runtime ' +
+        sessionId +
+        ': expected ' +
+        expectedSessionKey +
+        ', found ' +
+        actualSessionKey
     )
     this.name = 'OutputSessionIdentityCollisionError'
   }
@@ -74,13 +78,7 @@ interface EventRule {
   terminal: boolean
 }
 
-const TERMINAL_STATUSES = new Set<OutputTerminalStatus>([
-  'closed',
-  'completed',
-  'disconnected',
-  'error',
-  'interrupted'
-])
+const TERMINAL_STATUSES = new Set<OutputTerminalStatus>(['closed', 'completed', 'disconnected', 'error', 'interrupted'])
 
 const OMITTED_ENTRY_ID = 'omitted'
 const OMITTED_TEXT = '[Earlier output omitted]'
@@ -236,7 +234,7 @@ export const markOutputTransportReady = () => {
             lastOutputAt: 0,
             omitted: false,
             preview: '',
-            producing: false,
+            producing: false
           }
     ])
   )
@@ -249,7 +247,9 @@ export const markOutputTransportReady = () => {
 export const removeOutputSession = (sessionId: string) => {
   const stream = state.streams[sessionId]
 
-  if (!stream) {return}
+  if (!stream) {
+    return
+  }
 
   updateStream({ ...stream, hasLifecycleEvent: true, producing: false, status: 'closed' })
 }
@@ -257,14 +257,17 @@ export const removeOutputSession = (sessionId: string) => {
 export const observeOutputEvent = (event: OutputEvent, sessionId: string, options: ObserveOutputOptions) => {
   const rule = EVENT_RULES[event.type]
 
-  if (!rule || !sessionId) {return}
+  if (!rule || !sessionId) {
+    return
+  }
 
   const now = options.now ?? Date.now()
   const paints = rule.paints && (event.type !== 'message.delta' || Boolean(getString(event.payload, ['text'])))
   const stream = getOrCreateStream(sessionId)
 
-  if (state.activeSessionId == null && stream.status !== 'closed' && !options.buffer)
-    {state = { ...state, activeSessionId: sessionId }}
+  if (state.activeSessionId == null && stream.status !== 'closed' && !options.buffer) {
+    state = { ...state, activeSessionId: sessionId }
+  }
 
   const terminal = isTerminal(stream.status)
   const startsNewRound = event.type === 'message.start'
@@ -302,7 +305,9 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
   )
 
   for (const details of detailsList) {
-    if (!details.sessionId) {continue}
+    if (!details.sessionId) {
+      continue
+    }
 
     if (details.sessionKey) {
       const existingSessionKey = sessionKeysByRuntime.get(details.sessionId)
@@ -316,7 +321,9 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
   }
 
   for (const details of detailsList) {
-    if (!details.sessionId) {continue}
+    if (!details.sessionId) {
+      continue
+    }
 
     let sessionId = details.sessionId
 
@@ -351,10 +358,10 @@ export const syncOutputSessions = (items: readonly unknown[], currentSessionId: 
   if (currentSessionId) {
     const current = getOrCreateStream(currentSessionId)
 
-    if (current.status !== 'closed' && state.activeSessionId !== currentSessionId)
-      {state = { ...state, activeSessionId: currentSessionId }}
+    if (current.status !== 'closed' && state.activeSessionId !== currentSessionId) {
+      state = { ...state, activeSessionId: currentSessionId }
+    }
   }
-
 }
 
 export const captureActiveOutputSnapshot = (
@@ -433,7 +440,9 @@ function assertOutputSessionProvenance(sessionId: string, sessionKey: string) {
 function remapOutputSession(previousSessionId: string, nextSessionId: string, sessionKey: string) {
   const previous = state.streams[previousSessionId]
 
-  if (!previous || previousSessionId === nextSessionId) {return}
+  if (!previous || previousSessionId === nextSessionId) {
+    return
+  }
 
   assertOutputSessionProvenance(nextSessionId, sessionKey)
   const destination = state.streams[nextSessionId]
@@ -475,7 +484,9 @@ function remapOutputSession(previousSessionId: string, nextSessionId: string, se
 function getOrCreateStream(sessionId: string): OutputStream {
   const existing = state.streams[sessionId]
 
-  if (existing) {return existing}
+  if (existing) {
+    return existing
+  }
 
   const stream: OutputStream = {
     bytes: 0,
@@ -613,7 +624,9 @@ function limitEntries(stream: OutputStream): OutputStream {
   while (entries.length > OUTPUT_ENTRY_LIMIT || bytes > OUTPUT_BYTE_LIMIT) {
     const removed = entries.shift()
 
-    if (!removed) {break}
+    if (!removed) {
+      break
+    }
     bytes -= entryBytes(removed)
     omitted = true
   }
@@ -634,7 +647,9 @@ function limitEntries(stream: OutputStream): OutputStream {
     while (entries.length > OUTPUT_ENTRY_LIMIT || bytes > OUTPUT_BYTE_LIMIT) {
       const removed = entries.splice(1, 1)[0]
 
-      if (!removed) {break}
+      if (!removed) {
+        break
+      }
       bytes -= entryBytes(removed)
     }
   }
@@ -681,12 +696,16 @@ function hasCompletionText(payload: Record<string, unknown> | undefined): boolea
 }
 
 function getString(payload: Record<string, unknown> | undefined, keys: readonly string[]): string | undefined {
-  if (!payload) {return undefined}
+  if (!payload) {
+    return undefined
+  }
 
   for (const key of keys) {
     const value = payload[key]
 
-    if (typeof value === 'string' && value) {return value}
+    if (typeof value === 'string' && value) {
+      return value
+    }
   }
 
   return undefined
@@ -708,7 +727,9 @@ function readSession(item: unknown): {
   status?: string
   title?: string
 } {
-  if (!item || typeof item !== 'object') {return {}}
+  if (!item || typeof item !== 'object') {
+    return {}
+  }
   const record = item as Record<string, unknown>
 
   return {

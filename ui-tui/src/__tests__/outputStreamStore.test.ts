@@ -35,7 +35,13 @@ describe('single-window output stream cache', () => {
   })
 
   it('replaces the one active session on every committed switch', () => {
-    syncOutputSessions([{ id: 'sid-a', status: 'working' }, { id: 'sid-b', status: 'idle' }], 'sid-a')
+    syncOutputSessions(
+      [
+        { id: 'sid-a', status: 'working' },
+        { id: 'sid-b', status: 'idle' }
+      ],
+      'sid-a'
+    )
 
     commitActiveOutputTransition({ kind: 'activate-live', nextSessionId: 'sid-b', previousSessionId: 'sid-a' })
 

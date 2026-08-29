@@ -108,13 +108,9 @@ describe('output stream router', () => {
     const router = createOutputStreamRouter({ dashboardMode: true })
 
     router.dispose()
-    expect(
-      router.route(
-        { payload: { text: 'late' }, session_id: 'sid-b', type: 'message.interim' },
-        'sid-a'
-      )
-    ).toBe('ignored')
+    expect(router.route({ payload: { text: 'late' }, session_id: 'sid-b', type: 'message.interim' }, 'sid-a')).toBe(
+      'ignored'
+    )
     expect(getOutputStreamsState().streams['sid-b']).toBeUndefined()
   })
-
 })
