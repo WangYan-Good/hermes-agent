@@ -688,7 +688,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
 
   const handleReady = (skin?: GatewaySkin) => {
     ctx.outputLifecycle.ready()
-    ctx.outputSubscriptions.gatewayReady()
 
     if (skin) {
       applySkin(skin)
@@ -814,17 +813,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
     }
 
     const route = ctx.outputRouter.route(ev, sid)
-
-    if (ev.type === 'session.owner_lost') {
-      ctx.outputSubscriptions.ownerLost(eventSessionId)
-
-      if (eventSessionId === sid) {
-        ctx.composer.cancelQueued()
-        patchUiState({ busy: false, status: 'read-only · Take Control to continue' })
-      }
-
-      return
-    }
 
     const control = controlPromptFromEvent(ev, sid, ctx.outputRouter.titleForSession)
 

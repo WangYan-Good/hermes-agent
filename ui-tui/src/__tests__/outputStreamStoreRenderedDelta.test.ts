@@ -15,7 +15,6 @@ describe('output stream rendered delta handling', () => {
     const stream = getOutputStreamsState().streams['sid-b']!
     expect(stream.entries).toEqual([])
     expect(stream.hasDisplayOutput).toBe(false)
-    expect(stream.unreadCount).toBe(0)
-    expect(getOutputStreamsState().conflict).toBeNull()
+    expect(getOutputStreamsState().activeSessionId).toBe('sid-a')
   })
 })

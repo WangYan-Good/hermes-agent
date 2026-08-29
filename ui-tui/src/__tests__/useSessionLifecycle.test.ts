@@ -5,10 +5,9 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  capturePrimaryOutputSnapshot,
+  captureActiveOutputSnapshot,
   getOutputStreamsState,
   resetOutputStreams,
-  setSecondaryOutput,
   syncOutputSessions
 } from '../app/outputStreamStore.js'
 import { turnController } from '../app/turnController.js'
@@ -276,7 +275,7 @@ describe('atomic live session activation', () => {
     }
   )
 
-  it('rolls back a throwing before hook without changing layout or focus', async () => {
+  it('rolls back a throwing before hook without changing the active session', async () => {
     resetOutputStreams()
     syncOutputSessions(
       [
@@ -285,7 +284,6 @@ describe('atomic live session activation', () => {
       ],
       'sid-a'
     )
-    setSecondaryOutput('sid-b')
     patchUiState({ sid: 'sid-a' })
     const afterCommit = vi.fn()
 
@@ -304,11 +302,7 @@ describe('atomic live session activation', () => {
     ).resolves.toBe(false)
 
     expect(getUiState().sid).toBe('sid-a')
-    expect(getOutputStreamsState().layout).toEqual({
-      mode: 'split',
-      primarySessionId: 'sid-a',
-      secondarySessionId: 'sid-b'
-    })
+    expect(getOutputStreamsState().activeSessionId).toBe('sid-a')
     expect(afterCommit).not.toHaveBeenCalled()
   })
 
@@ -321,7 +315,6 @@ describe('atomic live session activation', () => {
       ],
       'sid-a'
     )
-    setSecondaryOutput('sid-b')
     patchUiState({ sid: 'sid-a' })
     turnController.hydrateStreamingText('live tail')
     turnController.recordToolStart('tool-1', 'shell', 'ls')
@@ -346,7 +339,7 @@ describe('atomic live session activation', () => {
     await expect(
       activateLiveSessionAtomic({
         afterCommit,
-        beforeCommit: () => capturePrimaryOutputSnapshot('sid-a', 'Alpha', 'running…', history, turnController.bufRef),
+        beforeCommit: () => captureActiveOutputSnapshot('sid-a', 'Alpha', 'running…', history, turnController.bufRef),
         capture: snapshot.capture,
         commit: () => {
           turnController.fullReset()

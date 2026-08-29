@@ -35,8 +35,6 @@ import type {
 import type { ControlPrompt } from './controlPromptQueue.js'
 import type { OutputLifecycleCoordinator } from './outputLifecycleCoordinator.js'
 import type { OutputStreamRouter } from './outputStreamRouter.js'
-import type { OutputConflictDecision } from './outputStreamStore.js'
-import type { OutputSubscriptionCoordinator } from './outputSubscriptionCoordinator.js'
 
 export interface StateSetter<T> {
   (value: SetStateAction<T>): void
@@ -304,7 +302,6 @@ export interface OverlayState {
   petPicker: boolean
   pluginsHub: boolean
   secret: null | SecretReq
-  outputs: boolean
   sessions: boolean
   skillsHub: boolean
   subscription: SubscriptionOverlayState | null
@@ -435,7 +432,6 @@ export interface UseComposerStateResult {
 export interface InputHandlerActions {
   answerClarify: (answer: string) => void
   appendMessage: (msg: Msg) => void
-  cycleOutputFocus: (direction: -1 | 1) => void
   die: () => void
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean
@@ -476,13 +472,11 @@ export interface InputHandlerResult {
 
 export interface GatewayEventHandlerContext {
   composer: {
-    cancelQueued: () => void
     setInput: StateSetter<string>
   }
   gateway: GatewayServices
   outputRouter: OutputStreamRouter
   outputLifecycle: OutputLifecycleCoordinator
-  outputSubscriptions: OutputSubscriptionCoordinator
   session: {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
@@ -570,10 +564,6 @@ export interface AppLayoutActions {
   clearSelection: () => void
   activateLiveSession: (id: string) => Promise<boolean>
   closeLiveSession: (id: string) => Promise<null | SessionCloseResponse>
-  decideOutputConflict: (decision: OutputConflictDecision) => Promise<boolean> | void
-  focusOutputSession: (sessionId: string) => Promise<boolean>
-  takeControlOutputSession: (sessionId: string) => Promise<boolean>
-  toggleOutputWatch: (sessionId: string) => Promise<boolean>
   newLiveSession: () => void
   newPromptSession: (prompt: string, modelArg?: string) => void
   onModelSelect: (value: string) => void
@@ -639,18 +629,13 @@ export interface AppOverlaysProps {
   onClarifyAnswer: (value: string) => void
   onActiveSessionSelect: (sessionId: string) => Promise<boolean>
   onActiveSessionClose: (sessionId: string) => Promise<null | SessionCloseResponse>
-  onOutputFocus: (sessionId: string) => Promise<boolean>
-  onOutputTakeControl: (sessionId: string) => Promise<boolean>
-  onOutputWatch: (sessionId: string) => Promise<boolean>
   onModelSelect: (value: string) => void
   onNewLiveSession: () => void
   onNewPromptSession: (prompt: string, modelArg?: string) => void
-  onOutputConflictDecision: (decision: OutputConflictDecision) => Promise<boolean> | void
   onResumeSelect: (sessionId: string) => void
   onSecretSubmit: (value: string) => void
   onSudoSubmit: (pw: string) => void
   pagerPageSize: number
-  showOutputConflict: boolean
 }
 
 /**

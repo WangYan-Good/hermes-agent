@@ -1,4 +1,3 @@
-import { Box, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 
@@ -120,55 +119,6 @@ export const LiveTodoPanel = memo(function LiveTodoPanel() {
   return <TodoPanel collapsed={collapsed} onToggle={toggleTodoCollapsed} t={ui.theme} todos={todos} />
 })
 
-export const LiveOutputWindow = memo(function LiveOutputWindow({
-  bottomSpacerRows = 0,
-  cols,
-  compact,
-  detailsMode,
-  detailsModeCommandOverride,
-  progress,
-  sections
-}: LiveOutputWindowProps) {
-  const ui = useStore($uiState)
-
-  const active = useTurnSelector(state => liveOutputVisible(state, progress.showProgressArea))
-
-  if (!active) {
-    return null
-  }
-
-  return (
-    <Box
-      borderColor={ui.theme.color.border}
-      borderStyle="single"
-      flexDirection="column"
-      flexShrink={1}
-      height="40%"
-      minHeight={0}
-      overflow="hidden"
-    >
-      <Box flexShrink={0}>
-        <Text bold color={ui.theme.color.label} wrap="truncate-end">
-          Live output
-        </Text>
-      </Box>
-      <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} minHeight={0} stickyScroll>
-        <Box flexDirection="column" paddingX={1}>
-          <StreamingAssistant
-            cols={Math.max(1, cols - 4)}
-            compact={compact}
-            detailsMode={detailsMode}
-            detailsModeCommandOverride={detailsModeCommandOverride}
-            progress={progress}
-            sections={sections}
-          />
-          {bottomSpacerRows > 0 ? <Box height={bottomSpacerRows} /> : null}
-        </Box>
-      </ScrollBox>
-    </Box>
-  )
-})
-
 interface StreamingAssistantProps {
   cols: number
   compact?: boolean
@@ -177,8 +127,4 @@ interface StreamingAssistantProps {
   prevMsg?: Msg
   progress: AppLayoutProgressProps
   sections?: SectionVisibility
-}
-
-interface LiveOutputWindowProps extends Omit<StreamingAssistantProps, 'prevMsg'> {
-  bottomSpacerRows?: number
 }

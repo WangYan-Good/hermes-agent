@@ -51,16 +51,9 @@ import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfa
 import { createOutputLifecycleCoordinator } from './outputLifecycleCoordinator.js'
 import { createOutputStreamRouter } from './outputStreamRouter.js'
 import {
-  capturePrimaryOutputSnapshot,
-  getOutputStreamsState,
-  mergeWatchedOutputSnapshot,
-  type OutputConflict,
-  type OutputConflictDecision,
-  removeOutputLayoutReference,
-  resolveOutputConflict,
+  captureActiveOutputSnapshot,
   type SessionTransitionHooks
 } from './outputStreamStore.js'
-import { createOutputSubscriptionCoordinator } from './outputSubscriptionCoordinator.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -93,43 +86,6 @@ const statusColorOf = (status: string, t: { error: string; muted: string; ok: st
   }
 
   return t.muted
-}
-
-export interface DecideOutputConflictWithActivationOptions {
-  activate: (sessionId: string) => Promise<boolean>
-  conflict: OutputConflict
-  decision: OutputConflictDecision
-}
-
-export async function decideOutputConflictWithActivation({
-  activate,
-  conflict,
-  decision
-}: DecideOutputConflictWithActivationOptions): Promise<boolean> {
-  const activationTarget =
-    decision === 'prioritize-candidate'
-      ? conflict.candidateSessionId
-      : decision === 'split'
-        ? conflict.primarySessionId
-        : null
-
-  if (activationTarget) {
-    try {
-      if (!(await activate(activationTarget))) {
-        return false
-      }
-    } catch {
-      return false
-    }
-  }
-
-  if (decision === 'open-manager') {
-    patchOverlayState({ outputs: true })
-  }
-
-  resolveOutputConflict(decision, conflict)
-
-  return true
 }
 
 export interface PromptLiveSessionOptions {
@@ -591,28 +547,12 @@ export function useMainApp(gw: GatewayClient) {
   const outputRouter = useMemo(() => createOutputStreamRouter(), [])
   const outputLifecycle = useMemo(() => createOutputLifecycleCoordinator(outputRouter), [outputRouter])
 
-  const outputSubscriptions = useMemo(
-    () =>
-      createOutputSubscriptionCoordinator(rpc, {
-        mergeSnapshot: snapshot =>
-          mergeWatchedOutputSnapshot(
-            snapshot.session_id,
-            snapshot.stored_session_id ?? '',
-            '',
-            snapshot.status,
-            snapshot.messages
-          ),
-        removeLayoutReference: removeOutputLayoutReference
-      }),
-    [rpc]
-  )
-
   const transitionHooks = useMemo<SessionTransitionHooks>(() => ({
     beforeCommit: transition => {
       outputLifecycle.validateTransition(transition)
 
       if (transition.previousSessionId && (transition.kind === 'activate-live' || transition.kind === 'new-live')) {
-        capturePrimaryOutputSnapshot(
+        captureActiveOutputSnapshot(
           transition.previousSessionId,
           getUiState().sessionTitle,
           getUiState().status,
@@ -679,7 +619,6 @@ export function useMainApp(gw: GatewayClient) {
             // round-trip is needed.
             const currentSid = getUiState().sid
             outputLifecycle.syncActiveSessions(result.sessions, currentSid)
-            outputSubscriptions.syncActiveSessions(result.sessions, currentSid)
 
             const sessionTitle = result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
 
@@ -704,7 +643,7 @@ export function useMainApp(gw: GatewayClient) {
       stopped = true
       clearInterval(timer)
     }
-  }, [gw, outputLifecycle, outputSubscriptions, ui.sid])
+  }, [gw, outputLifecycle, ui.sid])
 
   // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
   // Format: `<marker> <session name> · <model> · <cwd>` — name/cwd omitted when absent.
@@ -856,35 +795,10 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued])
 
-  const cycleOutputFocus = (direction: -1 | 1) => {
-    const layout = getOutputStreamsState().layout
-    const visible = [layout.primarySessionId, layout.secondarySessionId].filter((id): id is string => Boolean(id))
-
-    if (visible.length < 2) {
-      return
-    }
-
-    const index = visible.indexOf(outputSubscriptions.focusedSessionId() ?? getUiState().sid ?? '')
-    const next = visible[(index + direction + visible.length) % visible.length]!
-
-    if (next === getUiState().sid) {
-      outputSubscriptions.setFocusedSession(null)
-    } else if (outputSubscriptions.isOwned(next)) {
-      void session.activateLiveSession(next).then(ok => {
-        if (ok) {
-          outputSubscriptions.setFocusedSession(null)
-        }
-      })
-    } else if (outputSubscriptions.isWatched(next)) {
-      outputSubscriptions.setFocusedSession(next)
-    }
-  }
-
   const { pagerPageSize } = useInputHandlers({
     actions: {
       answerClarify,
       appendMessage,
-      cycleOutputFocus,
       die,
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,
@@ -908,20 +822,13 @@ export function useMainApp(gw: GatewayClient) {
 
   useEffect(() => () => outputRouter.dispose(), [outputRouter])
 
-  const cancelQueued = useCallback(() => {
-    while (composerRefs.queueRef.current.length) {
-      composerActions.dequeue()
-    }
-  }, [composerActions, composerRefs.queueRef])
-
   const onEvent = useMemo(
     () =>
       createGatewayEventHandler({
-        composer: { cancelQueued, setInput: composerActions.setInput },
+        composer: { setInput: composerActions.setInput },
         gateway,
         outputRouter,
         outputLifecycle,
-        outputSubscriptions,
         session: {
           STARTUP_RESUME_ID,
           colsRef,
@@ -944,12 +851,10 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
-      cancelQueued,
       composerActions.setInput,
       gateway,
       outputRouter,
       outputLifecycle,
-      outputSubscriptions,
       panel,
       session.newSession,
       session.resetSession,
@@ -1223,91 +1128,15 @@ export function useMainApp(gw: GatewayClient) {
       : state.activity.some(item => item.tone !== 'info')
   )
 
-  const focusOutputSession = useCallback(
-    async (sessionId: string) => {
-      const focused = await outputSubscriptions.focus(sessionId, getUiState().sid, session.activateLiveSession)
-
-      if (!focused) {
-        sys('watch this session before focusing its output')
-      }
-
-      return focused
-    },
-    [outputSubscriptions, session, sys]
-  )
-
-  const activateOwnedSession = useCallback(
-    async (sessionId: string) => {
-      if (getUiState().sid === sessionId) {
-        outputSubscriptions.setFocusedSession(null)
-
-        return true
-      }
-
-      if (!outputSubscriptions.isOwned(sessionId)) {
-        sys('remote session is read-only · use Output Manager to Watch or Take Control')
-
-        return false
-      }
-
-      const activated = await session.activateLiveSession(sessionId)
-
-      if (activated) {
-        outputSubscriptions.setFocusedSession(null)
-      }
-
-      return activated
-    },
-    [outputSubscriptions, session, sys]
-  )
-
-  const takeControlOutputSession = useCallback(
-    async (sessionId: string) => {
-      const activated = await session.activateLiveSession(sessionId)
-
-      if (activated) {
-        await outputSubscriptions.takeControlSucceeded(sessionId)
-      }
-
-      return activated
-    },
-    [outputSubscriptions, session]
-  )
-
-  const toggleOutputWatch = useCallback(
-    (sessionId: string) =>
-      outputSubscriptions.isDesired(sessionId)
-        ? outputSubscriptions.unwatch(sessionId)
-        : outputSubscriptions.watch(sessionId),
-    [outputSubscriptions]
-  )
-
-  const decideOutputConflict = useCallback(
-    (decision: OutputConflictDecision) => {
-      const conflict = getOutputStreamsState().conflict
-
-      if (!conflict) {
-        return
-      }
-
-      return decideOutputConflictWithActivation({ activate: focusOutputSession, conflict, decision })
-    },
-    [focusOutputSession]
-  )
-
   const appActions = useMemo(
     () => ({
-      activateLiveSession: activateOwnedSession,
+      activateLiveSession: session.activateLiveSession,
       closeLiveSession,
       answerApproval,
       answerClarify,
       answerSecret,
       answerSudo,
       clearSelection,
-      decideOutputConflict,
-      focusOutputSession,
-      takeControlOutputSession,
-      toggleOutputWatch,
       newLiveSession: () => session.newLiveSession(),
       newPromptSession,
       onModelSelect,
@@ -1325,17 +1154,12 @@ export function useMainApp(gw: GatewayClient) {
       setStickyPrompt
     }),
     [
-      activateOwnedSession,
       answerApproval,
       answerClarify,
       answerSecret,
       answerSudo,
       clearSelection,
       closeLiveSession,
-      decideOutputConflict,
-      focusOutputSession,
-      takeControlOutputSession,
-      toggleOutputWatch,
       newPromptSession,
       onModelSelect,
       session
