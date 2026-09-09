@@ -44,11 +44,11 @@ def loop_agent():
         return a
 
 
-def _stub(content):
+def _stub(content, *, transport_drop=True):
     from tests.run_agent.test_run_agent import _mock_assistant_msg
 
     return SimpleNamespace(
-        id=PARTIAL_STREAM_STUB_ID,
+        id=PARTIAL_STREAM_STUB_ID if transport_drop else "chatcmpl-truncated",
         model="test/model",
         choices=[SimpleNamespace(
             index=0,
@@ -57,6 +57,16 @@ def _stub(content):
         )],
         usage=None,
     )
+
+
+def _truncated(content):
+    """A genuine output-cap truncation — the multi-attempt continuation path.
+
+    A transport drop reaches the repetition guard the same way (the guard runs
+    before any recovery branch), but it does NOT share this ceiling: its
+    recovery is bounded at one attempt.
+    """
+    return _stub(content, transport_drop=False)
 
 
 def _run(agent, message):
@@ -89,8 +99,8 @@ class TestContinuationRepetitionGuard:
     def test_legit_truncation_still_continues(self, loop_agent):
         # Ordinary short truncated fragments still get continuation retries.
         loop_agent.client.chat.completions.create.side_effect = [
-            _stub("part one "), _stub("part two "),
-            _stub("part three "), _stub("part four."),
+            _truncated("part one "), _truncated("part two "),
+            _truncated("part three "), _truncated("part four."),
         ]
 
         result = _run(loop_agent, "write me a long report")

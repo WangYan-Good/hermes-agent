@@ -510,8 +510,10 @@ class TestEmptyPartialStreamStubNotPersisted:
     persisted, EVERY subsequent turn re-fails: session unrecoverable.
 
     Fix layer 1 (conversation_loop): an empty partial-stream stub must not
-    be appended as an interim assistant message — only the continuation
-    user-message is.
+    be appended as an interim assistant message.  Under P1's bounded
+    transport recovery nothing at all is appended — the original request is
+    simply re-issued without streaming — which keeps this invariant strictly
+    harder to violate.
     """
 
     def test_empty_stub_only_appends_continuation_user_message(self, loop_agent):
@@ -562,14 +564,18 @@ class TestEmptyPartialStreamStubNotPersisted:
             "Kimi) reject the replay with HTTP 400 and poison the session."
         )
 
-        # The continuation nudge is still appended as a user message, and
-        # it's the chunking variant (dropped tool call), not the length lie.
-        last_user = next(
-            (m for m in reversed(msgs) if m.get("role") == "user"), None,
+        # Nothing the model wrote reached the user, so the recovery replays
+        # the ORIGINAL request rather than appending a synthetic "continue"
+        # prompt: there is no partial response to continue from, and the
+        # nudge would only steer the next turn (P1 bounded recovery).
+        synthetic = [
+            m for m in msgs
+            if m.get("role") == "user" and "[System:" in (m.get("content") or "")
+        ]
+        assert synthetic == [], (
+            f"An empty transport drop must not seed a continuation nudge; "
+            f"found {synthetic}"
         )
-        assert last_user is not None
-        assert "too large" in (last_user.get("content") or "")
-        assert "output length limit" not in (last_user.get("content") or "")
 
         assert result["completed"] is True
 

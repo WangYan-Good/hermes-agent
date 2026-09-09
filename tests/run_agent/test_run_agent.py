@@ -4167,25 +4167,26 @@ class TestRunConversation:
         mock_hfc.assert_called_once()
         assert result["final_response"] == "Done!"
 
-    def test_stub_stall_mid_tool_call_recovers_within_3_retries(self, agent):
-        """A network stream stall mid tool-call (PARTIAL_STREAM_STUB_ID) must
-        retry up to 3 times rather than hard-failing after one — and recover
-        if a retry produces a complete tool call. Regression for the false
-        'model hit max output tokens' on Opus when the stream simply dropped."""
+    def _mid_tool_call_stall(self):
+        """A network stream stall mid tool-call, as the streaming layer tags it."""
         from hermes_constants import PARTIAL_STREAM_STUB_ID
 
-        self._setup_agent(agent)
-        agent.valid_tool_names.add("write_file")
         bad_tc = _mock_tool_call(
             name="write_file",
             arguments='{"path":"report.md","content":"partial',
             call_id="c1",
         )
-        # Two consecutive stub-stall responses, then a clean tool call.
-        stall1 = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
-        stall1.id = PARTIAL_STREAM_STUB_ID
-        stall2 = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
-        stall2.id = PARTIAL_STREAM_STUB_ID
+        stall = _mock_response(content="", finish_reason="length", tool_calls=[bad_tc])
+        stall.id = PARTIAL_STREAM_STUB_ID
+        return stall
+
+    def test_stub_stall_mid_tool_call_recovers_on_one_retry(self, agent):
+        """A network stream stall mid tool-call must be retried once — not
+        hard-fail on the first drop, and not escalate into the output-cap
+        retry ladder. Regression for the false 'model hit max output tokens'
+        on Opus when the stream simply dropped."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
         good_tc = _mock_tool_call(
             name="write_file",
             arguments='{"path":"report.md","content":"full content"}',
@@ -4201,13 +4202,52 @@ class TestRunConversation:
             patch.object(agent, "_cleanup_task_resources"),
         ):
             agent.client.chat.completions.create.side_effect = [
-                stall1, stall2, good_resp, final_resp,
+                self._mid_tool_call_stall(), good_resp, final_resp,
             ]
             result = agent.run_conversation("write the report")
 
-        # Recovered on the 3rd attempt instead of refusing after the 1st.
+        # Recovered on the retry instead of refusing after the first drop —
+        # and the incomplete arguments never reached the dispatcher.
         mock_hfc.assert_called_once()
+        assert "partial" not in str(mock_hfc.call_args_list[0].args[1])
         assert result["final_response"] == "Done!"
+
+    def test_stub_stall_twice_stops_instead_of_retrying_again(self, agent):
+        """A drop that survives the retry is not a transient hiccup. Bounding
+        it at one attempt is what stops one dead connection from multiplying
+        into a retry x continuation chain (P1)."""
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"full content"}',
+            call_id="c2",
+        )
+        # Scripted well past the bound: reaching these would be the bug.
+        never = [
+            _mock_response(content="", finish_reason="stop", tool_calls=[good_tc]),
+            _mock_response(content="Done!", finish_reason="stop"),
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.client.chat.completions.create.side_effect = [
+                self._mid_tool_call_stall(), self._mid_tool_call_stall(), *never,
+            ]
+            result = agent.run_conversation("write the report")
+
+        assert agent.client.chat.completions.create.call_count == 2, (
+            "One transport incident gets exactly one recovery attempt."
+        )
+        assert mock_hfc.call_count == 0, (
+            "Arguments that never finished arriving must never execute."
+        )
+        assert result["completed"] is False
+        assert result["partial"] is True
 
     def test_zero_byte_tool_args_stub_recovers_within_retries(self, agent):
         """#80498: a stream that dies before a single argument byte arrives
