@@ -170,3 +170,37 @@ def transport_had_visible_text(response: Any, *, fallback_content: Any = None) -
         return bool(str(content or "").strip())
     except Exception:
         return False
+
+
+# ── Raw transport exceptions ───────────────────────────────────────────
+
+
+def is_transport_retryable_error(classified: Any) -> bool:
+    """True when an already-classified error is a transport drop the turn owns.
+
+    A streaming request only produces a ``PARTIAL_STREAM_STUB_ID`` stub when
+    deltas already reached the consumer. A drop with nothing delivered — the
+    most common shape — raises instead, so the bounded policy has to accept
+    RAW exceptions too, or Case A/C silently keep the old multiplicative path.
+
+    This takes the turn's existing :class:`ClassifiedError` rather than
+    re-deriving one. The classifier already knows ``RemoteProtocolError``,
+    ``incomplete chunked read``, ``peer closed connection``, ``ConnectError``
+    and the SSL/timeout families, and — critically — it resolves the
+    *ambiguous* cases against session size, routing a bare disconnect on an
+    oversized request to ``context_overflow`` (compress) rather than
+    transport. Reusing that single verdict keeps this decision from ever
+    disagreeing with the one the rest of the turn acts on.
+
+    Accepting only ``FailoverReason.timeout`` leaves rate limits, billing,
+    auth, content policy, overload, 413/context overflow and deterministic
+    client errors on their existing paths. ``ssl_cert_verification`` is
+    excluded by that same test: it is deterministic for the host, so a
+    non-streaming retry would reproduce the identical handshake failure.
+    """
+    from agent.error_classifier import FailoverReason
+
+    return (
+        getattr(classified, "reason", None) is FailoverReason.timeout
+        and bool(getattr(classified, "retryable", False))
+    )

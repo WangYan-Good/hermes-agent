@@ -3284,7 +3284,10 @@ def _build_partial_stream_stub(
     )
 
 
-def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=None):
+def interruptible_streaming_api_call(
+    agent, api_kwargs: dict, *, on_first_delta=None,
+    owns_transport_recovery: bool = False,
+):
     """Streaming variant of _interruptible_api_call for real-time token delivery.
 
     Handles all three api_modes:
@@ -4694,7 +4697,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     def _call():
         import httpx as _httpx
 
-        _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
+        # Transport-recovery ownership (#P1).  When the caller's turn owns the
+        # bounded transport budget, the FIRST qualifying drop must surface to
+        # it rather than being absorbed by this local reconnect loop —
+        # otherwise one logical incident is still STREAM, STREAM, STREAM
+        # before the turn's single non-streaming retry even begins, which is
+        # the multiplicative recovery the convergence work exists to remove.
+        # Internal capability, deliberately not a new HERMES_* env var.
+        _max_stream_retries = (
+            0 if owns_transport_recovery else env_int("HERMES_STREAM_RETRIES", 2)
+        )
 
         try:
             for _stream_attempt in range(_max_stream_retries + 1):
@@ -4961,7 +4973,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                                 "The provider may be experiencing issues — "
                                 "try again in a moment."
                             )
-                        agent._buffer_status(_exhausted_msg)
+                        # Suppressed when the turn owns recovery: it is
+                        # about to retry non-streaming, so announcing a hard
+                        # connection failure here would be both alarming and
+                        # untrue.  The turn emits its own single line instead.
+                        if not owns_transport_recovery:
+                            agent._buffer_status(_exhausted_msg)
                     else:
                         _err_lower = str(e).lower()
                         _is_stream_unsupported = (

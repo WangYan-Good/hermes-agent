@@ -87,7 +87,7 @@ class ApiRecorder:
             raise item
         return item
 
-    def _stream(self, api_kwargs, on_first_delta=None):
+    def _stream(self, api_kwargs, on_first_delta=None, **_kwargs):
         self.modes.append("STREAM")
         return self._next()
 
@@ -591,7 +591,7 @@ class TestInterruptIsNotRetried:
         not quietly re-send the model call."""
         rec = ApiRecorder(loop_agent, [])
 
-        def _interrupting_stream(api_kwargs, on_first_delta=None):
+        def _interrupting_stream(api_kwargs, on_first_delta=None, **_kwargs):
             rec.modes.append("STREAM")
             loop_agent._interrupt_requested = True
             raise InterruptedError("Agent interrupted during streaming API call")

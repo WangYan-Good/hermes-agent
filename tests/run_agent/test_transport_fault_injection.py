@@ -310,23 +310,30 @@ class TestHermesStampsTransportIdentity:
             "Half-arrived argument JSON must not leak into assistant content."
         )
 
-    def test_tool_arg_drop_with_nothing_delivered_never_yields_a_tool_call(
+    def test_tool_arg_drop_with_nothing_delivered_raises_a_classified_drop(
         self, drop_server, stream_agent,
     ):
-        """No preamble reached the user, so there is no partial to stub: the
-        transport error surfaces for the outer retry loop. Either way the
-        invariant holds — an unfinished tool call is never runnable."""
+        """With nothing delivered there is no partial to stub, so the helper
+        raises — and the raised error must be one the turn-level policy
+        recognises as transport.
+
+        This asserts the low-level contract positively rather than swallowing
+        the exception: a raw drop that Hermes fails to CLASSIFY as transport
+        would fall into the generic retry budget, which is the exact
+        regression the end-to-end gates exist to catch.
+        """
+        from agent.error_classifier import classify_api_error
+        from agent.transport_recovery import is_transport_retryable_error
+
         server = drop_server(list(TOOL_ARG_MIDSTREAM_DROP))
-        try:
-            response = _run_real_stream(stream_agent, server)
-        except Exception as exc:
-            text = f"{type(exc).__name__}: {exc}".lower()
-            assert any(sig in text for sig in (
-                "incomplete chunked read", "peer closed", "remoteprotocolerror",
-                "connection reset", "readerror", "apiconnectionerror",
-            )), f"unexpected error shape: {exc!r}"
-            return
-        assert not getattr(response.choices[0].message, "tool_calls", None)
+        with pytest.raises(Exception) as excinfo:  # noqa: PT011 - shape asserted below
+            _run_real_stream(stream_agent, server)
+
+        assert is_transport_retryable_error(classify_api_error(excinfo.value)), (
+            f"a mid-tool-call socket drop must classify as a retryable "
+            f"transport failure, not fall through to generic retry: "
+            f"{excinfo.value!r}"
+        )
 
     def test_no_token_drop_reports_no_visible_text(self, drop_server, stream_agent):
         """Nothing reached the user, so recovery may replay the request
