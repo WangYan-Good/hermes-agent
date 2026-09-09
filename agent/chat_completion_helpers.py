@@ -29,6 +29,10 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from agent.transport_recovery import (
+    TRANSPORT_INTERRUPTED_ATTR,
+    TRANSPORT_VISIBLE_TEXT_ATTR,
+)
 from agent.error_classifier import (
     FailoverReason,
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
@@ -3247,6 +3251,12 @@ def _build_partial_stream_stub(
     is tagged ``PARTIAL_STREAM_STUB_ID`` with ``FINISH_REASON_LENGTH`` so
     the conversation loop enters its continuation/retry path instead of
     silently accepting truncated output as a complete turn (#32086).
+
+    It ALSO carries the explicit transport-interruption markers read by
+    ``agent.transport_recovery``.  The id + finish_reason pair is a wire-shape
+    compatibility device shared with genuine output truncation; the markers
+    are the machine-decidable identity that keeps a dropped connection out of
+    the genuine-length continuation budget.
     """
     mock_message = SimpleNamespace(
         role=role,
@@ -3265,6 +3275,12 @@ def _build_partial_stream_stub(
         choices=[mock_choice],
         usage=usage_obj,
         _dropped_tool_names=dropped_tool_names or None,
+        **{
+            TRANSPORT_INTERRUPTED_ATTR: True,
+            # Only model-authored text counts: it is what the user would see
+            # twice if the request were replayed from scratch.
+            TRANSPORT_VISIBLE_TEXT_ATTR: bool((full_content or "").strip()),
+        },
     )
 
 
@@ -5228,6 +5244,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _partial_text = (
                 getattr(agent, "_current_streamed_assistant_text", "") or ""
             ).strip() or None
+            # Captured BEFORE the Hermes-authored warning below is appended:
+            # transport recovery must key off text the MODEL produced, since
+            # that is what the user would see duplicated if the request were
+            # replayed from scratch.  A warning we wrote ourselves is not.
+            _had_visible_model_text = bool(_partial_text)
 
             # Append a user-visible warning if tool calls were dropped so
             # the user and model both know what was attempted.
@@ -5309,6 +5330,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 )],
                 usage=None,
                 _dropped_tool_names=_partial_names or None,
+                **{
+                    TRANSPORT_INTERRUPTED_ATTR: True,
+                    TRANSPORT_VISIBLE_TEXT_ATTR: _had_visible_model_text,
+                },
             )
             if _content_filter_terminated:
                 _stub._content_filter_terminated = True

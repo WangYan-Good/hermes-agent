@@ -95,6 +95,13 @@ from agent.turn_finalizer import finalize_turn
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent import empty_response_guard as _empty_guard
 from hermes_constants import PARTIAL_STREAM_STUB_ID
+from agent.transport_recovery import (
+    TransportRecoveryAction,
+    TransportRecoveryState,
+    is_transport_interrupted,
+    plan_transport_recovery,
+    transport_had_visible_text,
+)
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
@@ -1847,6 +1854,12 @@ def run_conversation(
     codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
+    # Bounded transport-interruption recovery for this turn.  Turn-scoped (not
+    # on TurnRetryState) because a recovery attempt breaks out to the outer
+    # loop, which builds a fresh TurnRetryState — the state has to outlive
+    # that.  Reset to NONE once a recovery succeeds so a genuinely separate
+    # drop later in a long tool loop still gets its own bounded budget.
+    _transport_recovery = TransportRecoveryState.NONE
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     # One resolved per-turn compression attempt cap, shared by every site that
@@ -2982,6 +2995,14 @@ def run_conversation(
                     from unittest.mock import Mock
                     if isinstance(getattr(agent, "client", None), Mock):
                         _use_streaming = False
+                # Transport-recovery override, applied last so it wins over
+                # every preference above: the streaming path is what just
+                # died mid-body, so the one bounded recovery attempt goes out
+                # non-streaming.  Re-entering streaming here is exactly how a
+                # single dropped connection used to multiply into a retry ×
+                # continuation chain.
+                if _transport_recovery is not TransportRecoveryState.NONE:
+                    _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
                     if agent.api_mode == "codex_responses":
@@ -3400,6 +3421,19 @@ def run_conversation(
                         )
                         finish_reason = "length"
 
+                # A response that is NOT a swallowed transport failure means
+                # the incident this turn was recovering from is over (the
+                # non-streaming retry or the single continuation worked).
+                # Release the bounded budget so a genuinely separate drop
+                # later in a long tool loop still gets its own one attempt —
+                # what the state forbids is a second recovery for the SAME
+                # incident, not recovery for the rest of the turn.
+                if (
+                    _transport_recovery is not TransportRecoveryState.NONE
+                    and not is_transport_interrupted(response)
+                ):
+                    _transport_recovery = TransportRecoveryState.NONE
+
                 # ── Content-policy refusal (HTTP 200) ──────────────────
                 # The model — or the provider's safety system — returned a
                 # *successful* response whose stop/finish reason is a refusal:
@@ -3709,6 +3743,190 @@ def run_conversation(
                                 f"(may re-hit filter)...",
                                 force=True,
                             )
+
+                        # ── Transport interruption ≠ output truncation ──
+                        # The stream died mid-body (peer closed / incomplete
+                        # chunked read / SSE stopped before its terminator).
+                        # The provider never reported an output cap, so this
+                        # must NOT inherit the genuine-length budget: 4
+                        # continuation nudges (or 4 tool-call retries with a
+                        # doubling max_tokens), each itself a fresh request
+                        # that can drop again.  One drop gets ONE bounded
+                        # strategy change — streaming → non-streaming — then
+                        # success, fallback, or an honest terminal result.
+                        # Content-filter stalls are checked ABOVE and keep
+                        # their own fallback-first semantics.
+                        if is_transport_interrupted(response):
+                            _tr_visible = transport_had_visible_text(
+                                response, fallback_content=_trunc_content,
+                            )
+                            _tr_plan = plan_transport_recovery(
+                                state=_transport_recovery,
+                                # A continuation needs something to continue
+                                # FROM: without a normalized assistant message
+                                # there is no checkpoint to append, so fall
+                                # back to replaying the request.
+                                has_visible_text=(
+                                    _tr_visible and assistant_message is not None
+                                ),
+                            )
+                            _tr_dropped_tools = getattr(
+                                response, "_dropped_tool_names", None
+                            )
+                            # One structured line per logical interruption —
+                            # never a "retrying 1/4 … 4/4" ladder.  Shapes and
+                            # counts only; no prompt, credential, or tool-
+                            # argument content.
+                            logger.warning(
+                                "%stransport interrupted: visible_partial=%s "
+                                "partial_tool_call=%s recovery=%s attempt=%s "
+                                "provider=%s model=%s",
+                                agent.log_prefix,
+                                _tr_visible,
+                                bool(_tr_dropped_tools or _trunc_has_tool_calls),
+                                _tr_plan.action.value,
+                                "1/1" if _tr_plan.force_nonstreaming else "spent",
+                                agent.provider,
+                                agent.model,
+                            )
+
+                            if _tr_plan.action is TransportRecoveryAction.NONSTREAM_RETRY:
+                                # CASE A/C: nothing the user has seen, and any
+                                # partially-received tool call is discarded
+                                # unexecuted (the stub never carries runnable
+                                # tool_calls).  Re-issue the SAME logical
+                                # request with no synthetic prompt appended,
+                                # and no output-budget escalation — a dropped
+                                # connection is not an output cap.
+                                _transport_recovery = _tr_plan.next_state
+                                agent._ephemeral_max_output_tokens = None
+                                agent._buffer_vprint(
+                                    "⚠️  Stream interrupted — retrying once "
+                                    "without streaming..."
+                                )
+                                agent._emit_status(
+                                    "Stream interrupted; retrying without streaming..."
+                                )
+                                continue
+
+                            if _tr_plan.action is TransportRecoveryAction.PARTIAL_CONTINUATION:
+                                # CASE B: model text already reached the user.
+                                # Replaying the request would show it twice,
+                                # so checkpoint what arrived and ask for
+                                # exactly ONE non-streaming continuation.
+                                _transport_recovery = _tr_plan.next_state
+                                interim_msg = agent._build_assistant_message(
+                                    assistant_message, finish_reason,
+                                )
+                                interim_msg["_length_continuation_fragment"] = True
+                                append_message(messages, interim_msg)
+                                if getattr(assistant_message, "content", None):
+                                    truncated_response_parts.append(
+                                        assistant_message.content
+                                    )
+                                append_message(messages, {
+                                    "role": "user",
+                                    "content": _get_continuation_prompt(
+                                        True, _tr_dropped_tools,
+                                    ),
+                                    "_length_continuation_nudge": True,
+                                })
+                                agent._session_messages = messages
+                                agent._vprint(
+                                    f"{agent.log_prefix}↻ Stream interrupted "
+                                    f"after partial output — one continuation "
+                                    f"(non-streaming)..."
+                                )
+                                _retry.restart_with_length_continuation = True
+                                break
+
+                            # EXHAUSTED — the bounded recovery already ran and
+                            # the connection dropped again.  Never loop back
+                            # into streaming; hand off or stop honestly.
+                            _transport_recovery = _tr_plan.next_state
+                            if agent._has_pending_fallback():
+                                agent._buffer_status(
+                                    "⚠️ Stream kept dropping — trying fallback..."
+                                )
+                            if agent._try_activate_fallback():
+                                # Roll the checkpointed partial back to the last
+                                # clean turn so the fallback provider starts from
+                                # a coherent point, mirroring the content-filter
+                                # escalation above.
+                                if truncated_response_parts:
+                                    messages = agent._get_messages_up_to_last_assistant(messages)
+                                for _frag in messages:
+                                    if isinstance(_frag, dict):
+                                        _frag.pop("_length_continuation_fragment", None)
+                                        _frag.pop("_length_continuation_nudge", None)
+                                agent._session_messages = messages
+                                truncated_response_parts = []
+                                length_continue_retries = 0
+                                _transport_recovery = TransportRecoveryState.NONE
+                                active_system_prompt = _sync_failover_system_message(
+                                    agent, api_messages, active_system_prompt)
+                                retry_count = 0
+                                compression_attempts = 0
+                                _retry.primary_recovery_attempted = False
+                                _retry.restart_with_rebuilt_messages = True
+                                break
+
+                            agent._flush_status_buffer()
+                            _tr_partial = agent._strip_think_blocks(
+                                _join_truncated_parts(truncated_response_parts)
+                            ).strip()
+                            agent._vprint(
+                                f"{agent.log_prefix}❌ Stream interrupted again "
+                                f"after the non-streaming retry — stopping "
+                                f"instead of retrying further.",
+                                force=True,
+                            )
+                            # Unanswered continuation scaffolding steers every
+                            # later turn back into this dead response — drop it
+                            # so the next user turn starts clean.
+                            _tr_turn_start = (
+                                current_turn_user_idx + 1
+                                if isinstance(current_turn_user_idx, int)
+                                and current_turn_user_idx >= 0
+                                else 0
+                            )
+                            messages[_tr_turn_start:] = [
+                                m for m in messages[_tr_turn_start:]
+                                if not (
+                                    isinstance(m, dict)
+                                    and (
+                                        m.get("_length_continuation_fragment")
+                                        or m.get("_length_continuation_nudge")
+                                    )
+                                )
+                            ]
+                            if _tr_partial:
+                                append_message(messages, {
+                                    "role": "assistant",
+                                    "content": _tr_partial,
+                                    "finish_reason": "length",
+                                })
+                            agent._session_messages = messages
+                            # A prior tool batch can leave a tool-result tail;
+                            # this path never reaches finalize_turn (#48879).
+                            close_interrupted_tool_sequence(
+                                messages,
+                                "Stream connection dropped; the turn did not complete",
+                            )
+                            agent._cleanup_task_resources(effective_task_id)
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": _tr_partial or None,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "error": (
+                                    "Stream connection dropped again after a "
+                                    "non-streaming retry"
+                                ),
+                            }
+
                         if assistant_message is not None and not _trunc_has_tool_calls:
                             length_continue_retries += 1
                             # An EMPTY partial-stream stub (stream dropped
@@ -6482,6 +6700,13 @@ def run_conversation(
             continue
 
         if _retry.restart_with_length_continuation:
+            if _transport_recovery is TransportRecoveryState.PARTIAL_CONTINUATION:
+                # Transport continuation: the provider never reported an
+                # output cap, so the budget must not move.  Boosting here is
+                # what made a network drop look like — and cost like — a
+                # genuine output truncation.
+                agent._ephemeral_max_output_tokens = None
+                continue
             # Progressively boost the output token budget on each retry.
             # Retry 1 → 2× base, retry 2 → 4× base, retry 3 → 8× base,
             # retry 4 → 16× base, then cap at 32 768.

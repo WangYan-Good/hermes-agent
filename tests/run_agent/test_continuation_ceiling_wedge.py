@@ -4,6 +4,12 @@ A turn that exhausts all 4 length-continuation attempts must leave the
 session usable: the next user message issues a fresh upstream request,
 inherits no continuation counter, and the partial text that WAS received
 is surfaced instead of dropped.
+
+The vehicle here is a GENUINE output-cap truncation (the provider completed
+the response protocol and reported ``finish_reason=length``). A mid-stream
+transport drop is a different failure with a different, bounded policy — see
+``test_transport_recovery_convergence.py``; routing one through this ceiling
+is the conflation P1 removed.
 """
 
 from __future__ import annotations
@@ -13,7 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from hermes_constants import FINISH_REASON_LENGTH
 
 
 @pytest.fixture()
@@ -40,9 +46,15 @@ def loop_agent():
 
 
 def _stub(content):
+    """A genuine output-cap truncation: real response id, finish_reason=length.
+
+    Deliberately NOT tagged ``PARTIAL_STREAM_STUB_ID`` — that id marks a
+    swallowed transport failure, which now has its own one-attempt budget and
+    would never reach this ceiling.
+    """
     from tests.run_agent.test_run_agent import _mock_assistant_msg
     return SimpleNamespace(
-        id=PARTIAL_STREAM_STUB_ID,
+        id="chatcmpl-truncated",
         model="test/model",
         choices=[SimpleNamespace(
             index=0,
