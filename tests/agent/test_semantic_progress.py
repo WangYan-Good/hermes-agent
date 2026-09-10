@@ -70,9 +70,49 @@ def test_strategy_change_rearms_even_for_older_action():
     for r in (c, a, a, a):
         tracker.observe(r)
     tracker.mark_request_started()
+    tracker.request_completed()
     assert tracker.before_dispatch(c.actions).action == "allow"
     assert not tracker.guidance_pending
     assert [tracker.observe(c).action for _ in range(3)] == ["allow", "allow", "nudge"]
+
+
+def test_call_id_only_associates_proposal_and_execution():
+    from agent.tool_guardrails import ToolCallGuardrailController, ToolCallSignature
+    proposal = ToolCallSignature.from_call("read_file", {"path": "private proposal"})
+    observations = []
+    for call_id in ("first-id", "another-id"):
+        guard = ToolCallGuardrailController()
+        guard.start_semantic_round({call_id: proposal})
+        guard.record_semantic_call(call_id, "read_file", {"path": "private effective"}, "private result",
+                                   failed=False, dispatched=True, blocked=False)
+        records = guard.take_semantic_round()
+        assert len(records) == 1
+        assert call_id not in repr(records)
+        assert "private" not in repr(records)
+        observations.append(sp.SemanticRoundObservation.from_executions(records))
+    assert observations[0] == observations[1]
+    assert observations[0].actions == {proposal}
+    assert observations[0].results[0].signature != proposal
+
+
+def test_only_durable_new_execution_rearms_spent_episode():
+    from agent.tool_guardrails import SemanticToolObservation, ToolCallSignature
+    tracker = sp.SemanticProgressTracker()
+    a = round_()
+    for _ in range(3):
+        tracker.observe(a)
+    tracker.mark_request_started()
+    b = ToolCallSignature.from_call("read_file", {"path": "b"})
+    assert tracker.before_dispatch([b]).action == "allow"
+    assert tracker.before_dispatch(a.actions).action == "halt"  # no durable B yet
+    blocked = sp.SemanticRoundObservation.from_executions([SemanticToolObservation(b, None, False, True)])
+    tracker.observe(blocked)
+    assert tracker.before_dispatch([b]).action == "halt"
+    changed = sp.SemanticRoundObservation.from_executions([
+        SemanticToolObservation(next(iter(a.actions)), round_("a2").results[0], True, False),
+    ])
+    tracker.observe(changed)
+    assert tracker.before_dispatch(a.actions).action == "allow"
 
 
 def test_redirect_and_independent_trackers_clear_pending_episode():

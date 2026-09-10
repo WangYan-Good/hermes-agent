@@ -711,6 +711,15 @@ def _run_agent_tool_execution_middleware(
         _hb_thread.start()
         try:
             return execute(final_args)
+        except Exception as error:
+            # Preserve actual dispatch identity through the existing outer
+            # exception-to-tool-result path, without changing its exception.
+            from agent.tool_guardrails import ToolCallSignature
+            try:
+                setattr(error, "_hermes_semantic_execution", ToolCallSignature.from_call(function_name, final_args))
+            except Exception:
+                pass
+            raise
         finally:
             _hb_stop.set()
             _hb_thread.join(timeout=2.0)
@@ -1193,6 +1202,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
     results = [None] * num_tools
+    semantic_dispatched = [False] * num_tools
+    semantic_exception_signatures = [None] * num_tools
     for i, (tc, name, args, middleware_trace, block_result, _scope_block) in enumerate(parsed_calls):
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
@@ -1408,6 +1419,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
                 return
             except Exception as tool_error:
+                semantic_exception_signatures[index] = getattr(tool_error, "_hermes_semantic_execution", None)
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
@@ -1427,6 +1439,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, duration, len(result))
+            semantic_dispatched[index] = (dispatched or semantic_exception_signatures[index] is not None) and not blocked
             results[index] = (
                 function_name,
                 function_args,
@@ -1747,6 +1760,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if blocked:
                 effect_disposition = "none"
 
+            agent._tool_guardrails.record_semantic_call(
+                tc.id, function_name, function_args, function_result,
+                failed=is_error, dispatched=semantic_dispatched[i], blocked=blocked,
+                execution_signature=semantic_exception_signatures[i],
+            )
             if not blocked:
                 function_result = agent._append_guardrail_observation(
                     function_name,
@@ -2041,6 +2059,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         middleware_trace: list[dict[str, Any]] = []
         _execution_blocked = False
         _execution_dispatched = False
+        _semantic_exception_signature = None
 
         tool_start_time = time.time()
 
@@ -2310,6 +2329,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 ))
                 _ce_result = function_result
             except Exception as tool_error:
+                _semantic_exception_signature = getattr(tool_error, "_hermes_semantic_execution", None)
                 function_result = json.dumps({"error": f"Context engine tool '{function_name}' failed: {tool_error}"})
                 logger.error("context_engine.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
@@ -2346,6 +2366,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 ))
                 _mem_result = function_result
             except Exception as tool_error:
+                _semantic_exception_signature = getattr(tool_error, "_hermes_semantic_execution", None)
                 function_result = json.dumps({"error": f"Memory tool '{function_name}' failed: {tool_error}"})
                 logger.error("memory_manager.handle_tool_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
@@ -2437,6 +2458,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
                 raise
             except Exception as tool_error:
+                _semantic_exception_signature = getattr(tool_error, "_hermes_semantic_execution", None)
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
@@ -2516,6 +2538,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 )
                 raise
             except Exception as tool_error:
+                _semantic_exception_signature = getattr(tool_error, "_hermes_semantic_execution", None)
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
@@ -2558,6 +2581,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 duration_ms=int(tool_duration * 1000),
                 middleware_trace=list(middleware_trace),
             )
+        agent._tool_guardrails.record_semantic_call(
+            tool_call.id, function_name, function_args, function_result,
+            failed=_is_error_result, dispatched=_execution_dispatched or _semantic_exception_signature is not None,
+            blocked=_execution_blocked,
+            execution_signature=_semantic_exception_signature,
+        )
         if not _execution_blocked:
             function_result = agent._append_guardrail_observation(
                 function_name,

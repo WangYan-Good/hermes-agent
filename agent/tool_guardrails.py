@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from utils import safe_json_loads
@@ -200,6 +200,19 @@ class ToolResultFingerprint:
     landed: bool
 
 
+@dataclass(frozen=True)
+class SemanticToolObservation:
+    """Content-free executor outcome associated with its original proposal.
+
+    Call IDs live only in the collector's lookup, never in this fingerprint.
+    """
+
+    proposal_signature: ToolCallSignature
+    execution: ToolResultFingerprint | None
+    dispatched: bool
+    blocked: bool
+
+
 def fingerprint_tool_result(tool_name, args, result, *, failed=None) -> ToolResultFingerprint:
     if failed is None:
         failed, _ = classify_tool_failure(tool_name, result)
@@ -301,7 +314,8 @@ class ToolCallGuardrailController:
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
-        self._round_results: list[ToolResultFingerprint] | None = None
+        self._round_results: list[ToolResultFingerprint | SemanticToolObservation] | None = None
+        self._round_proposals: dict[str, ToolCallSignature] | None = None
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
@@ -312,14 +326,34 @@ class ToolCallGuardrailController:
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
 
-    def start_semantic_round(self) -> None:
+    def start_semantic_round(self, proposals: Mapping[str, ToolCallSignature] | None = None) -> None:
         """Capture raw evidence only for the batch the conversation loop owns."""
         self._round_results = []
+        self._round_proposals = dict(proposals) if proposals is not None else None
 
-    def take_semantic_round(self) -> list[ToolResultFingerprint]:
+    def record_semantic_call(self, call_id, tool_name, args, result, *, failed, dispatched, blocked,
+                             execution_signature=None):
+        """Consume real executor metadata once, before result decoration.
+
+        A policy/middleware short circuit still completes the proposal, but
+        cannot produce execution evidence. Durability is checked by the loop.
+        """
+        if self._round_results is None or self._round_proposals is None:
+            return
+        proposal = self._round_proposals.pop(call_id, None)
+        if proposal is None:
+            return
+        dispatched = bool(dispatched and not blocked)
+        execution = fingerprint_tool_result(tool_name, args, result, failed=failed) if dispatched else None
+        if execution is not None and execution_signature is not None:
+            execution = replace(execution, signature=execution_signature)
+        self._round_results.append(SemanticToolObservation(proposal, execution, dispatched, bool(blocked)))
+
+    def take_semantic_round(self) -> list[ToolResultFingerprint | SemanticToolObservation]:
         """The caller must establish durability before using this evidence."""
         results = self._round_results or []
         self._round_results = None
+        self._round_proposals = None
         return results
 
     @property
@@ -394,7 +428,7 @@ class ToolCallGuardrailController:
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
 
-        if self._round_results is not None:
+        if self._round_results is not None and self._round_proposals is None:
             self._round_results.append(fingerprint_tool_result(tool_name, args, result, failed=failed))
 
         if failed:

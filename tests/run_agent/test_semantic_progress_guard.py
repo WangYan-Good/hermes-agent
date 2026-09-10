@@ -96,9 +96,164 @@ def nudge_count(server):
 
 def assert_clean(messages):
     assert SEMANTIC_PROGRESS_NUDGE not in json.dumps(messages)
+    assert "proposal_signature" not in json.dumps(messages)
+    assert "_hermes_semantic_execution" not in json.dumps(messages)
     calls = [tc["id"] for m in messages for tc in (m.get("tool_calls") or [])]
     results = [m["tool_call_id"] for m in messages if m.get("role") == "tool"]
     assert sorted(calls) == sorted(results)
+
+
+@pytest.fixture
+def semantic_plugins(monkeypatch):
+    from hermes_cli import plugins
+    manager = plugins.PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    return plugins.PluginContext(plugins.PluginManifest(name="p2-fixture"), manager)
+
+
+@pytest.mark.parametrize("stage", ["tool_request", "tool_execution", "pre_tool_call"])
+@pytest.mark.parametrize("dynamic", [False, True])
+def test_real_argument_rewrite_tracks_execution(loop, semantic_plugins, stage, dynamic):
+    callbacks = []
+    def rewrite(**kwargs):
+        callbacks.append(kwargs["tool_call_id"])
+        args = {"path": f"/canonical/{len(callbacks)}" if dynamic else "/canonical/a"}
+        if stage == "tool_execution":
+            return kwargs["next_call"](args)
+        return {"action": "modify", "args": args} if stage == "pre_tool_call" else {"args": args}
+    register = semantic_plugins.register_hook if stage == "pre_tool_call" else semantic_plugins.register_middleware
+    register(stage, rewrite)
+    script = [call(call_id=f"rewrite{i}") for i in range(4)]
+    if dynamic:
+        script.append(json_ok(content="Distinct actions completed."))
+    agent, server, result, executions, db = loop(script)
+    count = 4 if dynamic else 3
+    assert callbacks == [f"rewrite{i}" for i in range(count)]
+    assert executions == [("read_file", {"path": f"/canonical/{i+1}" if dynamic else "/canonical/a"}) for i in range(count)]
+    assert len(loop.observations) == count
+    assert nudge_count(server) == (0 if dynamic else 1)
+    assert result["turn_exit_reason"] != "guardrail_halt" if dynamic else result["turn_exit_reason"] == "guardrail_halt"
+    assert_clean(result["messages"])
+    assert_clean(db.get_messages(agent.session_id))
+    snapshot = json.loads((agent.logs_dir / f"session_{agent.session_id}.json").read_text(encoding="utf-8"))
+    assert_clean(snapshot["messages"])
+    reloaded = SessionDB(db_path=db.db_path)
+    try:
+        assert_clean(reloaded.get_messages_as_conversation(agent.session_id))
+    finally:
+        reloaded.close()
+
+
+@pytest.mark.parametrize("fresh", [False, True])
+@pytest.mark.parametrize("stage", ["pre_tool_call", "tool_execution", "approval"])
+def test_policy_blocked_novel_attempt_does_not_rearm(loop, semantic_plugins, monkeypatch, fresh, stage):
+    callbacks = []
+    approvals = []
+    if stage == "approval":
+        def deny(*args, **kwargs):
+            approvals.append(args)
+            return {"approved": False, "message": "Denied"}
+        monkeypatch.setattr("tools.approval.request_tool_approval", deny)
+    def policy(**kwargs):
+        callbacks.append(kwargs["tool_call_id"])
+        if kwargs["args"]["path"] == "b":
+            if stage == "tool_execution":
+                return '{"error":"Denied"}'
+            return {"action": "approve" if stage == "approval" else "block", "message": "Denied"}
+        return kwargs["next_call"]() if stage == "tool_execution" else None
+    register = semantic_plugins.register_middleware if stage == "tool_execution" else semantic_plugins.register_hook
+    register("pre_tool_call" if stage == "approval" else stage, policy)
+    def mixed(i):
+        a = call(call_id=f"a{i}")
+        a["payload"]["choices"][0]["message"]["tool_calls"].extend(
+            call("b", call_id=f"b{i}")["payload"]["choices"][0]["message"]["tool_calls"])
+        return a
+    script = [mixed(i) if fresh else call(call_id=f"a{i}") for i in range(3)]
+    script += [mixed(i) for i in range(3, 7)]
+    agent, server, result, executions, db = loop(script)
+    expected = 3 if fresh else 4
+    assert executions == [("read_file", {"path": "a"})] * expected
+    assert len(callbacks) == len(set(callbacks)) == (6 if fresh else 5)
+    assert len(approvals) == ((3 if fresh else 1) if stage == "approval" else 0)
+    assert len(loop.observations) == expected
+    assert nudge_count(server) == 1
+    assert len(server.bodies) == expected + 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert_clean(result["messages"])
+    assert_clean(db.get_messages(agent.session_id))
+
+
+def test_novel_proposal_rewritten_to_old_effect_does_not_rearm(loop, semantic_plugins):
+    callbacks = []
+    def rewrite(**kwargs):
+        callbacks.append(kwargs["tool_call_id"])
+        return {"args": {"path": "/canonical/a"}}
+    semantic_plugins.register_middleware("tool_request", rewrite)
+    agent, server, result, executions, db = loop(
+        [call(call_id=f"a{i}") for i in range(3)] + [call("b", call_id=f"b{i}") for i in range(3)]
+    )
+    assert executions == [("read_file", {"path": "/canonical/a"})] * 4
+    assert callbacks == ["a0", "a1", "a2", "b0"]
+    assert len(loop.observations) == 4
+    assert nudge_count(server) == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert_clean(result["messages"])
+    assert_clean(db.get_messages(agent.session_id))
+
+
+def test_exploratory_dynamic_execution_rearms_after_nudge(loop, semantic_plugins):
+    callbacks = []
+    def rewrite(**kwargs):
+        callbacks.append(kwargs["tool_call_id"])
+        if kwargs["args"]["path"] == "a" and len(callbacks) >= 4:
+            return {"args": {"path": f"a{len(callbacks)}"}}
+    semantic_plugins.register_middleware("tool_request", rewrite)
+    semantic_plugins.register_hook("pre_tool_call", lambda **kw:
+        {"action": "block", "message": "Denied"} if kw["args"]["path"] == "b" else None)
+    mixed = call(call_id="explore-a")
+    mixed["payload"]["choices"][0]["message"]["tool_calls"].extend(
+        call("b", tool="terminal", call_id="explore-b")["payload"]["choices"][0]["message"]["tool_calls"])
+    _, server, result, executions, _ = loop(
+        [call(call_id=f"a{i}") for i in range(3)] + [mixed, call(call_id="continued"), json_ok(content="Progress landed.")]
+    )
+    assert executions == [("read_file", {"path": p}) for p in ("a", "a", "a", "a4", "a6")]
+    assert len(callbacks) == len(set(callbacks)) == 6
+    assert nudge_count(server) == 1
+    assert result["final_response"] == "Progress landed."
+    assert_clean(result["messages"])
+
+
+def test_unpersisted_novel_result_cannot_rearm(loop):
+    def configure(agent):
+        original = agent._flush_messages_to_session_db
+        def flush(messages, *args, **kwargs):
+            if any(m.get("tool_call_id") == "novel" for m in messages):
+                return False
+            return original(messages, *args, **kwargs)
+        agent._flush_messages_to_session_db = flush
+    _, server, result, executions, _ = loop(
+        [call(call_id=f"a{i}") for i in range(3)] + [call("b", call_id="novel")], configure=configure,
+    )
+    assert len(executions) == 4
+    assert len(loop.observations) == 3
+    assert nudge_count(server) == 1
+    assert not result["completed"]
+    assert result["turn_exit_reason"] == "session_persistence_failed"
+
+
+def test_raised_rewritten_tool_retains_actual_execution(loop, semantic_plugins):
+    semantic_plugins.register_middleware("tool_request", lambda **kw: {"args": {"path": "/canonical/a"}})
+    def execute(name, args):
+        raise RuntimeError("fixture tool failed")
+    agent, server, result, executions, db = loop([call(call_id=f"raise{i}") for i in range(4)], output=execute)
+    assert executions == [("read_file", {"path": "/canonical/a"})] * 3
+    assert len(loop.observations) == 3
+    assert all(observation.results[0].failed for observation in loop.observations)
+    assert nudge_count(server) == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert_clean(result["messages"])
+    assert_clean(db.get_messages(agent.session_id))
 
 
 @pytest.mark.parametrize("tool,output", [

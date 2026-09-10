@@ -7473,6 +7473,7 @@ def run_conversation(
                     _turn_exit_reason = "interrupted_by_user"
                     break
                 _semantic_actions = []
+                _semantic_proposals = {}
                 if agent._tool_guardrail_halt_decision is None:
                     if getattr(agent, "_pending_steer", None):
                         semantic_progress.reset()
@@ -7484,6 +7485,7 @@ def run_conversation(
                             # must still participate in semantic convergence.
                             continue
                         _semantic_actions.append(_semantic_action)
+                        _semantic_proposals[tc.id] = _semantic_action
                     _semantic_decision = semantic_progress.before_dispatch(_semantic_actions)
                     if _semantic_decision.action == "halt":
                         _turn_exit_reason = "guardrail_halt"
@@ -7699,7 +7701,7 @@ def run_conversation(
                     except Exception:
                         pass
 
-                agent._tool_guardrails.start_semantic_round()
+                agent._tool_guardrails.start_semantic_round(_semantic_proposals)
                 try:
                     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
                 finally:
@@ -7740,21 +7742,15 @@ def run_conversation(
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
                 # entire conversation.
-                # Invalid bridge results can reach the guardrail observer;
-                # retain only evidence for the executable proposal subset.
-                # Filtering preserves the executor's original call order.
-                _semantic_signatures = set(_semantic_actions)
-                _semantic_results = [
-                    result for result in _semantic_results
-                    if result.signature in _semantic_signatures
-                ]
+                # The executor correlates outcomes by call ID, not argument
+                # equality: middleware may rewrite args or block a valid call.
                 if (
                     not agent._interrupt_requested
                     and not agent._has_pending_redirect()
                     and len(_semantic_results) == len(_semantic_actions)
                 ):
                     if _semantic_actions:
-                        semantic_progress.observe(SemanticRoundObservation.from_fingerprints(_semantic_results))
+                        semantic_progress.observe(SemanticRoundObservation.from_executions(_semantic_results))
                 elif _semantic_actions or agent._interrupt_requested or agent._has_pending_redirect():
                     # Interrupted, steered, or partially executed batches do
                     # not establish a completed no-progress round.

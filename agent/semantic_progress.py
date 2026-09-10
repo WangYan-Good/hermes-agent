@@ -5,7 +5,7 @@ It never classifies provider attempts or internal continuations as tool work.
 """
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from agent.tool_guardrails import ToolCallSignature, ToolResultFingerprint, fingerprint_tool_result
 
@@ -25,6 +25,7 @@ SEMANTIC_PROGRESS_HALT = (
 @dataclass(frozen=True)
 class SemanticRoundObservation:
     results: tuple[ToolResultFingerprint, ...]
+    proposals: frozenset[ToolCallSignature] = field(default_factory=frozenset, compare=False)
 
     @classmethod
     def from_fingerprints(cls, results):
@@ -36,9 +37,19 @@ class SemanticRoundObservation:
     def from_results(cls, results):
         return cls.from_fingerprints(fingerprint_tool_result(*r) for r in results)
 
+    @classmethod
+    def from_executions(cls, records):
+        # Correlation already happened by call ID in the executor collector.
+        # Blocked attempts are remembered for pre-dispatch convergence, but
+        # only actual execution/evidence participates in round equality.
+        observation = cls.from_fingerprints(
+            record.execution for record in records if record.dispatched and record.execution is not None
+        )
+        return cls(observation.results, frozenset(record.proposal_signature for record in records))
+
     @property
     def actions(self) -> frozenset[ToolCallSignature]:
-        return frozenset(r.signature for r in self.results)
+        return self.proposals or frozenset(r.signature for r in self.results)
 
 
 @dataclass(frozen=True)
@@ -56,7 +67,8 @@ class SemanticProgressTracker:
     New actions/results naturally break suffix equality, including revisiting
     an older action after a mutation. Success alone never clears history.
     After delivery, proposals made solely of stalled actions are stopped before
-    dispatch, including split/reordered batches. A novel action rearms the guard.
+    dispatch, including split/reordered batches. Novel proposals may attempt a
+    strategy; only durable new execution/evidence rearms the guard.
     """
 
     def __init__(self):
@@ -65,11 +77,22 @@ class SemanticProgressTracker:
     def reset(self):
         self._rounds = deque(maxlen=4)
         self._stalled_actions = frozenset()
+        self._stalled_evidence = frozenset()
         self._decision = SemanticProgressDecision()
         self._nudged = False
         self.guidance_pending = False
 
     def observe(self, observation: SemanticRoundObservation) -> SemanticProgressDecision:
+        if self._nudged:
+            if any(result not in self._stalled_evidence for result in observation.results):
+                # A proposed strategy is only progress once real execution and
+                # its evidence have crossed the loop's durability boundary.
+                self.reset()
+            else:
+                # One exploratory novel proposal may be blocked or rewrite to
+                # old work. It must not buy another no-progress execution cycle.
+                self._stalled_actions |= observation.actions
+                return SemanticProgressDecision()
         if not observation.results:
             return SemanticProgressDecision()
         self._rounds.append(observation)
@@ -82,6 +105,7 @@ class SemanticProgressTracker:
         if not cycle or self._stalled_actions:
             return SemanticProgressDecision()
         self._stalled_actions = frozenset().union(*(r.actions for r in rounds[-cycle:]))
+        self._stalled_evidence = frozenset(result for r in rounds[-cycle:] for result in r.results)
         self._decision = SemanticProgressDecision(
             "nudge", 3 if cycle == 1 else 4, cycle,
             len(self._stalled_actions), len(observation.results),
@@ -105,5 +129,4 @@ class SemanticProgressTracker:
             d = self._decision
             return SemanticProgressDecision("halt", d.stalled_rounds + 1, d.cycle,
                                             d.unique_actions, len(actions))
-        self.reset()
         return SemanticProgressDecision()
