@@ -87,14 +87,23 @@ def test_redirect_and_independent_trackers_clear_pending_episode():
     assert first.observe(a).action == "allow"
 
 
-def test_parallel_order_does_not_change_identity():
+def test_model_order_changes_identity():
     results = [("read_file", {"path": "a"}, "A"), ("read_file", {"path": "b"}, "B")]
     a = sp.SemanticRoundObservation.from_results(results)
     b = sp.SemanticRoundObservation.from_results(list(reversed(results)))
-    assert a == b
+    assert a != b
     assert results[0][1] == {"path": "a"}
     tracker = sp.SemanticProgressTracker()
-    assert [tracker.observe(r).action for r in (a, b, a)] == ["allow", "allow", "nudge"]
+    assert [tracker.observe(r).action for r in (a, b, a)] == ["allow", "allow", "allow"]
+
+
+@pytest.mark.parametrize("result", [
+    {"_multimodal": True, "content": [{"type": "text", "text": "image"}]},
+    [{"type": "text", "text": "plain result"}],
+])
+def test_structured_result_without_explicit_failure(result):
+    from agent.tool_guardrails import fingerprint_tool_result
+    assert not fingerprint_tool_result("vision_analyze", {}, result).failed
 
 
 def test_request_rebuild_does_not_consume_pending_nudge():

@@ -256,7 +256,7 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     )
 
 
-def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
+def classify_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Safety-fallback classifier used only when callers don't pass ``failed``.
 
     Mirrors ``agent.display._detect_tool_failure`` exactly so the guardrail
@@ -267,6 +267,8 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     """
     if result is None:
         return False, ""
+    if not isinstance(result, str):
+        result = json.dumps(result, ensure_ascii=False, default=str)
     if file_mutation_result_landed(tool_name, result):
         return False, ""
 

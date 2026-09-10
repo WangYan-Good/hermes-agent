@@ -52,7 +52,6 @@ from agent.semantic_progress import (
     SemanticProgressTracker,
     SemanticRoundObservation,
 )
-from agent.tool_guardrails import ToolCallSignature
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
@@ -7473,20 +7472,21 @@ def run_conversation(
                     interrupted = True
                     _turn_exit_reason = "interrupted_by_user"
                     break
+                _semantic_proposal_valid = False
                 if agent._tool_guardrail_halt_decision is None:
                     if getattr(agent, "_pending_steer", None):
                         semantic_progress.reset()
-                    from agent.tool_executor import _parse_tool_arguments
+                    from agent.tool_executor import semantic_action_signature
                     _semantic_actions = []
                     for tc in assistant_message.tool_calls:
-                        _semantic_args, _semantic_arg_error = _parse_tool_arguments(tc.function.arguments)
-                        if _semantic_arg_error or tc.function.name not in agent.valid_tool_names:
+                        _semantic_action = semantic_action_signature(agent, tc)
+                        if _semantic_action is None:
                             # Preserve the executor's role-safe invalid-argument
                             # result and the mixed invalid-name repair path.
-                            semantic_progress.reset()
                             _semantic_actions.clear()
                             break
-                        _semantic_actions.append(ToolCallSignature.from_call(tc.function.name, _semantic_args))
+                        _semantic_actions.append(_semantic_action)
+                    _semantic_proposal_valid = bool(_semantic_actions)
                     _semantic_decision = semantic_progress.before_dispatch(_semantic_actions)
                     if _semantic_decision.action == "halt":
                         _turn_exit_reason = "guardrail_halt"
@@ -7749,8 +7749,9 @@ def run_conversation(
                     and len(_semantic_results) == len(assistant_message.tool_calls)
                     and not _invalid_batch_calls
                 ):
-                    semantic_progress.observe(SemanticRoundObservation.from_fingerprints(_semantic_results))
-                else:
+                    if _semantic_proposal_valid:
+                        semantic_progress.observe(SemanticRoundObservation.from_fingerprints(_semantic_results))
+                elif _semantic_proposal_valid or agent._interrupt_requested or agent._has_pending_redirect():
                     # Interrupted, steered, or partially executed batches do
                     # not establish a completed no-progress round.
                     semantic_progress.reset()

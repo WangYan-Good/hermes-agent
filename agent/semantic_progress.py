@@ -28,9 +28,9 @@ class SemanticRoundObservation:
 
     @classmethod
     def from_fingerprints(cls, results):
-        return cls(tuple(sorted(results, key=lambda r: (
-            r.signature.tool_name, r.signature.args_hash, r.result_hash, r.failed, r.landed,
-        ))))
+        # The executor collects parallel results in model-call order. Preserve
+        # that order: sequential mutations need not commute.
+        return cls(tuple(results))
 
     @classmethod
     def from_results(cls, results):
@@ -99,7 +99,7 @@ class SemanticProgressTracker:
         self.guidance_pending = False
 
     def before_dispatch(self, actions) -> SemanticProgressDecision:
-        if not self._nudged:
+        if not self._nudged or not actions:
             return SemanticProgressDecision()
         if actions and set(actions) <= self._stalled_actions:
             d = self._decision

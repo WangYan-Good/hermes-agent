@@ -409,3 +409,94 @@ def test_same_agent_next_real_turn_starts_clean_and_halt_surfaces_once(loop):
     assert second["completed"] is True
     assert_clean(second["messages"])
     assert_clean(db.get_messages(agent.session_id))
+
+
+@pytest.mark.parametrize("arguments", ["[]", "null", '"scalar"'])
+def test_post_nudge_invalid_proposal_preserves_episode(loop, arguments):
+    malformed = call(call_id="invalid")
+    malformed["payload"]["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = arguments
+    agent, server, result, executions, db = loop(
+        [call(call_id=f"c{i}") for i in range(3)] + [malformed, call(call_id="blocked")]
+    )
+    assert len(executions) == len(loop.observations) == 3
+    assert nudge_count(server) == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert any("Invalid tool arguments" in str(m.get("content")) for m in result["messages"])
+    assert_clean(result["messages"])
+    reloaded = SessionDB(db_path=db.db_path)
+    try:
+        assert_clean(reloaded.get_messages_as_conversation(agent.session_id))
+    finally:
+        reloaded.close()
+
+
+def test_ordered_overlapping_writes_are_not_an_unordered_cycle(loop, tmp_path):
+    target = tmp_path / "ordered.txt"
+    script = []
+    orders = ["XYZ", "YZX", "ZXY"]
+    for i, order in enumerate(orders):
+        calls = []
+        for j, content in enumerate(order):
+            calls.extend(call(tool="write_file", args={"path": str(target), "content": content},
+                              call_id=f"w{i}-{j}")["payload"]["choices"][0]["message"]["tool_calls"])
+        script.append(json_ok(tool_calls=calls, finish_reason="tool_calls"))
+    script.append(json_ok(content="Ordered writes completed."))
+    states = []
+    def write(name, args):
+        target.write_text(args["content"], encoding="utf-8")
+        states.append(target.read_text(encoding="utf-8"))
+        return '{"bytes_written":1}'
+    _, server, result, executions, _ = loop(script, output=write)
+    assert len(executions) == 9
+    assert states == list("".join(orders))
+    assert target.read_text(encoding="utf-8") == "Y"
+    assert nudge_count(server) == 0
+    assert result["final_response"] == "Ordered writes completed."
+    assert_clean(result["messages"])
+
+
+@pytest.mark.parametrize("next_action", ["same", "novel", "invalid_args", "out_of_scope", "probe"])
+def test_deferred_bridge_preserves_semantic_episode(loop, monkeypatch, next_action):
+    import model_tools
+    from tools.registry import registry
+    monkeypatch.setattr(registry, "_tools", dict(registry._tools))
+    landed = []
+    for name in ("mcp_p2_action_a", "mcp_p2_action_b", "mcp_p2_denied"):
+        def handler(args, task_id=None, _name=name, **kwargs):
+            landed.append((_name, dict(args)))
+            return '{"success":true}'
+        registry.register(name=name, toolset="mcp-p2" if name != "mcp_p2_denied" else "mcp-p2-denied",
+                          handler=handler, schema={"name": name, "description": "Test deferred effect",
+                          "parameters": {"type": "object", "properties": {"value": {"type": "string"}},
+                                         "required": ["value"]}})
+    def bridge(name="mcp_p2_action_a", arguments=None, call_id="bridge"):
+        return call(tool="tool_call", args={"name": name, "arguments":
+                    {"value": "X"} if arguments is None else arguments}, call_id=call_id)
+    script = [bridge(call_id=f"b{i}") for i in range(3)]
+    if next_action == "novel":
+        script += [bridge("mcp_p2_action_b"), json_ok(content="New strategy completed.")]
+    else:
+        if next_action == "invalid_args":
+            script.append(bridge(arguments=[]))
+        elif next_action == "out_of_scope":
+            script.append(bridge("mcp_p2_denied"))
+        elif next_action == "probe":
+            script.append(bridge(arguments={}))
+        script.append(bridge(call_id="blocked"))
+    def configure(agent):
+        agent.valid_tool_names.add("tool_call")
+        agent.enabled_toolsets = ["mcp-p2"]
+        agent.disabled_toolsets = []
+    def dispatch(name, args):
+        return model_tools.handle_function_call(name, args, enabled_toolsets=["mcp-p2"])
+    agent, server, result, _, db = loop(script, output=dispatch, configure=configure)
+    assert len(landed) == (4 if next_action == "novel" else 3)
+    assert nudge_count(server) == 1
+    if next_action == "novel":
+        assert landed[-1][0] == "mcp_p2_action_b"
+        assert result["final_response"] == "New strategy completed."
+    else:
+        assert result["turn_exit_reason"] == "guardrail_halt"
+        assert len(loop.observations) == 3
+    assert_clean(result["messages"])
+    assert_clean(db.get_messages(agent.session_id))

@@ -329,6 +329,29 @@ def _emit_cancelled_terminal_post_tool_call(
     return result
 
 
+def semantic_action_signature(agent, tool_call):
+    """Resolve an executable proposal without dispatching or consuming a probe.
+
+    Use the executor's parser and the bridge's own resolver, scope and probe
+    validation. Invalid proposals have no semantic action; recovery still
+    belongs to the executor.
+    """
+    from agent.tool_guardrails import ToolCallSignature
+    from tools import tool_search
+
+    name = tool_call.function.name
+    args, error = _parse_tool_arguments(tool_call.function.arguments)
+    if error or name not in agent.valid_tool_names:
+        return None
+    if name == tool_search.TOOL_CALL_NAME:
+        name, args, error = tool_search.resolve_underlying_call(args)
+        if error or not name or name not in _tool_search_scoped_names(agent):
+            return None
+        if tool_search.validate_deferred_call_args(name, args) is not None:
+            return None
+    return ToolCallSignature.from_call(name, args)
+
+
 def _tool_search_scoped_names(agent) -> frozenset:
     """Return the deferrable tool names the session may invoke via tool_call.
 
