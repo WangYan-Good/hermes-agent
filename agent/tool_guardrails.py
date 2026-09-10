@@ -191,6 +191,27 @@ class ToolCallSignature:
 
 
 @dataclass(frozen=True)
+class ToolResultFingerprint:
+    """Content-free evidence captured before runtime guidance decorates a result."""
+
+    signature: ToolCallSignature
+    result_hash: str
+    failed: bool
+    landed: bool
+
+
+def fingerprint_tool_result(tool_name, args, result, *, failed=None) -> ToolResultFingerprint:
+    if failed is None:
+        failed, _ = classify_tool_failure(tool_name, result)
+    return ToolResultFingerprint(
+        ToolCallSignature.from_call(tool_name, args),
+        _result_hash(result),
+        failed,
+        file_mutation_result_landed(tool_name, result),
+    )
+
+
+@dataclass(frozen=True)
 class ToolGuardrailDecision:
     """Decision returned by the tool-call guardrail controller."""
 
@@ -278,6 +299,7 @@ class ToolCallGuardrailController:
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
+        self._round_results: list[ToolResultFingerprint] | None = None
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
@@ -287,6 +309,16 @@ class ToolCallGuardrailController:
         # single agent loop rather than accumulating across the session.
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+
+    def start_semantic_round(self) -> None:
+        """Capture raw evidence only for the batch the conversation loop owns."""
+        self._round_results = []
+
+    def take_semantic_round(self) -> list[ToolResultFingerprint]:
+        """The caller must establish durability before using this evidence."""
+        results = self._round_results or []
+        self._round_results = None
+        return results
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -351,7 +383,7 @@ class ToolCallGuardrailController:
         self,
         tool_name: str,
         args: Mapping[str, Any] | None,
-        result: str | None,
+        result: Any,
         *,
         failed: bool | None = None,
     ) -> ToolGuardrailDecision:
@@ -359,6 +391,9 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, args)
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
+
+        if self._round_results is not None:
+            self._round_results.append(fingerprint_tool_result(tool_name, args, result, failed=failed))
 
         if failed:
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
@@ -559,8 +594,8 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return args if isinstance(args, Mapping) else {}
 
 
-def _result_hash(result: str | None) -> str:
-    parsed = safe_json_loads(result or "")
+def _result_hash(result: Any) -> str:
+    parsed = safe_json_loads(result or "") if isinstance(result, (str, type(None))) else result
     if parsed is not None:
         try:
             canonical = json.dumps(
