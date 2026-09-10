@@ -500,3 +500,66 @@ def test_deferred_bridge_preserves_semantic_episode(loop, monkeypatch, next_acti
         assert len(loop.observations) == 3
     assert_clean(result["messages"])
     assert_clean(db.get_messages(agent.session_id))
+
+
+@pytest.mark.parametrize("invalid_kind", ["name", "arguments", "scope", "probe"])
+@pytest.mark.parametrize("scenario", ["repeated", "post_nudge", "novel"])
+@pytest.mark.parametrize("invalid_first", [False, True])
+def test_mixed_invalid_batch_tracks_executable_subset(loop, monkeypatch, invalid_kind, scenario, invalid_first):
+    from tools.registry import registry
+    monkeypatch.setattr(registry, "_tools", dict(registry._tools))
+    registry.register(
+        name="mcp_p2_mixed_blocked", toolset="mcp-p2-mixed",
+        handler=lambda *args, **kwargs: pytest.fail("invalid bridge executed"),
+        schema={"name": "mcp_p2_mixed_blocked", "description": "Deferred test tool",
+                "parameters": {"type": "object", "properties": {"value": {"type": "string"}},
+                               "required": ["value"]}},
+    )
+
+    def mixed(path, index):
+        valid = call(path, call_id=f"valid{index}")
+        if invalid_kind == "name":
+            invalid = call(tool="not_a_valid_tool", call_id=f"invalid{index}")
+        elif invalid_kind == "arguments":
+            invalid = call(call_id=f"invalid{index}")
+            invalid["payload"]["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = "[]"
+        else:
+            invalid = call(tool="tool_call", call_id=f"invalid{index}", args={
+                "name": "mcp_p2_mixed_blocked", "arguments": {} if invalid_kind == "probe" else {"value": "X"},
+            })
+        batches = [invalid, valid] if invalid_first else [valid, invalid]
+        calls = [tc for batch in batches for tc in batch["payload"]["choices"][0]["message"]["tool_calls"]]
+        return json_ok(tool_calls=calls, finish_reason="tool_calls")
+
+    def configure(agent):
+        agent.valid_tool_names.add("tool_call")
+        agent.enabled_toolsets = ["mcp-p2-mixed"] if invalid_kind == "probe" else ["terminal"]
+        agent.disabled_toolsets = []
+
+    script = [mixed("a", i) if scenario == "repeated" else call(call_id=f"a{i}") for i in range(3)]
+    script.append(mixed("b" if scenario == "novel" else "a", 3))
+    if scenario == "novel":
+        script += [call("c", call_id="continued"), json_ok(content="New strategy completed.")]
+    agent, server, result, executions, db = loop(script, configure=configure)
+    expected_paths = ["a"] * 3 + (["b", "c"] if scenario == "novel" else [])
+    assert executions == [("read_file", {"path": path}) for path in expected_paths]
+    assert len(loop.observations) == len(expected_paths)
+    assert all(len(observation.results) == 1 for observation in loop.observations)
+    assert nudge_count(server) == 1
+    assert len(server.bodies) == (6 if scenario == "novel" else 4)
+    assert result["completed"] is True
+    if scenario == "novel":
+        assert result["final_response"] == "New strategy completed."
+        assert any(m.get("tool_call_id") == "invalid3" for m in result["messages"])
+    else:
+        assert result["turn_exit_reason"] == "guardrail_halt"
+        assert not any(m.get("tool_call_id") == "valid3" for m in result["messages"])
+    assert_clean(result["messages"])
+    assert_clean(db.get_messages(agent.session_id))
+    snapshot = json.loads((agent.logs_dir / f"session_{agent.session_id}.json").read_text(encoding="utf-8"))
+    assert_clean(snapshot["messages"])
+    reloaded = SessionDB(db_path=db.db_path)
+    try:
+        assert_clean(reloaded.get_messages_as_conversation(agent.session_id))
+    finally:
+        reloaded.close()

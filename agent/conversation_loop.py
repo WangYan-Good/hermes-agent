@@ -7472,21 +7472,18 @@ def run_conversation(
                     interrupted = True
                     _turn_exit_reason = "interrupted_by_user"
                     break
-                _semantic_proposal_valid = False
+                _semantic_actions = []
                 if agent._tool_guardrail_halt_decision is None:
                     if getattr(agent, "_pending_steer", None):
                         semantic_progress.reset()
                     from agent.tool_executor import semantic_action_signature
-                    _semantic_actions = []
                     for tc in assistant_message.tool_calls:
                         _semantic_action = semantic_action_signature(agent, tc)
                         if _semantic_action is None:
-                            # Preserve the executor's role-safe invalid-argument
-                            # result and the mixed invalid-name repair path.
-                            _semantic_actions.clear()
-                            break
+                            # Recovery owns this member, but executable siblings
+                            # must still participate in semantic convergence.
+                            continue
                         _semantic_actions.append(_semantic_action)
-                    _semantic_proposal_valid = bool(_semantic_actions)
                     _semantic_decision = semantic_progress.before_dispatch(_semantic_actions)
                     if _semantic_decision.action == "halt":
                         _turn_exit_reason = "guardrail_halt"
@@ -7743,15 +7740,22 @@ def run_conversation(
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
                 # entire conversation.
+                # Invalid bridge results can reach the guardrail observer;
+                # retain only evidence for the executable proposal subset.
+                # Filtering preserves the executor's original call order.
+                _semantic_signatures = set(_semantic_actions)
+                _semantic_results = [
+                    result for result in _semantic_results
+                    if result.signature in _semantic_signatures
+                ]
                 if (
                     not agent._interrupt_requested
                     and not agent._has_pending_redirect()
-                    and len(_semantic_results) == len(assistant_message.tool_calls)
-                    and not _invalid_batch_calls
+                    and len(_semantic_results) == len(_semantic_actions)
                 ):
-                    if _semantic_proposal_valid:
+                    if _semantic_actions:
                         semantic_progress.observe(SemanticRoundObservation.from_fingerprints(_semantic_results))
-                elif _semantic_proposal_valid or agent._interrupt_requested or agent._has_pending_redirect():
+                elif _semantic_actions or agent._interrupt_requested or agent._has_pending_redirect():
                     # Interrupted, steered, or partially executed batches do
                     # not establish a completed no-progress round.
                     semantic_progress.reset()
