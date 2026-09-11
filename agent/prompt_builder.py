@@ -339,55 +339,64 @@ KANBAN_GUIDANCE = (
     "cross-agent handoffs that outlive one API loop."
 )
 
+# Common execution policy. These clauses have one owner and are selected as a
+# union by build_execution_guidance; legacy config switches remain independent.
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
-    "# Tool-use enforcement\n"
-    "You MUST use your tools to take action — do not describe what you would do "
-    "or plan to do without actually doing it. When you say you will perform an "
-    "action (e.g. 'I will run the tests', 'Let me check the file', 'I will create "
-    "the project'), you MUST immediately make the corresponding tool call in the same "
-    "response. Never end your turn with a promise of future action — execute it now.\n"
-    "Keep working until the task is actually complete. Do not stop with a summary of "
-    "what you plan to do next time. If you have tools available that can accomplish "
-    "the task, use them instead of telling the user what you would do.\n"
-    "Every response should either (a) contain tool calls that make progress, or "
-    "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "For requests to inspect, build, modify, run, or verify, use appropriate tools "
+    "to perform the requested action rather than promising future tool calls. "
+    "Ordinary conceptual questions can be answered directly; tool availability "
+    "alone does not require file inspection, commands, or tests."
+)
+TASK_COMPLETION_GUIDANCE = (
+    "Deliver the requested result, not a plan, stub, or unexecuted command when "
+    "implementation or execution was requested. Never fabricate command output, "
+    "API responses, files, data, or test results."
+)
+EXECUTION_VERIFICATION_GUIDANCE = (
+    "Verify proportionally to the change and the completion claim, checking "
+    "correctness and the requested format. Report only checks actually run; "
+    "do not repeat unchanged expensive checks without new evidence or a state change."
+)
+EXECUTION_CONTEXT_GUIDANCE = (
+    "Retrieve missing context when reasonably available, and resolve necessary "
+    "prerequisites before acting. Use existing evidence when results are empty, "
+    "partial, or failing; retry or change strategy only for a concrete reason. "
+    "Ask for required context or decisions that available tools cannot resolve; "
+    "label any remaining assumptions."
+)
+EXECUTION_STOP_GUIDANCE = (
+    "Stop tool work when the requested result is complete and adequately verified, "
+    "a genuine blocker requires user input, the user interrupts or redirects, or "
+    "runtime safety or convergence controls require stopping. Finish with a concise "
+    "result, actual verification, and any blocker or limitation."
+)
+EXECUTION_SAFETY_GUIDANCE = (
+    "Before side effects, confirm the authorized scope and satisfy required "
+    "approvals; respect destructive-action and tool safety boundaries."
 )
 
-# Model name substrings that trigger tool-use enforcement guidance.
-# Add new patterns here when a model family needs explicit steering.
 TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
 
-# Universal "finish the job" guidance — applied to ALL models, not gated
-# by model family.  Addresses two cross-model failure modes:
-#   1. Stopping after a stub: writing a tiny file or running one command
-#      and then ending the turn with a description of the plan instead
-#      of the finished artifact.  (Observed on Opus during a real
-#      Sarasota real-estate build task: 3 API calls, 85-byte file,
-#      one terminal command, finish_reason=stop.)
-#   2. Fabricating output when a real path is blocked.  When `pip` or a
-#      tool fails, some models will synthesize plausible-looking results
-#      (fake addresses, fake JSON, fake numbers) instead of reporting
-#      the blocker.  (Observed on DeepSeek v4-flash on the same task:
-#      pushed through PEP-668 wall, then returned fabricated listings.)
-#
-# Short on purpose.  This block is shipped to every user, every session,
-# in the cached system prompt — token cost is paid once at install and
-# then amortised across all sessions via prefix caching.  Keep it tight.
-TASK_COMPLETION_GUIDANCE = (
-    "# Finishing the job\n"
-    "When the user asks you to build, run, or verify something, the deliverable is "
-    "a working artifact backed by real tool output — not a description of one. "
-    "Do not stop after writing a stub, a plan, or a single command. Keep working "
-    "until you have actually exercised the code or produced the requested result, "
-    "then report what real execution returned.\n"
-    "If a tool, install, or network call fails and blocks the real path, say so "
-    "directly and try an alternative (different package manager, different "
-    "approach, ask the user). NEVER substitute plausible-looking fabricated "
-    "output (made-up data, invented file contents, synthesised API responses) "
-    "for results you couldn't actually produce. Reporting a blocker honestly "
-    "is always better than inventing a result."
-)
+
+def build_execution_guidance(*, completion: bool, enforcement: bool,
+                             operational: bool = False, coding: bool = False) -> str:
+    """Render each enabled semantic clause once, without per-turn state.
+
+    Completion is universal; enforcement follows its existing model/config gate.
+    Operational models previously supplied verification/context themselves.
+    Coding keeps those capabilities even when both general switches are off.
+    """
+    if not (completion or enforcement or coding):
+        return ""
+    parts = ["# Execution discipline"]
+    if enforcement or coding:
+        parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+    if completion or operational or coding:
+        parts.extend((TASK_COMPLETION_GUIDANCE, EXECUTION_VERIFICATION_GUIDANCE,
+                      EXECUTION_CONTEXT_GUIDANCE))
+    parts.extend((EXECUTION_SAFETY_GUIDANCE, EXECUTION_STOP_GUIDANCE))
+    return "\n".join(parts)
+
 
 # Universal parallel-tool-call guidance — applied to ALL models.
 #
@@ -430,25 +439,10 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "in doubt and the calls are independent, batch them."
 )
 
-# OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
-# where GPT models abandon work on partial results, skip prerequisite lookups,
-# hallucinate instead of using tools, and declare "done" without verification.
-# Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
-# Also applied to xAI Grok — same failure modes in practice (claims completion
-# without tool calls, suggests workarounds instead of using existing tools,
-# replies with plans/suggestions instead of executing). The body is
-# family-agnostic; the OPENAI_ prefix reflects origin, not exclusivity.
+# GPT/Codex/Grok grounding delta: retain the mandatory categories introduced by
+# behavioral benchmarking (#6120, c8a5e36be8). Generic execution policy lives above.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
-    "# Execution discipline\n"
-    "<tool_persistence>\n"
-    "- Use tools whenever they improve correctness, completeness, or grounding.\n"
-    "- Do not stop early when another tool call would materially improve the result.\n"
-    "- If a tool returns empty or partial results, retry with a different query or "
-    "strategy before giving up.\n"
-    "- Keep calling tools until: (1) the task is complete, AND (2) you have verified "
-    "the result.\n"
-    "</tool_persistence>\n"
-    "\n"
+    "# Live tool grounding\n"
     "<mandatory_tool_use>\n"
     "NEVER answer these from memory or mental computation — ALWAYS use a tool:\n"
     "- Arithmetic, math, calculations → use terminal or execute_code\n"
@@ -462,63 +456,18 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "running on. The execution environment may differ from what the user profile "
     "says about their personal setup.\n"
     "</mandatory_tool_use>\n"
-    "\n"
-    "<act_dont_ask>\n"
-    "When a question has an obvious default interpretation, act on it immediately "
-    "instead of asking for clarification. Examples:\n"
-    "- 'Is port 443 open?' → check THIS machine (don't ask 'open where?')\n"
-    "- 'What OS am I running?' → check the live system (don't use user profile)\n"
-    "- 'What time is it?' → run `date` (don't guess)\n"
-    "Only ask for clarification when the ambiguity genuinely changes what tool "
-    "you would call.\n"
-    "</act_dont_ask>\n"
-    "\n"
-    "<prerequisite_checks>\n"
-    "- Before taking an action, check whether prerequisite discovery, lookup, or "
-    "context-gathering steps are needed.\n"
-    "- Do not skip prerequisite steps just because the final action seems obvious.\n"
-    "- If a task depends on output from a prior step, resolve that dependency first.\n"
-    "</prerequisite_checks>\n"
-    "\n"
-    "<verification>\n"
-    "Before finalizing your response:\n"
-    "- Correctness: does the output satisfy every stated requirement?\n"
-    "- Grounding: are factual claims backed by tool outputs or provided context?\n"
-    "- Formatting: does the output match the requested format or schema?\n"
-    "- Safety: if the next step has side effects (file writes, commands, API calls), "
-    "confirm scope before executing.\n"
-    "</verification>\n"
-    "\n"
-    "<missing_context>\n"
-    "- If required context is missing, do NOT guess or hallucinate an answer.\n"
-    "- Use the appropriate lookup tool when missing information is retrievable "
-    "(search_files, web_search, read_file, etc.).\n"
-    "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
-    "- If you must proceed with incomplete information, label assumptions explicitly.\n"
-    "</missing_context>"
+    "For unqualified local-state questions, inspect this execution environment "
+    "(for example its ports, OS, or clock), not the user's remembered setup."
 )
 
-# Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
-# Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
+# Gemini/Gemma tool-operating constraints from #4641 (d89cc7fec1). Path handling
+# and non-interactive flags are retained; generic discovery/action lives above.
 GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "# Google model operational directives\n"
-    "Follow these operational rules strictly:\n"
     "- **Absolute paths:** Always construct and use absolute file paths for all "
     "file system operations. Combine the project root with relative paths.\n"
-    "- **Verify first:** Use read_file/search_files to check file contents and "
-    "project structure before making changes. Never guess at file contents.\n"
-    "- **Dependency checks:** Never assume a library is available. Check "
-    "package.json, requirements.txt, Cargo.toml, etc. before importing.\n"
-    "- **Conciseness:** Keep explanatory text brief — a few sentences, not "
-    "paragraphs. Focus on actions and results over narration.\n"
-    # Parallel-tool-call steering now lives in the universal
-    # PARALLEL_TOOL_CALL_GUIDANCE block (injected for all models), so it is no
-    # longer duplicated here — keeping it would send Gemini/Gemma the same
-    # instruction twice.
     "- **Non-interactive commands:** Use flags like -y, --yes, --non-interactive "
-    "to prevent CLI tools from hanging on prompts.\n"
-    "- **Keep going:** Work autonomously until the task is fully resolved. "
-    "Don't stop with a plan — execute it.\n"
+    "to prevent CLI tools from hanging on prompts, within authorized scope.\n"
 )
 
 
