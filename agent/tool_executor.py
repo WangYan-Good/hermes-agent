@@ -2595,9 +2595,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             )
         agent._tool_guardrails.record_semantic_call(
             tool_call.id, function_name, function_args, function_result,
-            failed=_is_error_result, dispatched=_execution_dispatched or _semantic_exception_signature is not None,
+            failed=_is_error_result,
+            # Starting a worker does not prove its final effect. Preserve the
+            # operational dispatch flag, but never rearm P2 on a deadline.
+            dispatched=not _execution_timed_out and (_execution_dispatched or _semantic_exception_signature is not None),
             blocked=_execution_blocked,
             execution_signature=_semantic_exception_signature,
+            outcome_kind=("timeout" if isinstance(function_result, _ToolTimeoutResult) else
+                          "cancelled" if isinstance(function_result, _ToolCancelledResult) else None),
         )
         if not _execution_blocked:
             function_result = agent._append_guardrail_observation(

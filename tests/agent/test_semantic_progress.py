@@ -171,7 +171,7 @@ def test_multimodal_capture_is_content_free_and_preserves_guardrail_behavior():
     assert "private" not in repr(evidence)
 
 
-def test_zero_effect_period_two_is_stagnation_not_progress():
+def test_zero_effect_alternation_is_stagnation_not_progress():
     from agent.tool_guardrails import SemanticToolObservation, ToolCallSignature
     def denied(path):
         signature = ToolCallSignature.from_call("read_file", {"path": path})
@@ -180,7 +180,7 @@ def test_zero_effect_period_two_is_stagnation_not_progress():
         ])
     a, b = denied("a"), denied("b")
     tracker = sp.SemanticProgressTracker()
-    assert [tracker.observe(r).action for r in (a, b, a, b)] == ["allow", "allow", "allow", "nudge"]
+    assert [tracker.observe(r).action for r in (a, b, a)] == ["allow", "allow", "nudge"]
     tracker.mark_request_started()
     assert tracker.before_dispatch(a.proposal_sequence).action == "halt"
     c = denied("c")
@@ -214,3 +214,32 @@ def test_ordered_durable_evidence_rearms_but_timeout_does_not():
     assert tracker.before_dispatch(yx.proposal_sequence).action == "halt"
     tracker.observe(round_("new-durable-evidence"))
     assert tracker.before_dispatch(yx.proposal_sequence).action == "allow"
+
+
+def test_unique_no_effect_streak_and_exploration_are_bounded():
+    from agent.tool_guardrails import SemanticToolObservation, ToolCallSignature
+    def denied(i):
+        return sp.SemanticRoundObservation.from_executions([
+            SemanticToolObservation(ToolCallSignature.from_call("read_file", {"path": str(i)}),
+                                    None, False, True, "blocked", str(i)),
+        ])
+    tracker = sp.SemanticProgressTracker()
+    assert [tracker.observe(denied(i)).action for i in range(3)] == ["allow", "allow", "nudge"]
+    tracker.mark_request_started()
+    assert tracker.before_dispatch(denied(3).proposal_sequence).action == "allow"
+    tracker.observe(denied(3))
+    assert tracker.before_dispatch(denied(4).proposal_sequence).action == "halt"
+    tracker.reset()  # an actual user redirect rebases even exhausted exploration
+    assert tracker.before_dispatch(denied(4).proposal_sequence).action == "allow"
+    assert tracker.observe(denied(4)).action == "allow"
+
+
+def test_durable_execution_clears_no_effect_streak():
+    from agent.tool_guardrails import SemanticToolObservation, ToolCallSignature
+    denied = sp.SemanticRoundObservation.from_executions([
+        SemanticToolObservation(ToolCallSignature.from_call("read_file", {"path": "blocked"}),
+                                None, False, True, "blocked", "denied"),
+    ])
+    tracker = sp.SemanticProgressTracker()
+    assert [tracker.observe(r).action for r in (denied, denied, round_("landed"), denied, denied)] == ["allow"] * 5
+    assert tracker.observe(denied).action == "nudge"
