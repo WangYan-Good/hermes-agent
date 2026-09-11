@@ -43,10 +43,9 @@ from agent.prompt_builder import (
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
-    TASK_COMPLETION_GUIDANCE,
     TELEGRAM_RICH_MESSAGES_HINT,
-    TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    build_execution_guidance,
     drain_truncation_warnings,
 )
 from agent.runtime_cwd import resolve_context_cwd
@@ -392,14 +391,63 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
-    # Universal task-completion / no-fabrication guidance.  Applied to ALL
-    # models regardless of tool_use_enforcement gating — the failure modes
-    # this targets (stopping after a stub; fabricating output when a real
-    # path is blocked) are not model-family specific.  Gated only by
-    # config.yaml ``agent.task_completion_guidance`` (default True) so
-    # users who want a leaner prompt can turn it off.
-    if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
-        stable_parts.append(TASK_COMPLETION_GUIDANCE)
+    # Tool-use enforcement: tells the model to actually call tools instead
+    # of describing intended actions.  Controlled by config.yaml
+    # agent.tool_use_enforcement:
+    #   "auto" (default) — matches TOOL_USE_ENFORCEMENT_MODELS
+    #   true  — always inject (all models)
+    #   false — never inject
+    #   list  — custom model-name substrings to match
+    _inject = False
+    if agent.valid_tool_names:
+        _enforce = agent._tool_use_enforcement
+        _inject = False
+        if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):
+            _inject = True
+        elif _enforce is False or (isinstance(_enforce, str) and _enforce.lower() in {"false", "never", "no", "off"}):
+            _inject = False
+        elif isinstance(_enforce, list):
+            model_lower = (agent.model or "").lower()
+            _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
+        else:
+            # "auto" or any unrecognised value — use hardcoded defaults
+            model_lower = (agent.model or "").lower()
+            _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
+
+    # Coding posture (base Hermes, any interactive coding surface in a code
+    # workspace — see agent/coding_context.py). Keep the operating brief in
+    # the cross-session-stable prefix, while placing the live git/workspace
+    # snapshot behind its own cache boundary. The post-snapshot blocks must
+    # stay in their historical position after the workspace snapshot.
+    coding_prefix_parts: List[str] = []
+    coding_workspace_parts: List[str] = []
+    coding_trailing_parts: List[str] = []
+    if agent.valid_tool_names:
+        try:
+            from agent.coding_context import coding_system_prompt_parts
+
+            coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = coding_system_prompt_parts(
+                platform=agent.platform,
+                cwd=resolve_context_cwd(),
+                model=agent.model,
+                include_execution_guidance=False,
+            )
+        except Exception:
+            # Coding-context probing must never block prompt build.
+            pass
+
+    # One stable contract, selected by the existing independent gates. Coding
+    # posture is resolved once; its snapshot is still emitted in the context tier.
+    _operational = _inject and any(p in (agent.model or "").lower()
+                                  for p in ("gpt", "codex", "grok", "gemini", "gemma"))
+    if agent.valid_tool_names:
+        execution = build_execution_guidance(
+            completion=getattr(agent, "_task_completion_guidance", True),
+            enforcement=_inject, operational=_operational,
+            coding=bool(coding_prefix_parts),
+        )
+        if execution:
+            stable_parts.append(execution)
 
     # Universal parallel-tool-call guidance.  Tells the model to batch
     # independent tool calls into one assistant turn rather than emitting one
@@ -409,7 +457,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # round-trips and the resent-context cost that compounds over a long
     # conversation.  Gated by config.yaml ``agent.parallel_tool_call_guidance``
     # (default True) and only injected when tools are actually loaded.
-    if getattr(agent, "_parallel_tool_call_guidance", True) and agent.valid_tool_names:
+    if agent.valid_tool_names and (getattr(agent, "_parallel_tool_call_guidance", True) or coding_prefix_parts):
         stable_parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
@@ -449,41 +497,14 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
         stable_parts.append(nous_subscription_prompt)
-    # Tool-use enforcement: tells the model to actually call tools instead
-    # of describing intended actions.  Controlled by config.yaml
-    # agent.tool_use_enforcement:
-    #   "auto" (default) — matches TOOL_USE_ENFORCEMENT_MODELS
-    #   true  — always inject (all models)
-    #   false — never inject
-    #   list  — custom model-name substrings to match
-    if agent.valid_tool_names:
-        _enforce = agent._tool_use_enforcement
-        _inject = False
-        if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):
-            _inject = True
-        elif _enforce is False or (isinstance(_enforce, str) and _enforce.lower() in {"false", "never", "no", "off"}):
-            _inject = False
-        elif isinstance(_enforce, list):
-            model_lower = (agent.model or "").lower()
-            _inject = any(p.lower() in model_lower for p in _enforce if isinstance(p, str))
-        else:
-            # "auto" or any unrecognised value — use hardcoded defaults
-            model_lower = (agent.model or "").lower()
-            _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
-        if _inject:
-            stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
-            _model_lower = (agent.model or "").lower()
-            # Google model operational guidance (conciseness, absolute
-            # paths, parallel tool calls, verify-before-edit, etc.)
-            if "gemini" in _model_lower or "gemma" in _model_lower:
-                stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
-            # OpenAI GPT/Codex execution discipline (tool persistence,
-            # prerequisite checks, verification, anti-hallucination).
-            # Also applied to xAI Grok — same failure modes (claims completion
-            # without tool calls, suggests workarounds instead of using
-            # existing tools, replies with plans instead of executing).
-            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
-                stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+    if _inject:
+        _model_lower = (agent.model or "").lower()
+        # Google-specific file paths and command flags.
+        if "gemini" in _model_lower or "gemma" in _model_lower:
+            stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+        # Benchmark-backed GPT/Codex/Grok grounding categories.
+        if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
+            stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:
@@ -537,26 +558,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _env_hints:
         stable_parts.append(_env_hints)
 
-    # Coding posture (base Hermes, any interactive coding surface in a code
-    # workspace — see agent/coding_context.py). Keep the operating brief in
-    # the cross-session-stable prefix, while placing the live git/workspace
-    # snapshot behind its own cache boundary. The post-snapshot blocks must
-    # stay in their historical position after the workspace snapshot.
-    coding_workspace_parts: List[str] = []
-    coding_trailing_parts: List[str] = []
-    if agent.valid_tool_names:
-        try:
-            from agent.coding_context import coding_system_prompt_parts
-
-            coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = coding_system_prompt_parts(
-                platform=agent.platform,
-                cwd=resolve_context_cwd(),
-                model=agent.model,
-            )
-            stable_parts.extend(coding_prefix_parts)
-        except Exception:
-            # Coding-context probing must never block prompt build.
-            pass
+    stable_parts.extend(coding_prefix_parts)
 
     # Guidance assembled after the coding posture historically followed the
     # workspace snapshot. With no snapshot, the coding tail instead remains

@@ -961,7 +961,8 @@ class TestToolUseEnforcementGuidance:
 
 
     def test_guidance_requires_action(self):
-        assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE
+        assert "perform the requested action" in TOOL_USE_ENFORCEMENT_GUIDANCE
+        assert "conceptual questions can be answered directly" in TOOL_USE_ENFORCEMENT_GUIDANCE
 
 
 
@@ -975,10 +976,11 @@ class TestOpenAIModelExecutionGuidance:
 
 
 
-    def test_guidance_covers_verification(self):
+    def test_guidance_retains_grounding_not_common_verification(self):
         text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
-        assert "verification" in text or "verify" in text
-        assert "correctness" in text
+        assert "mandatory_tool_use" in text
+        assert "arithmetic" in text
+        assert "<verification>" not in text
 
 
 
@@ -1011,5 +1013,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

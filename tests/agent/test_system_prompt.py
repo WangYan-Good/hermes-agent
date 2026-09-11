@@ -205,6 +205,10 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
     monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
     monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
+    # This test isolates ordering of the unrelated scaffold/workspace blocks.
+    # Execution-policy presence and coding fallback have real-assembly tests.
+    monkeypatch.setattr(system_prompt, "build_execution_guidance", lambda **kwargs: "")
+    monkeypatch.setattr(system_prompt, "PARALLEL_TOOL_CALL_GUIDANCE", "")
     monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
 
     expected_profile = (

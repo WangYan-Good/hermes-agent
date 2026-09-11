@@ -222,17 +222,12 @@ CODING_AGENT_GUIDANCE = (
     "- Read the relevant files with `read_file` and locate code with "
     "`search_files` before changing anything. Trace a symbol to its definition "
     "and usages rather than guessing its shape.\n"
-    "- Batch independent lookups: when several reads/searches don't depend on "
-    "each other, issue them together in one turn instead of one at a time.\n"
-    "- Never invent files, symbols, APIs, or imports. If you haven't seen it in "
-    "the repo, go look. Don't assume a library is available — check the project "
+    "- Check available libraries against the project "
     "manifest (pyproject.toml / package.json / Cargo.toml / go.mod) and how "
     "neighbouring files import it.\n"
     "\n"
-    "Make changes through the tools, not the chat:\n"
-    "- Edit with `patch`/`write_file`. Do NOT print code blocks to the user as "
-    "a substitute for editing — apply the change, then summarise it. Only show "
-    "code when the user explicitly asks to see it.\n"
+    "Repository editing conventions:\n"
+    "- Use `patch`/`write_file` for requested edits.\n"
     "- Match the project's existing style and conventions; AGENTS.md / "
     "CLAUDE.md / .cursorrules already in context win over your defaults. Touch "
     "only what the task needs — no drive-by refactors, renames, or reformatting "
@@ -242,9 +237,8 @@ CODING_AGENT_GUIDANCE = (
     "fails twice, rewrite the enclosing function or file with `write_file` "
     "instead of attempting a third patch.\n"
     "\n"
-    "Verify, and know when to stop:\n"
-    "- Use `terminal` for git, builds, tests, and inspection. Run the relevant "
-    "tests/linter/build and confirm they pass before claiming the work is done.\n"
+    "Coding tool workflow:\n"
+    "- Use `terminal` for git, builds, tests, and inspection.\n"
     "- Terminal state persists across calls: current directory and exported "
     "environment variables carry forward. Activate a virtualenv or export setup "
     "vars once, then reuse that state instead of re-sourcing it before every "
@@ -520,7 +514,7 @@ class RuntimeMode:
             return None
         return [self.profile.toolset, *_enabled_mcp_servers(config)]
 
-    def system_prompt_parts(self) -> tuple[list[str], list[str], list[str]]:
+    def system_prompt_parts(self, *, include_execution_guidance: bool = True) -> tuple[list[str], list[str], list[str]]:
         """Return prefix, workspace, and trailing posture blocks separately.
 
         The operating brief carries a model-family edit-format nudge appended
@@ -539,6 +533,11 @@ class RuntimeMode:
         trailing: list[str] = []
         if self.profile.guidance:
             brief = self.profile.guidance
+            if include_execution_guidance:
+                from agent.prompt_builder import build_execution_guidance, PARALLEL_TOOL_CALL_GUIDANCE
+                brief = "\n\n".join((build_execution_guidance(
+                    completion=False, enforcement=False, coding=True),
+                    PARALLEL_TOOL_CALL_GUIDANCE, brief))
             edit_line = _edit_format_line(self.model)
             if edit_line:
                 brief = f"{brief}\n{edit_line}"
@@ -666,11 +665,12 @@ def coding_system_prompt_parts(
     cwd: Optional[str | Path] = None,
     config: Optional[dict[str, Any]] = None,
     model: Optional[str] = None,
+    include_execution_guidance: bool = True,
 ) -> tuple[list[str], list[str], list[str]]:
     """Return coding prefix, workspace snapshot, and trailing guidance."""
     return resolve_runtime_mode(
         platform=platform, cwd=cwd, config=config, model=model
-    ).system_prompt_parts()
+    ).system_prompt_parts(include_execution_guidance=include_execution_guidance)
 
 
 def coding_compact_skill_categories(
