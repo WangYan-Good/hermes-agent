@@ -1708,6 +1708,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 middleware_trace=list(middleware_trace),
             )
             tool_duration = float(timeout_s or 0.0)
+            agent._tool_guardrails.record_semantic_call(
+                tc.id, name, args, function_result, failed=True, dispatched=False,
+                blocked=False, outcome_kind="timeout",
+            )
         elif r is None:
             # Tool was cancelled (interrupt) or thread didn't return
             if agent._interrupt_requested:
@@ -1739,6 +1743,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     middleware_trace=list(middleware_trace),
                 )
             tool_duration = 0.0
+            agent._tool_guardrails.record_semantic_call(
+                tc.id, name, args, function_result, failed=True, dispatched=False,
+                blocked=False, outcome_kind="missing_result",
+            )
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked, middleware_trace = r
             name = function_name
@@ -1993,6 +2001,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_call.function.arguments
         )
         if malformed_args_result is not None:
+            agent._tool_guardrails.record_semantic_call(
+                tool_call.id, function_name, function_args, malformed_args_result,
+                failed=True, dispatched=False, blocked=True, outcome_kind="invalid_arguments",
+            )
             _emit_terminal_post_tool_call(
                 agent,
                 function_name=function_name,

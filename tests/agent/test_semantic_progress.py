@@ -169,3 +169,48 @@ def test_multimodal_capture_is_content_free_and_preserves_guardrail_behavior():
     assert decision.action == "allow"
     assert len(evidence) == 1
     assert "private" not in repr(evidence)
+
+
+def test_zero_effect_period_two_is_stagnation_not_progress():
+    from agent.tool_guardrails import SemanticToolObservation, ToolCallSignature
+    def denied(path):
+        signature = ToolCallSignature.from_call("read_file", {"path": path})
+        return sp.SemanticRoundObservation.from_executions([
+            SemanticToolObservation(signature, None, False, True, "blocked", "stable-hash"),
+        ])
+    a, b = denied("a"), denied("b")
+    tracker = sp.SemanticProgressTracker()
+    assert [tracker.observe(r).action for r in (a, b, a, b)] == ["allow", "allow", "allow", "nudge"]
+    tracker.mark_request_started()
+    assert tracker.before_dispatch(a.proposal_sequence).action == "halt"
+    c = denied("c")
+    assert tracker.before_dispatch(c.proposal_sequence).action == "allow"
+    tracker.observe(c)
+    assert tracker.before_dispatch(c.proposal_sequence).action == "halt"
+    assert tracker.before_dispatch(a.proposal_sequence).action == "halt"
+
+
+def test_ordered_durable_evidence_rearms_but_timeout_does_not():
+    from agent.tool_guardrails import SemanticToolObservation, ToolCallSignature
+    x, y = round_(args={"path": "a", "content": "X"}, tool="write_file"), round_(args={"path": "a", "content": "Y"}, tool="write_file")
+    xy = sp.SemanticRoundObservation.from_fingerprints(x.results + y.results)
+    yx = sp.SemanticRoundObservation.from_fingerprints(y.results + x.results)
+    tracker = sp.SemanticProgressTracker()
+    for _ in range(3):
+        tracker.observe(xy)
+    tracker.mark_request_started()
+    assert tracker.before_dispatch(yx.proposal_sequence).action == "allow"
+    tracker.observe(yx)
+    assert tracker.before_dispatch(xy.proposal_sequence).action == "allow"
+    for _ in range(2):
+        tracker.observe(yx)
+    tracker.mark_request_started()
+    novel = ToolCallSignature.from_call("read_file", {"path": "novel"})
+    timeout = sp.SemanticRoundObservation.from_executions([
+        SemanticToolObservation(novel, None, False, False, "timeout", "stable-timeout"),
+    ])
+    tracker.observe(timeout)
+    assert tracker.before_dispatch(timeout.proposal_sequence).action == "halt"
+    assert tracker.before_dispatch(yx.proposal_sequence).action == "halt"
+    tracker.observe(round_("new-durable-evidence"))
+    assert tracker.before_dispatch(yx.proposal_sequence).action == "allow"

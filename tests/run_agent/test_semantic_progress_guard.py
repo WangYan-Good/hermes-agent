@@ -103,6 +103,15 @@ def assert_clean(messages):
     assert sorted(calls) == sorted(results)
 
 
+def assert_durable_clean(agent, result, db):
+    assert_clean(result["messages"])
+    assert_clean(db.get_messages(agent.session_id))
+    snapshot = json.loads((agent.logs_dir / f"session_{agent.session_id}.json").read_text())
+    assert_clean(snapshot["messages"])
+    with SessionDB(db_path=db.db_path) as reopened:
+        assert_clean(reopened.get_messages_as_conversation(agent.session_id))
+
+
 @pytest.fixture
 def semantic_plugins(monkeypatch):
     from hermes_cli import plugins
@@ -573,7 +582,8 @@ def test_post_nudge_invalid_proposal_preserves_episode(loop, arguments):
     agent, server, result, executions, db = loop(
         [call(call_id=f"c{i}") for i in range(3)] + [malformed, call(call_id="blocked")]
     )
-    assert len(executions) == len(loop.observations) == 3
+    assert len(executions) == 3
+    assert sum(bool(o.results) for o in loop.observations) == 3
     assert nudge_count(server) == 1
     assert result["turn_exit_reason"] == "guardrail_halt"
     assert any("Invalid tool arguments" in str(m.get("content")) for m in result["messages"])
@@ -652,7 +662,7 @@ def test_deferred_bridge_preserves_semantic_episode(loop, monkeypatch, next_acti
         assert result["final_response"] == "New strategy completed."
     else:
         assert result["turn_exit_reason"] == "guardrail_halt"
-        assert len(loop.observations) == 3
+        assert sum(bool(o.results) for o in loop.observations) == 3
     assert_clean(result["messages"])
     assert_clean(db.get_messages(agent.session_id))
 
@@ -718,3 +728,111 @@ def test_mixed_invalid_batch_tracks_executable_subset(loop, monkeypatch, invalid
         assert_clean(reloaded.get_messages_as_conversation(agent.session_id))
     finally:
         reloaded.close()
+
+
+@pytest.mark.parametrize("stage", ["pre_tool_call", "approval", "tool_execution"])
+def test_fresh_zero_dispatch_converges(loop, semantic_plugins, monkeypatch, stage):
+    callbacks, approvals = [], []
+    def deny(*args, **kwargs):
+        approvals.append(1)
+        return {"approved": False, "message": "Denied"}
+    monkeypatch.setattr("tools.approval.request_tool_approval", deny)
+    def block(**kwargs):
+        callbacks.append(kwargs["tool_call_id"])
+        if stage == "tool_execution":
+            return '{"error":"Denied"}'
+        return {"action": "approve" if stage == "approval" else "block", "message": "Denied"}
+    register = semantic_plugins.register_middleware if stage == "tool_execution" else semantic_plugins.register_hook
+    register("pre_tool_call" if stage == "approval" else stage, block)
+    agent, server, result, executions, db = loop([call(call_id=f"blocked{i}") for i in range(6)])
+    assert executions == []
+    assert len(callbacks) == len(set(callbacks)) == 3
+    assert len(approvals) == (3 if stage == "approval" else 0)
+    assert len(server.bodies) == 4
+    assert nudge_count(server) == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert_durable_clean(agent, result, db)
+
+
+def test_post_nudge_reordered_writes_land(loop, tmp_path):
+    target = tmp_path / "ordered.txt"
+    def batch(order, i):
+        item = call(tool="write_file", args={"path": str(target), "content": order[0]}, call_id=f"x{i}")
+        item["payload"]["choices"][0]["message"]["tool_calls"].extend(
+            call(tool="write_file", args={"path": str(target), "content": order[1]}, call_id=f"y{i}")["payload"]["choices"][0]["message"]["tool_calls"])
+        return item
+    def write(name, args):
+        target.write_text(args["content"])
+        return '{"success":true,"bytes_written":1}'
+    agent, server, result, executions, db = loop(
+        [batch("XY", i) for i in range(3)] + [batch("YX", 3), json_ok(content="Reordered work landed.")], output=write)
+    assert [args["content"] for _, args in executions] == list("XYXYXYYX")
+    assert target.read_text() == "X"
+    assert nudge_count(server) == 1
+    assert result["final_response"] == "Reordered work landed."
+    assert_durable_clean(agent, result, db)
+
+
+@pytest.mark.parametrize("post_nudge", [False, True])
+@pytest.mark.parametrize("missing", [False, True])
+def test_concurrent_timeout_preserves_episode(loop, monkeypatch, post_nudge, missing):
+    release = threading.Event()
+    if missing:
+        from concurrent.futures import Future
+        from tools.daemon_pool import DaemonThreadPoolExecutor
+        original_submit = DaemonThreadPoolExecutor.submit
+        def no_worker_result(self, fn, *args, **kwargs):
+            if not args:
+                return original_submit(self, fn, *args, **kwargs)
+            future = Future()
+            future.set_result(None)
+            return future
+        monkeypatch.setattr("tools.daemon_pool.DaemonThreadPoolExecutor.submit", no_worker_result)
+    monkeypatch.setattr("agent.tool_executor._resolve_concurrent_tool_timeout", lambda: 0.05)
+    def batch(i):
+        item = call("timeout-a", call_id=f"ta{i}")
+        item["payload"]["choices"][0]["message"]["tool_calls"].extend(
+            call("timeout-b", call_id=f"tb{i}")["payload"]["choices"][0]["message"]["tool_calls"])
+        return item
+    def output(name, args):
+        if args["path"].startswith("timeout"):
+            release.wait(10)
+        return "same"
+    try:
+        script = ([call(call_id=f"a{i}") for i in range(3)] if post_nudge else []) + [batch(i) for i in range(6)]
+        agent, server, result, executions, db = loop(script, output=output)
+        assert len(server.bodies) == (5 if post_nudge else 4)
+        assert len(executions) <= (5 if post_nudge else 6)
+        assert nudge_count(server) == 1
+        assert result["turn_exit_reason"] == "guardrail_halt"
+        assert_durable_clean(agent, result, db)
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("kind", ["scope", "probe", "non_object"])
+def test_fresh_invalid_no_effect_converges(loop, monkeypatch, kind):
+    from tools.registry import registry
+    monkeypatch.setattr(registry, "_tools", dict(registry._tools))
+    registry.register(name="mcp_p2_no_effect", toolset="mcp-p2-no-effect",
+                      handler=lambda *args, **kwargs: pytest.fail("Invalid bridge dispatched"),
+                      schema={"name": "mcp_p2_no_effect", "description": "Test",
+                              "parameters": {"type": "object", "properties": {"value": {"type": "string"}},
+                                             "required": ["value"]}})
+    def configure(agent):
+        agent.valid_tool_names.add("tool_call")
+        agent.enabled_toolsets = ["mcp-p2-no-effect"] if kind == "probe" else ["terminal"]
+        agent.disabled_toolsets = []
+    script = []
+    for i in range(6):
+        item = call(tool="tool_call", args={"name": "mcp_p2_no_effect", "arguments": {} if kind == "probe" else {"value": "x"}}, call_id=f"invalid{i}")
+        if kind == "non_object":
+            item = call(call_id=f"invalid{i}")
+            item["payload"]["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"] = "[]"
+        script.append(item)
+    agent, server, result, executions, db = loop(script, configure=configure)
+    assert executions == []
+    assert len(server.bodies) == 4
+    assert nudge_count(server) == 1
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert_durable_clean(agent, result, db)

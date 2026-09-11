@@ -7474,6 +7474,7 @@ def run_conversation(
                     break
                 _semantic_actions = []
                 _semantic_proposals = {}
+                _semantic_invalid_only = False
                 if agent._tool_guardrail_halt_decision is None:
                     if getattr(agent, "_pending_steer", None):
                         semantic_progress.reset()
@@ -7486,6 +7487,18 @@ def run_conversation(
                             continue
                         _semantic_actions.append(_semantic_action)
                         _semantic_proposals[tc.id] = _semantic_action
+                    _semantic_invalid_only = not _semantic_actions
+                    if _semantic_invalid_only:
+                        # Invalid-only calls reaching the executor still produce
+                        # canonical no-effect outcomes. Mixed batches retain the
+                        # executable subset and its existing convergence policy.
+                        from agent.tool_guardrails import ToolCallSignature
+                        for tc in assistant_message.tool_calls:
+                            signature = ToolCallSignature.from_call(
+                                tc.function.name, {"invalid_arguments": json.loads(tc.function.arguments or "{}")},
+                            )
+                            _semantic_actions.append(signature)
+                            _semantic_proposals[tc.id] = signature
                     _semantic_decision = semantic_progress.before_dispatch(_semantic_actions)
                     if _semantic_decision.action == "halt":
                         _turn_exit_reason = "guardrail_halt"
@@ -7701,10 +7714,11 @@ def run_conversation(
                     except Exception:
                         pass
 
-                agent._tool_guardrails.start_semantic_round(_semantic_proposals)
+                agent._tool_guardrails.start_semantic_round(_semantic_proposals, no_effect=_semantic_invalid_only)
                 try:
                     agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
                 finally:
+                    _semantic_round_discarded = not agent._tool_guardrails.semantic_round_active
                     _semantic_results = agent._tool_guardrails.take_semantic_round()
 
                 if getattr(agent, "_incremental_persistence_failed", False):
@@ -7745,15 +7759,16 @@ def run_conversation(
                 # The executor correlates outcomes by call ID, not argument
                 # equality: middleware may rewrite args or block a valid call.
                 if (
-                    not agent._interrupt_requested
+                    not _semantic_round_discarded
+                    and not agent._interrupt_requested
                     and not agent._has_pending_redirect()
                     and len(_semantic_results) == len(_semantic_actions)
                 ):
                     if _semantic_actions:
                         semantic_progress.observe(SemanticRoundObservation.from_executions(_semantic_results))
-                elif _semantic_actions or agent._interrupt_requested or agent._has_pending_redirect():
-                    # Interrupted, steered, or partially executed batches do
-                    # not establish a completed no-progress round.
+                elif _semantic_round_discarded or agent._interrupt_requested or agent._has_pending_redirect():
+                    # A real user redirect rebases the episode. Missing worker
+                    # evidence alone must never restore a fresh loop budget.
                     semantic_progress.reset()
                 truncated_tool_call_retries = 0
 

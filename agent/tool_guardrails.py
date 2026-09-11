@@ -211,6 +211,8 @@ class SemanticToolObservation:
     execution: ToolResultFingerprint | None
     dispatched: bool
     blocked: bool
+    outcome_kind: str = "completed"
+    outcome_hash: str = ""
 
 
 def fingerprint_tool_result(tool_name, args, result, *, failed=None) -> ToolResultFingerprint:
@@ -326,13 +328,14 @@ class ToolCallGuardrailController:
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
 
-    def start_semantic_round(self, proposals: Mapping[str, ToolCallSignature] | None = None) -> None:
+    def start_semantic_round(self, proposals: Mapping[str, ToolCallSignature] | None = None, *, no_effect=False) -> None:
         """Capture raw evidence only for the batch the conversation loop owns."""
         self._round_results = []
+        self._round_no_effect = no_effect
         self._round_proposals = dict(proposals) if proposals is not None else None
 
     def record_semantic_call(self, call_id, tool_name, args, result, *, failed, dispatched, blocked,
-                             execution_signature=None):
+                             execution_signature=None, outcome_kind=None):
         """Consume real executor metadata once, before result decoration.
 
         A policy/middleware short circuit still completes the proposal, but
@@ -343,11 +346,20 @@ class ToolCallGuardrailController:
         proposal = self._round_proposals.pop(call_id, None)
         if proposal is None:
             return
-        dispatched = bool(dispatched and not blocked)
+        dispatched = bool(dispatched and not blocked and not self._round_no_effect)
         execution = fingerprint_tool_result(tool_name, args, result, failed=failed) if dispatched else None
         if execution is not None and execution_signature is not None:
             execution = replace(execution, signature=execution_signature)
-        self._round_results.append(SemanticToolObservation(proposal, execution, dispatched, bool(blocked)))
+        kind = outcome_kind or ("invalid_proposal" if self._round_no_effect else
+                                "blocked" if blocked else "completed" if dispatched else "no_effect")
+        self._round_results.append(SemanticToolObservation(
+            proposal, execution, dispatched, bool(blocked), kind, _result_hash(result),
+        ))
+
+    @property
+    def semantic_round_active(self) -> bool:
+        """False when a real user steer has explicitly discarded this batch."""
+        return self._round_results is not None
 
     def take_semantic_round(self) -> list[ToolResultFingerprint | SemanticToolObservation]:
         """The caller must establish durability before using this evidence."""

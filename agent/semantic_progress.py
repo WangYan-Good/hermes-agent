@@ -25,7 +25,8 @@ SEMANTIC_PROGRESS_HALT = (
 @dataclass(frozen=True)
 class SemanticRoundObservation:
     results: tuple[ToolResultFingerprint, ...]
-    proposals: frozenset[ToolCallSignature] = field(default_factory=frozenset, compare=False)
+    proposals: tuple[ToolCallSignature, ...] = field(default_factory=tuple, compare=False)
+    no_effects: tuple[tuple[ToolCallSignature, str, str], ...] = ()
 
     @classmethod
     def from_fingerprints(cls, results):
@@ -40,16 +41,24 @@ class SemanticRoundObservation:
     @classmethod
     def from_executions(cls, records):
         # Correlation already happened by call ID in the executor collector.
-        # Blocked attempts are remembered for pre-dispatch convergence, but
-        # only actual execution/evidence participates in round equality.
+        # No-effect outcomes identify stagnant rounds without becoming
+        # positive execution evidence that could rearm a spent episode.
         observation = cls.from_fingerprints(
             record.execution for record in records if record.dispatched and record.execution is not None
         )
-        return cls(observation.results, frozenset(record.proposal_signature for record in records))
+        return cls(
+            observation.results, tuple(record.proposal_signature for record in records),
+            tuple((r.proposal_signature, r.outcome_kind, r.outcome_hash) for r in records
+                  if not r.dispatched or r.execution is None),
+        )
 
     @property
     def actions(self) -> frozenset[ToolCallSignature]:
-        return self.proposals or frozenset(r.signature for r in self.results)
+        return frozenset(self.proposal_sequence)
+
+    @property
+    def proposal_sequence(self) -> tuple[ToolCallSignature, ...]:
+        return self.proposals or tuple(r.signature for r in self.results)
 
 
 @dataclass(frozen=True)
@@ -67,7 +76,7 @@ class SemanticProgressTracker:
     New actions/results naturally break suffix equality, including revisiting
     an older action after a mutation. Success alone never clears history.
     After delivery, proposals made solely of stalled actions are stopped before
-    dispatch, including split/reordered batches. Novel proposals may attempt a
+    dispatch, with their execution order preserved. Novel proposals may attempt a
     strategy; only durable new execution/evidence rearms the guard.
     """
 
@@ -77,14 +86,15 @@ class SemanticProgressTracker:
     def reset(self):
         self._rounds = deque(maxlen=4)
         self._stalled_actions = frozenset()
-        self._stalled_evidence = frozenset()
+        self._stalled_evidence = set()
+        self._stalled_sequences = set()
         self._decision = SemanticProgressDecision()
         self._nudged = False
         self.guidance_pending = False
 
     def observe(self, observation: SemanticRoundObservation) -> SemanticProgressDecision:
         if self._nudged:
-            if any(result not in self._stalled_evidence for result in observation.results):
+            if observation.results and observation.results not in self._stalled_evidence:
                 # A proposed strategy is only progress once real execution and
                 # its evidence have crossed the loop's durability boundary.
                 self.reset()
@@ -92,8 +102,9 @@ class SemanticProgressTracker:
                 # One exploratory novel proposal may be blocked or rewrite to
                 # old work. It must not buy another no-progress execution cycle.
                 self._stalled_actions |= observation.actions
+                self._stalled_sequences.add(observation.proposal_sequence)
                 return SemanticProgressDecision()
-        if not observation.results:
+        if not observation.results and not observation.no_effects:
             return SemanticProgressDecision()
         self._rounds.append(observation)
         rounds = list(self._rounds)
@@ -105,7 +116,8 @@ class SemanticProgressTracker:
         if not cycle or self._stalled_actions:
             return SemanticProgressDecision()
         self._stalled_actions = frozenset().union(*(r.actions for r in rounds[-cycle:]))
-        self._stalled_evidence = frozenset(result for r in rounds[-cycle:] for result in r.results)
+        self._stalled_evidence = {r.results for r in rounds[-cycle:]}
+        self._stalled_sequences = {r.proposal_sequence for r in rounds[-cycle:]}
         self._decision = SemanticProgressDecision(
             "nudge", 3 if cycle == 1 else 4, cycle,
             len(self._stalled_actions), len(observation.results),
@@ -125,7 +137,8 @@ class SemanticProgressTracker:
     def before_dispatch(self, actions) -> SemanticProgressDecision:
         if not self._nudged or not actions:
             return SemanticProgressDecision()
-        if actions and set(actions) <= self._stalled_actions:
+        sequence = tuple(actions)
+        if sequence in self._stalled_sequences or (len(sequence) == 1 and sequence[0] in self._stalled_actions):
             d = self._decision
             return SemanticProgressDecision("halt", d.stalled_rounds + 1, d.cycle,
                                             d.unique_actions, len(actions))
