@@ -1,0 +1,60 @@
+name: P3 review gate fix
+
+on:
+  push:
+    branches:
+      - fix/coding-prompt-consolidation-v1
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/coding-prompt-consolidation-v1
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.28"
+      - name: Patch gate independence and regression test
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          prompt = Path("agent/prompt_builder.py")
+          text = prompt.read_text(encoding="utf-8")
+          old = '''    parts = ["# Execution discipline", TOOL_USE_ENFORCEMENT_GUIDANCE]\n    if completion or operational or coding:\n'''
+          new = '''    parts = ["# Execution discipline"]\n    if enforcement or coding:\n        parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)\n    if completion or operational or coding:\n'''
+          if text.count(old) != 1:
+              raise SystemExit("prompt_builder replacement anchor mismatch")
+          prompt.write_text(text.replace(old, new), encoding="utf-8")
+
+          test = Path("tests/agent/test_execution_prompt_contract.py")
+          text = test.read_text(encoding="utf-8")
+          old = '''    assert ("mandatory_tool_use" in prompt) == (enabled and model == "gpt-5")\n    full_contract = completion or (enabled and model == "gpt-5")\n'''
+          new = '''    assert ("mandatory_tool_use" in prompt) == (enabled and model == "gpt-5")\n    assert (pb.TOOL_USE_ENFORCEMENT_GUIDANCE in prompt) == enabled\n    full_contract = completion or (enabled and model == "gpt-5")\n'''
+          if text.count(old) != 1:
+              raise SystemExit("test replacement anchor mismatch")
+          test.write_text(text.replace(old, new), encoding="utf-8")
+          PY
+      - name: Install test dependencies
+        run: uv sync --locked --python 3.11 --extra dev
+      - name: Verify focused contract
+        run: |
+          uv run ruff check agent/prompt_builder.py tests/agent/test_execution_prompt_contract.py
+          uv run pytest -q tests/agent/test_execution_prompt_contract.py
+      - name: Commit review fix
+        shell: bash
+        run: |
+          if git diff --quiet -- agent/prompt_builder.py tests/agent/test_execution_prompt_contract.py; then
+            echo "No patch required"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add agent/prompt_builder.py tests/agent/test_execution_prompt_contract.py
+          git commit -m "fix(agent): preserve tool enforcement gate independence"
+          git push origin HEAD:fix/coding-prompt-consolidation-v1
