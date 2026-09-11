@@ -18,7 +18,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.9.28"
-      - name: Patch gate independence and regression test
+      - name: Patch gate independence and regression tests
         shell: bash
         run: |
           python - <<'PY'
@@ -34,10 +34,28 @@ jobs:
 
           test = Path("tests/agent/test_execution_prompt_contract.py")
           text = test.read_text(encoding="utf-8")
+          old = '''    if tools:\n        assert "Ordinary conceptual questions can be answered directly" in prompt\n        assert "tool availability alone does not require" in prompt\n    else:\n        assert "# Execution discipline" not in prompt\n'''
+          new = '''    if tools:\n        assert pb.TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt\n    else:\n        assert "# Execution discipline" not in prompt\n\n\ndef test_enforced_conceptual_qa_does_not_require_coding_tools(render):\n    prompt = render(\n        "claude-sonnet-4", coding=False, tools=True, completion=False, enforcement=True\n    )\n    assert "Ordinary conceptual questions can be answered directly" in prompt\n    assert "tool availability alone does not require" in prompt\n    assert not re.search(\n        r"(?:always|must|required to) (?:use terminal|run tests|inspect files)", prompt, re.I\n    )\n'''
+          if text.count(old) != 1:
+              raise SystemExit("general QA replacement anchor mismatch")
+          text = text.replace(old, new)
+
           old = '''    assert ("mandatory_tool_use" in prompt) == (enabled and model == "gpt-5")\n    full_contract = completion or (enabled and model == "gpt-5")\n'''
           new = '''    assert ("mandatory_tool_use" in prompt) == (enabled and model == "gpt-5")\n    assert (pb.TOOL_USE_ENFORCEMENT_GUIDANCE in prompt) == enabled\n    full_contract = completion or (enabled and model == "gpt-5")\n'''
           if text.count(old) != 1:
-              raise SystemExit("test replacement anchor mismatch")
+              raise SystemExit("independent gate replacement anchor mismatch")
+          text = text.replace(old, new)
+
+          old = '''            {"tools": True} if mutation == 5 else {}))\n'''
+          new = '''            {} if mutation == 5 else {}))\n'''
+          if text.count(old) != 1:
+              raise SystemExit("mutation kwargs replacement anchor mismatch")
+          text = text.replace(old, new)
+
+          old = '''         " Always use terminal and run tests for conceptual questions.", test_general_qa_does_not_require_coding_tools),\n'''
+          new = '''         " Always use terminal and run tests for conceptual questions.", test_enforced_conceptual_qa_does_not_require_coding_tools),\n'''
+          if text.count(old) != 1:
+              raise SystemExit("mutation gate replacement anchor mismatch")
           test.write_text(text.replace(old, new), encoding="utf-8")
           PY
       - name: Install test dependencies
