@@ -953,3 +953,92 @@ def test_previously_blocked_strategy_can_land_and_rearm(loop, semantic_plugins):
     assert nudge_count(server) == 1
     assert result["final_response"] == "New work landed."
     assert_durable_clean(agent, result, db)
+
+
+@pytest.mark.parametrize("scenario", ["fresh", "volatile", "post_nudge", "period_two"])
+def test_mixed_stale_execution_no_effect_churn(loop, semantic_plugins, scenario):
+    callbacks = []
+    def policy(**kwargs):
+        callbacks.append(kwargs["tool_call_id"])
+        if kwargs["args"]["path"].startswith("blocked"):
+            return {"action": "block", "message": f"Denied {len(callbacks)}"}
+    semantic_plugins.register_hook("pre_tool_call", policy)
+    def mixed(i):
+        path = "b" if scenario == "period_two" and i % 2 else "a"
+        blocked = "blocked" if scenario == "volatile" else f"blocked-{i}"
+        item = call(path, call_id=f"real{i}")
+        item["payload"]["choices"][0]["message"]["tool_calls"].extend(
+            call(blocked, call_id=f"blocked{i}")["payload"]["choices"][0]["message"]["tool_calls"])
+        return item
+    script = ([call(call_id=f"initial{i}") for i in range(3)] if scenario == "post_nudge" else [])
+    script += [mixed(i) for i in range(7)]
+    agent, server, result, executions, db = loop(script, output=lambda name, args: args["path"])
+    count = {"fresh": 4, "volatile": 3, "post_nudge": 4, "period_two": 5}[scenario]
+    expected_paths = list("ababa") if scenario == "period_two" else ["a"] * count
+    assert executions == [("read_file", {"path": p}) for p in expected_paths]
+    assert len(callbacks) == len(set(callbacks)) == (5 if scenario == "post_nudge" else 2 * count)
+    assert len(loop.observations) == count
+    assert nudge_count(server) == 1
+    assert len(server.bodies) == count + 1
+    assert SEMANTIC_PROGRESS_NUDGE in json.dumps(server.bodies[4 if scenario == "period_two" else 3])
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert_durable_clean(agent, result, db)
+
+
+@pytest.mark.parametrize("kind", ["scope", "probe"])
+def test_mixed_stale_execution_invalid_bridge_churn(loop, monkeypatch, kind):
+    from tools.registry import registry
+    monkeypatch.setattr(registry, "_tools", dict(registry._tools))
+    for i in range(6):
+        registry.register(name=f"mcp_p2_mixed_churn_{i}", toolset="mcp-p2-mixed-churn",
+                          handler=lambda *args, **kwargs: pytest.fail("Invalid underlying dispatch"),
+                          schema={"name": f"mcp_p2_mixed_churn_{i}", "description": "Test",
+                                  "parameters": {"type": "object", "properties": {"value": {"type": "string"}},
+                                                 "required": ["value"]}})
+    def configure(agent):
+        agent.valid_tool_names.add("tool_call")
+        agent.enabled_toolsets = ["mcp-p2-mixed-churn"] if kind == "probe" else ["terminal"]
+        agent.disabled_toolsets = []
+    script = []
+    for i in range(6):
+        item = call(call_id=f"real{i}")
+        item["payload"]["choices"][0]["message"]["tool_calls"].extend(
+            call(tool="tool_call", args={"name": f"mcp_p2_mixed_churn_{i if kind == 'scope' else 0}",
+                 "arguments": {"other": str(i)} if kind == "probe" else {"value": "x"}},
+                 call_id=f"invalid{i}")["payload"]["choices"][0]["message"]["tool_calls"])
+        script.append(item)
+    agent, server, result, executions, db = loop(script, configure=configure)
+    assert executions == [("read_file", {"path": "a"})] * 3
+    assert nudge_count(server) == 1
+    assert len(server.bodies) == 4
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    assert_durable_clean(agent, result, db)
+
+
+@pytest.mark.parametrize("progress", ["result", "action", "failure_to_success"])
+def test_mixed_new_durable_evidence_rearms(loop, semantic_plugins, progress):
+    semantic_plugins.register_hook("pre_tool_call", lambda **kw:
+        {"action": "block", "message": f"Denied {kw['args']['path']}"}
+        if kw["args"]["path"].startswith("blocked") else None)
+    script = []
+    for i in range(5):
+        path = "c" if progress == "action" and i >= 3 else "a"
+        item = call(path, call_id=f"real{i}")
+        item["payload"]["choices"][0]["message"]["tool_calls"].extend(
+            call(f"blocked-{i}", call_id=f"blocked{i}")["payload"]["choices"][0]["message"]["tool_calls"])
+        script.append(item)
+    script.append(json_ok(content="New durable evidence accepted."))
+    outputs = []
+    def output(name, args):
+        outputs.append(args["path"])
+        if len(outputs) <= 3:
+            return '{"error":"same failure"}' if progress == "failure_to_success" else "X"
+        return "X" if progress == "action" else "Y"
+    agent, server, result, executions, db = loop(script, output=output)
+    assert len(executions) == 5
+    assert outputs == (["a"] * 3 + ["c"] * 2 if progress == "action" else ["a"] * 5)
+    assert loop.observations[3].results != loop.observations[2].results
+    assert nudge_count(server) == 1
+    assert SEMANTIC_PROGRESS_NUDGE in json.dumps(server.bodies[3])
+    assert result["final_response"] == "New durable evidence accepted."
+    assert_durable_clean(agent, result, db)

@@ -243,3 +243,22 @@ def test_durable_execution_clears_no_effect_streak():
     tracker = sp.SemanticProgressTracker()
     assert [tracker.observe(r).action for r in (denied, denied, round_("landed"), denied, denied)] == ["allow"] * 5
     assert tracker.observe(denied).action == "nudge"
+
+
+@pytest.mark.parametrize("period", [1, 2])
+def test_stale_progress_projection_ignores_no_effect_noise(period):
+    from agent.tool_guardrails import SemanticToolObservation, ToolCallSignature
+    def mixed(i):
+        execution = round_("b" if period == 2 and i % 2 else "a").results[0]
+        blocked = ToolCallSignature.from_call("read_file", {"path": f"blocked-{i}"})
+        return sp.SemanticRoundObservation.from_executions([
+            SemanticToolObservation(execution.signature, execution, True, False),
+            SemanticToolObservation(blocked, None, False, True, "blocked", f"denial-{i}"),
+        ])
+    tracker = sp.SemanticProgressTracker()
+    count = 3 if period == 1 else 4
+    assert [tracker.observe(mixed(i)).action for i in range(count)] == ["allow"] * (count - 1) + ["nudge"]
+    tracker.mark_request_started()
+    assert tracker.before_dispatch(mixed(count).proposal_sequence).action == "allow"
+    tracker.observe(mixed(count))
+    assert tracker.before_dispatch(mixed(count + 1).proposal_sequence).action == "halt"

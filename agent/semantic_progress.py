@@ -91,7 +91,7 @@ class SemanticProgressTracker:
         self._decision = SemanticProgressDecision()
         self._nudged = False
         self._no_effect_streak = 0
-        self._no_effect_exhausted = False
+        self._exploration_exhausted = False
         self.guidance_pending = False
 
     def observe(self, observation: SemanticRoundObservation) -> SemanticProgressDecision:
@@ -105,23 +105,22 @@ class SemanticProgressTracker:
             else:
                 # One exploratory novel proposal may be blocked or rewrite to
                 # old work. It must not buy another no-progress execution cycle.
-                if not observation.results:
-                    # One no-effect exploration spends the opportunity for
-                    # this episode, regardless of the next proposal or text.
-                    self._no_effect_exhausted = True
-                else:
-                    self._stalled_actions |= observation.actions
-                    self._stalled_sequences.add(observation.proposal_sequence)
+                self._exploration_exhausted = True
                 return SemanticProgressDecision()
+        # This streak counts pure absence of execution, not evidence novelty.
+        # Repeated actual evidence is detected independently below.
         self._no_effect_streak = 0 if observation.results else self._no_effect_streak + 1
         self._rounds.append(observation)
         rounds = list(self._rounds)
+        # Diagnostic no-effect identities/text cannot hide stale execution.
+        # Preserve actual execution order, including noncommuting writes.
+        evidence = [r.results for r in rounds]
         cycle = 0
         if self._no_effect_streak >= 3:
             cycle = 1
-        elif len(rounds) >= 3 and rounds[-1] == rounds[-2] == rounds[-3]:
+        elif len(rounds) >= 3 and evidence[-1] == evidence[-2] == evidence[-3]:
             cycle = 1
-        elif len(rounds) == 4 and rounds[:2] == rounds[2:]:
+        elif len(rounds) == 4 and evidence[:2] == evidence[2:]:
             cycle = 2
         if not cycle or self._stalled_actions:
             return SemanticProgressDecision()
@@ -148,7 +147,7 @@ class SemanticProgressTracker:
         if not self._nudged or not actions:
             return SemanticProgressDecision()
         sequence = tuple(actions)
-        if self._no_effect_exhausted or sequence in self._stalled_sequences or (len(sequence) == 1 and sequence[0] in self._stalled_actions):
+        if self._exploration_exhausted or sequence in self._stalled_sequences or (len(sequence) == 1 and sequence[0] in self._stalled_actions):
             d = self._decision
             return SemanticProgressDecision("halt", d.stalled_rounds + 1, d.cycle,
                                             d.unique_actions, len(actions))
