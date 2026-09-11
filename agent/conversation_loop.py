@@ -46,6 +46,12 @@ from agent.turn_context import (
     reanchor_current_turn_user_idx,
 )
 from agent.turn_retry_state import TurnRetryState
+from agent.semantic_progress import (
+    SEMANTIC_PROGRESS_HALT,
+    SEMANTIC_PROGRESS_NUDGE,
+    SemanticProgressTracker,
+    SemanticRoundObservation,
+)
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
@@ -1935,6 +1941,7 @@ def run_conversation(
     # that.  Reset to NONE once a recovery succeeds so a genuinely separate
     # drop later in a long tool loop still gets its own bounded budget.
     _transport_recovery = TransportRecoveryState.NONE
+    semantic_progress = SemanticProgressTracker()
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     # One resolved per-turn compression attempt cap, shared by every site that
@@ -1997,6 +2004,7 @@ def run_conversation(
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         _redirect_text = agent._drain_pending_redirect()
         if _redirect_text:
+            semantic_progress.reset()
             _apply_active_turn_redirect(agent, messages, _redirect_text)
             if isinstance(original_user_message, str):
                 original_user_message = (
@@ -2408,6 +2416,12 @@ def run_conversation(
             _sel_incoming,
             logger=request_logger,
         )
+
+        # Request-copy only: never change the durable transcript or the
+        # conversation's cached system prefix. A preflight compression restart
+        # leaves delivery pending; physical recovery retains the same guidance.
+        if semantic_progress.guidance_pending and not agent._interrupt_requested:
+            api_messages.append({"role": "user", "content": SEMANTIC_PROGRESS_NUDGE})
 
         # Safety net: strip orphaned tool results / add stubs for missing
         # results before sending to the API.  Runs unconditionally — not
@@ -3086,6 +3100,14 @@ def run_conversation(
                     _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    if not agent._interrupt_requested:
+                        _semantic_delivery = semantic_progress.mark_request_started()
+                        if _semantic_delivery.action == "nudge":
+                            logger.warning(
+                                "semantic progress: action=nudge stalled_rounds=%d cycle=%d unique_actions=%d tool_count=%d",
+                                _semantic_delivery.stalled_rounds, _semantic_delivery.cycle,
+                                _semantic_delivery.unique_actions, _semantic_delivery.tool_count,
+                            )
                     if agent.api_mode == "codex_responses":
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,
@@ -6947,6 +6969,7 @@ def run_conversation(
             if agent.api_mode == "anthropic_messages":
                 _normalize_kwargs["strip_tool_prefix"] = agent._is_anthropic_oauth
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
+            semantic_progress.request_completed()
             assistant_message = normalized
             finish_reason = normalized.finish_reason
             
@@ -7439,6 +7462,62 @@ def run_conversation(
                     assistant_message.tool_calls
                 )
 
+                # Intercept before the assistant tool-call row is appended:
+                # a controlled stop must never leave unmatched durable calls.
+                # A redirect/interrupt outranks any semantic decision.
+                if agent._interrupt_requested:
+                    if agent.clear_interrupt(preserve_redirect=True):
+                        semantic_progress.reset()
+                        continue
+                    interrupted = True
+                    _turn_exit_reason = "interrupted_by_user"
+                    break
+                _semantic_actions = []
+                _semantic_proposals = {}
+                _semantic_invalid_only = False
+                if agent._tool_guardrail_halt_decision is None:
+                    if getattr(agent, "_pending_steer", None):
+                        semantic_progress.reset()
+                    from agent.tool_executor import semantic_action_signature
+                    for tc in assistant_message.tool_calls:
+                        _semantic_action = semantic_action_signature(agent, tc)
+                        if _semantic_action is None:
+                            # Recovery owns this member, but executable siblings
+                            # must still participate in semantic convergence.
+                            continue
+                        _semantic_actions.append(_semantic_action)
+                        _semantic_proposals[tc.id] = _semantic_action
+                    _semantic_invalid_only = not _semantic_actions
+                    if _semantic_invalid_only:
+                        # Invalid-only calls reaching the executor still produce
+                        # canonical no-effect outcomes. Mixed batches retain the
+                        # executable subset and its existing convergence policy.
+                        from agent.tool_guardrails import ToolCallSignature
+                        for tc in assistant_message.tool_calls:
+                            signature = ToolCallSignature.from_call(
+                                tc.function.name, {"invalid_arguments": json.loads(tc.function.arguments or "{}")},
+                            )
+                            _semantic_actions.append(signature)
+                            _semantic_proposals[tc.id] = signature
+                    _semantic_decision = semantic_progress.before_dispatch(_semantic_actions)
+                    if _semantic_decision.action == "halt":
+                        _turn_exit_reason = "guardrail_halt"
+                        final_response = SEMANTIC_PROGRESS_HALT
+                        append_message(messages, {"role": "assistant", "content": final_response})
+                        logger.warning(
+                            "semantic progress: action=halt stalled_rounds=%d cycle=%d unique_actions=%d tool_count=%d",
+                            _semantic_decision.stalled_rounds, _semantic_decision.cycle,
+                            _semantic_decision.unique_actions, _semantic_decision.tool_count,
+                        )
+                        agent._safe_print(f"\n{final_response}\n")
+                        if agent.stream_delta_callback:
+                            try:
+                                agent.stream_delta_callback(final_response)
+                                agent.stream_delta_callback(None)
+                            except Exception:
+                                pass
+                        break
+
                 # Mixed-batch invalid-name handling: collect the invalid
                 # calls now so the assistant message (built below) keeps
                 # EVERY call the model emitted — providers require each
@@ -7635,7 +7714,12 @@ def run_conversation(
                     except Exception:
                         pass
 
-                agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                agent._tool_guardrails.start_semantic_round(_semantic_proposals, no_effect=_semantic_invalid_only)
+                try:
+                    agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                finally:
+                    _semantic_round_discarded = not agent._tool_guardrails.semantic_round_active
+                    _semantic_results = agent._tool_guardrails.take_semantic_round()
 
                 if getattr(agent, "_incremental_persistence_failed", False):
                     # A tool result could not be made canonical. Do not send
@@ -7672,6 +7756,20 @@ def run_conversation(
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
                 # entire conversation.
+                # The executor correlates outcomes by call ID, not argument
+                # equality: middleware may rewrite args or block a valid call.
+                if (
+                    not _semantic_round_discarded
+                    and not agent._interrupt_requested
+                    and not agent._has_pending_redirect()
+                    and len(_semantic_results) == len(_semantic_actions)
+                ):
+                    if _semantic_actions:
+                        semantic_progress.observe(SemanticRoundObservation.from_executions(_semantic_results))
+                elif _semantic_round_discarded or agent._interrupt_requested or agent._has_pending_redirect():
+                    # A real user redirect rebases the episode. Missing worker
+                    # evidence alone must never restore a fresh loop budget.
+                    semantic_progress.reset()
                 truncated_tool_call_retries = 0
 
                 # Signal that a paragraph break is needed before the next

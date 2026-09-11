@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
 
 from utils import safe_json_loads
@@ -191,6 +191,42 @@ class ToolCallSignature:
 
 
 @dataclass(frozen=True)
+class ToolResultFingerprint:
+    """Content-free evidence captured before runtime guidance decorates a result."""
+
+    signature: ToolCallSignature
+    result_hash: str
+    failed: bool
+    landed: bool
+
+
+@dataclass(frozen=True)
+class SemanticToolObservation:
+    """Content-free executor outcome associated with its original proposal.
+
+    Call IDs live only in the collector's lookup, never in this fingerprint.
+    """
+
+    proposal_signature: ToolCallSignature
+    execution: ToolResultFingerprint | None
+    dispatched: bool
+    blocked: bool
+    outcome_kind: str = "completed"
+    outcome_hash: str = ""
+
+
+def fingerprint_tool_result(tool_name, args, result, *, failed=None) -> ToolResultFingerprint:
+    if failed is None:
+        failed, _ = classify_tool_failure(tool_name, result)
+    return ToolResultFingerprint(
+        ToolCallSignature.from_call(tool_name, args),
+        _result_hash(result),
+        failed,
+        file_mutation_result_landed(tool_name, result),
+    )
+
+
+@dataclass(frozen=True)
 class ToolGuardrailDecision:
     """Decision returned by the tool-call guardrail controller."""
 
@@ -235,7 +271,7 @@ def canonical_tool_args(args: Mapping[str, Any]) -> str:
     )
 
 
-def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
+def classify_tool_failure(tool_name: str, result: Any) -> tuple[bool, str]:
     """Safety-fallback classifier used only when callers don't pass ``failed``.
 
     Mirrors ``agent.display._detect_tool_failure`` exactly so the guardrail
@@ -246,6 +282,8 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     """
     if result is None:
         return False, ""
+    if not isinstance(result, str):
+        result = json.dumps(result, ensure_ascii=False, default=str)
     if file_mutation_result_landed(tool_name, result):
         return False, ""
 
@@ -278,6 +316,8 @@ class ToolCallGuardrailController:
         self.reset_for_turn()
 
     def reset_for_turn(self) -> None:
+        self._round_results: list[ToolResultFingerprint | SemanticToolObservation] | None = None
+        self._round_proposals: dict[str, ToolCallSignature] | None = None
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
@@ -287,6 +327,46 @@ class ToolCallGuardrailController:
         # single agent loop rather than accumulating across the session.
         self._turn_web_search_count = 0
         self._turn_subagent_count = 0
+
+    def start_semantic_round(self, proposals: Mapping[str, ToolCallSignature] | None = None, *, no_effect=False) -> None:
+        """Capture raw evidence only for the batch the conversation loop owns."""
+        self._round_results = []
+        self._round_no_effect = no_effect
+        self._round_proposals = dict(proposals) if proposals is not None else None
+
+    def record_semantic_call(self, call_id, tool_name, args, result, *, failed, dispatched, blocked,
+                             execution_signature=None, outcome_kind=None):
+        """Consume real executor metadata once, before result decoration.
+
+        A policy/middleware short circuit still completes the proposal, but
+        cannot produce execution evidence. Durability is checked by the loop.
+        """
+        if self._round_results is None or self._round_proposals is None:
+            return
+        proposal = self._round_proposals.pop(call_id, None)
+        if proposal is None:
+            return
+        dispatched = bool(dispatched and not blocked and not self._round_no_effect)
+        execution = fingerprint_tool_result(tool_name, args, result, failed=failed) if dispatched else None
+        if execution is not None and execution_signature is not None:
+            execution = replace(execution, signature=execution_signature)
+        kind = outcome_kind or ("invalid_proposal" if self._round_no_effect else
+                                "blocked" if blocked else "completed" if dispatched else "no_effect")
+        self._round_results.append(SemanticToolObservation(
+            proposal, execution, dispatched, bool(blocked), kind, _result_hash(result),
+        ))
+
+    @property
+    def semantic_round_active(self) -> bool:
+        """False when a real user steer has explicitly discarded this batch."""
+        return self._round_results is not None
+
+    def take_semantic_round(self) -> list[ToolResultFingerprint | SemanticToolObservation]:
+        """The caller must establish durability before using this evidence."""
+        results = self._round_results or []
+        self._round_results = None
+        self._round_proposals = None
+        return results
 
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
@@ -351,7 +431,7 @@ class ToolCallGuardrailController:
         self,
         tool_name: str,
         args: Mapping[str, Any] | None,
-        result: str | None,
+        result: Any,
         *,
         failed: bool | None = None,
     ) -> ToolGuardrailDecision:
@@ -359,6 +439,9 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, args)
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
+
+        if self._round_results is not None and self._round_proposals is None:
+            self._round_results.append(fingerprint_tool_result(tool_name, args, result, failed=failed))
 
         if failed:
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
@@ -559,8 +642,8 @@ def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:
     return args if isinstance(args, Mapping) else {}
 
 
-def _result_hash(result: str | None) -> str:
-    parsed = safe_json_loads(result or "")
+def _result_hash(result: Any) -> str:
+    parsed = safe_json_loads(result or "") if isinstance(result, (str, type(None))) else result
     if parsed is not None:
         try:
             canonical = json.dumps(

@@ -4256,6 +4256,11 @@ def apply_pending_steer_to_tool_results(agent, messages: list, num_tool_msgs: in
             agent._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
         return
     marker = format_steer_marker(steer_text)
+    # The user changed the decision context while tools ran. Discard this
+    # batch's semantic evidence so the outer loop rebases its episode.
+    guardrails = getattr(agent, "_tool_guardrails", None)
+    if guardrails is not None:
+        guardrails.take_semantic_round()
     existing_content = messages[target_idx].get("content", "")
     if not isinstance(existing_content, str):
         # Anthropic multimodal content blocks — preserve them and append

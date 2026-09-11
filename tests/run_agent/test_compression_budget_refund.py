@@ -72,7 +72,9 @@ def _tool_call(i: int):
     return SimpleNamespace(
         id=f"call_{i}",
         type="function",
-        function=SimpleNamespace(name="web_search", arguments='{"query": "x"}'),
+        # A marathon that learns new evidence must keep compacting. Repeating
+        # the exact same action/result is now a semantic convergence case.
+        function=SimpleNamespace(name="web_search", arguments=json.dumps({"query": f"x{i}"})),
     )
 
 
