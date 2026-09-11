@@ -141,10 +141,20 @@ def test_general_qa_does_not_require_coding_tools(render, tools):
     assert "mandatory_tool_use" not in prompt
     assert not re.search(r"(?:always|must|required to) (?:use terminal|run tests|inspect files)", prompt, re.I)
     if tools:
-        assert "Ordinary conceptual questions can be answered directly" in prompt
-        assert "tool availability alone does not require" in prompt
+        assert pb.TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
     else:
         assert "# Execution discipline" not in prompt
+
+
+def test_enforced_conceptual_qa_does_not_require_coding_tools(render):
+    prompt = render(
+        "claude-sonnet-4", coding=False, tools=True, completion=False, enforcement=True
+    )
+    assert "Ordinary conceptual questions can be answered directly" in prompt
+    assert "tool availability alone does not require" in prompt
+    assert not re.search(
+        r"(?:always|must|required to) (?:use terminal|run tests|inspect files)", prompt, re.I
+    )
 
 
 def test_parallel_guidance_has_single_owner(render):
@@ -164,6 +174,7 @@ def test_independent_legacy_gates(render, completion, enforcement, model):
     prompt = render(model, coding=False, completion=completion, enforcement=enforcement)
     assert ("# Execution discipline" in prompt) == (completion or enabled)
     assert ("mandatory_tool_use" in prompt) == (enabled and model == "gpt-5")
+    assert (pb.TOOL_USE_ENFORCEMENT_GUIDANCE in prompt) == enabled
     full_contract = completion or (enabled and model == "gpt-5")
     for clause in (pb.TASK_COMPLETION_GUIDANCE, pb.EXECUTION_VERIFICATION_GUIDANCE,
                    pb.EXECUTION_CONTEXT_GUIDANCE):
@@ -237,14 +248,14 @@ def test_mutation_gates(render, monkeypatch, mutation):
         (pb, "EXECUTION_STOP_GUIDANCE", pb.EXECUTION_STOP_GUIDANCE + SEMANTIC_PROGRESS_NUDGE,
          test_runtime_nudges_are_not_permanent),
         (pb, "TOOL_USE_ENFORCEMENT_GUIDANCE", pb.TOOL_USE_ENFORCEMENT_GUIDANCE +
-         " Always use terminal and run tests for conceptual questions.", test_general_qa_does_not_require_coding_tools),
+         " Always use terminal and run tests for conceptual questions.", test_enforced_conceptual_qa_does_not_require_coding_tools),
         (sp, "OPENAI_MODEL_EXECUTION_GUIDANCE", sp.OPENAI_MODEL_EXECUTION_GUIDANCE +
          "\nBatch independent tool calls.", test_parallel_guidance_has_single_owner),
     ]
     module, name, replacement, gate = cases[mutation]
     kwargs = {"model": "gpt-5"} if mutation == 0 else (
         {"model": "gemini-2.5-pro"} if mutation == 3 else (
-            {"tools": True} if mutation == 5 else {}))
+            {} if mutation == 5 else {}))
     gate(render, **kwargs)
     monkeypatch.setattr(module, name, replacement)
     with pytest.raises(AssertionError):

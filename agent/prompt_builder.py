@@ -388,7 +388,9 @@ def build_execution_guidance(*, completion: bool, enforcement: bool,
     """
     if not (completion or enforcement or coding):
         return ""
-    parts = ["# Execution discipline", TOOL_USE_ENFORCEMENT_GUIDANCE]
+    parts = ["# Execution discipline"]
+    if enforcement or coding:
+        parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
     if completion or operational or coding:
         parts.extend((TASK_COMPLETION_GUIDANCE, EXECUTION_VERIFICATION_GUIDANCE,
                       EXECUTION_CONTEXT_GUIDANCE))
