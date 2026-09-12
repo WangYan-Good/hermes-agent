@@ -1,27 +1,8 @@
-"""Per-attempt recovery bookkeeping for the conversation turn loop.
+"""One-shot recovery guards for a prepared request cycle.
 
-The inner retry loop in ``run_conversation`` (``while retry_count <
-max_retries``) makes several distinct recovery attempts on a single model API
-call: a credential-pool 429 retry, a per-provider OAuth refresh (codex,
-anthropic, nous, copilot), a long-context compression restart, a length-
-continuation restart, and a handful of format-recovery branches (thinking-
-signature stripping, multimodal-tool-content stripping, llama.cpp grammar
-fallback, image shrink, invalid-encrypted-content, 1M-beta header).
-
-Each of those branches is guarded by a one-shot boolean so it fires at most
-once per attempt. They used to be ~16 bare ``*_attempted`` / ``has_retried_*``
-/ ``restart_with_*`` locals declared inline before the loop and threaded
-through its 2,400-line body. ``TurnRetryState`` collapses them into one object
-the loop mutates in place (``state.codex_auth_retry_attempted = True``), giving
-the recovery bookkeeping a single named, testable home.
-
-Loop-control variables (``retry_count``, ``max_retries``,
-``max_compression_attempts``) intentionally stay as plain locals — they are the
-``while`` mechanics, not recovery bookkeeping, and putting them on the object
-would add indirection without clarifying anything.
-
-This module is dependency-free so it can be unit-tested in isolation and
-imported by the turn loop without an import cycle.
+Auth, payload repair, credential rotation, and primary transport refresh keep
+independent guards. They reset when a logical request is rebuilt, not on each
+network attempt. Logical restarts belong to RequestCycle and TurnTransition.
 """
 
 from __future__ import annotations
@@ -31,13 +12,7 @@ from dataclasses import dataclass, fields
 
 @dataclass
 class TurnRetryState:
-    """One-shot recovery guards + restart signals for a single API-call attempt.
-
-    A fresh instance is created for each iteration of the outer turn loop
-    (once per ``api_call_count``). Each guard fires its recovery branch at most
-    once; the ``restart_with_*`` signals are read by the loop after the attempt
-    to decide whether to rebuild the request and retry.
-    """
+    """Attempt recovery bookkeeping; contains no logical restart signals."""
 
     # ── Per-provider OAuth / credential refresh guards ───────────────────
     codex_auth_retry_attempted: bool = False
@@ -73,19 +48,6 @@ class TurnRetryState:
     # credential-refresh attempt above failed) to the fallback chain, so we
     # don't loop on the same auth failover within one attempt.
     auth_failover_attempted: bool = False
-
-    # ── Restart signals (read by the outer loop after the attempt) ───────
-    restart_with_compressed_messages: bool = False
-    restart_with_length_continuation: bool = False
-    # Set when a content-filter stream stall (e.g. MiniMax "new_sensitive")
-    # has been escalated to the fallback chain: the partial-stream content
-    # was rolled back off ``messages`` and the loop should re-issue the API
-    # call against the newly-activated provider (#32421).
-    restart_with_rebuilt_messages: bool = False
-    # A user correction cancelled the in-flight provider request. The outer
-    # loop must append a role-safe checkpoint + user message, rebuild the API
-    # payload, and retry the same logical iteration.
-    restart_with_redirected_messages: bool = False
 
     def __iter__(self):
         # Convenience for debugging / tests: iterate (name, value) pairs.
