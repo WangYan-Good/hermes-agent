@@ -285,14 +285,14 @@ class TestReinjectionBoundsAndRedaction:
 
 class TestSkillsGuidanceSafetyRule:
     def test_safety_rule_present_with_real_newlines(self):
-        from agent.prompt_builder import SKILLS_GUIDANCE
+        from agent.prompt_builder import SKILL_SAFETY_GUIDANCE
 
-        assert "## Skill Safety Rule" in SKILLS_GUIDANCE
-        assert "[SKILL_PRUNED]" in SKILLS_GUIDANCE
-        assert "skill_view(name='...')" in SKILLS_GUIDANCE
+        assert "## Skill Safety Rule" in SKILL_SAFETY_GUIDANCE
+        assert "[SKILL_PRUNED]" in SKILL_SAFETY_GUIDANCE
+        assert "skill_view(name='...')" in SKILL_SAFETY_GUIDANCE
         # The rule list must use REAL newlines — the original PR hunk risked
         # literal backslash-n escape text rendering into the system prompt.
-        assert "\\n" not in SKILLS_GUIDANCE
-        assert SKILLS_GUIDANCE.count("\n") >= 6
+        assert "\\n" not in SKILL_SAFETY_GUIDANCE
+        assert SKILL_SAFETY_GUIDANCE.count("\n") >= 6
         for rule in ("UNAVAILABLE", "RELOAD", "WAIT", "DEDUP"):
-            assert rule in SKILLS_GUIDANCE
+            assert rule in SKILL_SAFETY_GUIDANCE
