@@ -22,7 +22,7 @@ import re
 
 import pytest
 
-from agent.prompt_builder import SKILLS_GUIDANCE
+from agent.prompt_builder import SKILLS_GUIDANCE, SKILL_SAFETY_GUIDANCE
 
 
 # Substrings unique to the rejected sentence. The bisect showed the trigger
@@ -72,15 +72,13 @@ class TestBehaviourIsPreserved:
     def test_skill_safety_rule_block_untouched(self):
         # Guarded independently by tests/agent/test_ghost_skill_pruning.py; asserted
         # here too so a reword of the guidance can't quietly take the block with it.
-        assert "## Skill Safety Rule" in SKILLS_GUIDANCE
+        assert "## Skill Safety Rule" in SKILL_SAFETY_GUIDANCE
         for rule in ("UNAVAILABLE", "RELOAD", "WAIT", "DEDUP"):
-            assert rule in SKILLS_GUIDANCE
+            assert rule in SKILL_SAFETY_GUIDANCE
 
     def test_real_newlines_and_line_count_preserved(self):
-        # test_ghost_skill_pruning.py asserts count("\n") >= 6; the reword must
-        # not drop a line separator on its way past that bound.
-        assert "\\n" not in SKILLS_GUIDANCE
-        assert SKILLS_GUIDANCE.count("\n") >= 6
+        assert "\\n" not in SKILLS_GUIDANCE + SKILL_SAFETY_GUIDANCE
+        assert SKILL_SAFETY_GUIDANCE.count("\n") >= 6
 
 
 class TestGuidanceReachesTheSystemPrompt:

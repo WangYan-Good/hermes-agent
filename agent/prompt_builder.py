@@ -163,8 +163,8 @@ HERMES_AGENT_HELP_GUIDANCE = (
     "it — or when you need to understand your own features, tools, or capabilities, "
     "the documentation at https://hermes-agent.nousresearch.com/docs is your "
     "authoritative reference and always holds the latest, most up-to-date "
-    "information. Load the `hermes-agent` skill with skill_view(name='hermes-agent') "
-    "for additional guidance and proven workflows, but treat the docs as the source "
+    "information. Load the `hermes-agent` skill first with skill_view(name='hermes-agent') "
+    "for guidance and proven workflows, but treat the docs as the source "
     "of truth when the two differ."
 )
 
@@ -214,9 +214,13 @@ SKILLS_GUIDANCE = (
     "for future reuse.\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
     "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
-    "Skills that aren't maintained become liabilities.\n"
-    "\n"
-    "## Skill Safety Rule\n"
+    "Skills that aren't maintained become liabilities."
+)
+
+# Loading and maintenance are independently available tools. A read-only
+# skill session still needs the compression/reload contract.
+SKILL_SAFETY_GUIDANCE = (
+    "\n\n## Skill Safety Rule\n"
     "1. **UNAVAILABLE** — If a skill placeholder contains `[SKILL_PRUNED]`, the skill content was lost in compression and is inaccessible.\n"
     "2. **RELOAD** — Before performing any action that depends on a skill, re-check its content with `skill_view(name='...')` if it shows `[SKILL_PRUNED]`.\n"
     "3. **WAIT** — If a skill is loading or was just pruned, wait for the reload confirmation before proceeding.\n"
@@ -1834,6 +1838,7 @@ def _build_skills_system_prompt_inner(
     # so both entries carry a [name collision] flag and skill_view refuses
     # the ambiguous bare name (its existing multi-candidate guard).
     name_owners: dict[str, set[str]] = {}
+    resolution_annotations: dict[tuple[str, str], list[str]] = {}
     for entry in visible_entries:
         fm = entry.get("frontmatter_name") or entry.get("skill_name") or ""
         kind = "org" if entry.get("org_id") else "personal"
@@ -1843,15 +1848,20 @@ def _build_skills_system_prompt_inner(
         desc = entry.get("description", "")
         org_id = entry.get("org_id")
         collided = len(name_owners.get(fm, set())) > 1
+        annotations = []
         if org_id:
             author = entry.get("org_author") or ""
             tag = f"[org-shared{': by ' + author if author else ''}]"
+            annotations.append(tag)
             desc = f"{tag} {desc}".strip()
             category = f"org:{org_id}"
         else:
             category = entry.get("category") or "general"
         if collided:
-            desc = f"[name collision — also exists {'personally' if org_id else 'in your org'}; load via category path] {desc}".strip()
+            warning = f"[name collision — also exists {'personally' if org_id else 'in your org'}; load via category path]"
+            annotations.insert(0, warning)
+            desc = f"{warning} {desc}".strip()
+        resolution_annotations[(category, fm)] = annotations
         skills_by_category.setdefault(category, []).append((fm, desc))
 
     if snapshot is None:
@@ -1945,9 +1955,9 @@ def _build_skills_system_prompt_inner(
     hidden_note = ""
     if demoted:
         hidden_note = (
-            "\n(Categories marked [names only] are outside the current coding "
-            "context, so their descriptions are omitted — the skills work "
-            "normally and load with skill_view(name) as usual.)"
+            "\n([names only]: descriptions are intentionally omitted; these skills "
+            "still exist and are loadable with skill_view(name). If your task falls "
+            "in such a category, inspect the relevant skill.)"
         )
 
     if not skills_by_category:
@@ -1958,7 +1968,15 @@ def _build_skills_system_prompt_inner(
             # Deduplicate and sort skills within each category
             seen = set()
             if category in demoted:
-                names = sorted({name for name, _ in skills_by_category[category]})
+                # Collision/provenance annotations are resolution metadata, not
+                # descriptions. Keep them even when task descriptions are omitted.
+                names = []
+                for name, _ in sorted(skills_by_category[category], key=lambda x: x[0]):
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    annotations = resolution_annotations.get((category, name), [])
+                    names.append(" ".join([name, *annotations]))
                 index_lines.append(f"  {category} [names only]: {', '.join(names)}")
                 continue
             cat_desc = category_descriptions.get(category, "")
@@ -1979,29 +1997,14 @@ def _build_skills_system_prompt_inner(
             "## Skills (mandatory)\n"
             "Before replying, scan the skills below. If a skill matches or is even partially relevant "
             "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
-            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
-            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
-            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
-            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
+            "Err on the side of loading, even for familiar tasks or ones basic tools could handle: "
+            "skills supply specialized commands, pitfalls, proven workflows, and the user's "
+            "preferred conventions and quality standards. "
+            "Only proceed without loading a skill if genuinely none are relevant to the task.\n"
             "\n"
             "<available_skills>\n"
             + "\n".join(index_lines) + "\n"
             "</available_skills>\n"
-            "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
             + hidden_note
         )
 
