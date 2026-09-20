@@ -1453,6 +1453,11 @@ DEFAULT_CONFIG = {
 
     # Web dashboard settings
     "dashboard": {
+        # Presentation preference only. UI-P1 falls back to Terminal while
+        # the Native Chat renderer is unavailable.
+        "chat": {
+            "default_mode": "terminal",
+        },
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
         # Process-isolation rollout controls. Runtime reads these through the
         # raw config loader, so tui_gateway.server also owns explicit defaults.

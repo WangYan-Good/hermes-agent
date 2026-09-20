@@ -1284,6 +1284,12 @@ def _build_schema_from_config(
         if full_key in {"_config_version"}:
             continue
 
+        # UI-P1 establishes a config contract, not a mode-switching Settings
+        # control. Keep it available through /api/config and raw YAML only
+        # until the presentation-switching UI is ready.
+        if full_key == "dashboard.chat.default_mode":
+            continue
+
         # Category is the first path component for nested keys, or "general"
         # for top-level scalar fields (model, toolsets, timezone, etc.).
         if prefix:
