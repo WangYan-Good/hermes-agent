@@ -4,10 +4,9 @@ import {
   ExportedMessageRepository,
   type ThreadMessage
 } from '@assistant-ui/react'
+import { useIncrementalExternalStoreRuntime } from '@hermes/chat-ui'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-
-import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 
 import { Thread } from '.'
 

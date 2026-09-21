@@ -1,11 +1,12 @@
-import { MessageRepository } from '@assistant-ui/core/internal'
-import { renderHook } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { useIncrementalExternalStoreRuntime } from '@hermes/chat-ui'
+import { cleanup, renderHook } from '@testing-library/react'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
-import { syncRepositoryIncrementally } from '@/lib/incremental-external-store-runtime'
 
 import { useRuntimeMessageRepository } from './runtime-repository'
+
+afterEach(cleanup)
 
 const text = (id: string, role: ChatMessage['role'], body: string): ChatMessage => ({
   id,
@@ -13,13 +14,14 @@ const text = (id: string, role: ChatMessage['role'], body: string): ChatMessage 
   parts: [{ type: 'text', text: body }]
 })
 
-/** The repository the runtime drives — it throws on a duplicate link. */
+/** Exercise the real shared runtime through its public consumer boundary. */
 const feedToRepository = (repository: ExportedRepository) => {
-  const runtime = { repository: new MessageRepository() } as unknown as Parameters<
-    typeof syncRepositoryIncrementally
-  >[0]
+  const { result } = renderHook(() => useIncrementalExternalStoreRuntime({
+    messageRepository: repository,
+    onNew: async () => {}
+  }))
 
-  return syncRepositoryIncrementally(runtime, repository)
+  return result.current.thread.getState().messages
 }
 
 type ExportedRepository = ReturnType<typeof useRuntimeMessageRepository>
@@ -78,5 +80,28 @@ describe('useRuntimeMessageRepository', () => {
     const windowedParents = new Map(windowed.current.messages.map(item => [item.message.id, item.parentId]))
 
     expect(windowedParents.get('a-1')).toBe(windowedParents.get('a-2'))
+  })
+
+  it('preserves normalized settled messages while streaming and isolates a switched session', () => {
+    const user = text('user', 'user', 'question')
+    const initial = [user, text('reply', 'assistant', 'partial')]
+
+    const { result, rerender } = renderHook((messages: ChatMessage[]) => {
+      const messageRepository = useRuntimeMessageRepository(messages)
+
+      return useIncrementalExternalStoreRuntime({ messageRepository, onNew: async () => {} })
+    }, { initialProps: initial })
+
+    const runtime = result.current
+    const settled = runtime.thread.getState().messages[0]
+
+    rerender([user, text('reply', 'assistant', 'finished')])
+    expect(result.current).toBe(runtime)
+    expect(runtime.thread.getState().messages[0]).toBe(settled)
+    expect(runtime.thread.getState().messages[1].content).toEqual([{ type: 'text', text: 'finished' }])
+
+    rerender([text('other', 'assistant', 'another session')])
+    expect(runtime.thread.getState().messages.map(item => item.id)).toEqual(['other'])
+    expect(runtime.thread.export().messages.map(item => item.message.id)).toEqual(['other'])
   })
 })

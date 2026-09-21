@@ -11,11 +11,10 @@
 // sees the change, and the transcript still does not remount.
 import { ExportedMessageRepository } from '@assistant-ui/react'
 import { AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
+import { useIncrementalExternalStoreRuntime } from '@hermes/chat-ui'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-
-import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 
 import { Thread } from '.'
 
