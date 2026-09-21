@@ -8,10 +8,9 @@ import { type AppendMessage, ExportedMessageRepository } from '@assistant-ui/rea
 // bubbles) is not reproducible in jsdom — see USER_BUBBLE_BASE_CLASS's no-drag
 // carve-out in thread.tsx.
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import { useIncrementalExternalStoreRuntime } from '@hermes/chat-ui'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-
-import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 
 import { Thread } from '.'
 
