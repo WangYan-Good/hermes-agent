@@ -1,7 +1,7 @@
 # @hermes/chat-ui
 
-Private workspace for host-neutral Native Chat primitives. Desktop is the
-current consumer; Web Native Chat becomes a consumer in UI-P3.
+Private workspace for host-neutral Native Chat primitives. Desktop and
+experimental Web Native Chat are its two production-code consumers.
 
 The public entry point exports `useIncrementalExternalStoreRuntime`, preserving
 the existing assistant-ui adapter contract and incremental repository behavior.

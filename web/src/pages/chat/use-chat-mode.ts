@@ -11,9 +11,12 @@ import {
   type ChatMode,
 } from "./chat-mode";
 
-export function useChatMode() {
+export function useChatMode(initialSearch = typeof window === "undefined" ? "" : window.location.search) {
   const { profile } = useProfileScope();
   const [browserMode] = useState(readBrowserChatMode);
+  // UI-P3 activation is latched at the persistent host's first mount. Route
+  // visibility and late config must never swap transports. Unify in UI-P6.
+  const [urlMode] = useState(() => normalizeChatMode(new URLSearchParams(initialSearch).get("chat_mode")));
   const [server, setServer] = useState<{ profile: string; mode: ChatMode | null }>();
 
   useEffect(() => {
@@ -32,9 +35,9 @@ export function useChatMode() {
   }, [profile]);
 
   return resolveChatMode({
+    urlMode,
     browserMode,
     serverMode: server?.profile === profile ? server.mode : null,
-    // UI-P1 has no native renderer or transport, regardless of user preference.
-    nativeAvailable: false,
+    nativeAvailable: urlMode === "native",
   });
 }

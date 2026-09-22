@@ -69,3 +69,9 @@ describe("chat mode contract", () => {
     expect(readBrowserChatMode()).toBeNull();
   });
 });
+
+it("prioritizes explicit URL modes and keeps unrequested native unavailable", () => {
+  expect(resolveChatMode({ urlMode: "native", browserMode: "terminal", nativeAvailable: true }).effective).toBe("native");
+  expect(resolveChatMode({ urlMode: "terminal", browserMode: "native", serverMode: "native", nativeAvailable: true }).effective).toBe("terminal");
+  expect(resolveChatMode({ serverMode: "native", nativeAvailable: false }).effective).toBe("terminal");
+});
