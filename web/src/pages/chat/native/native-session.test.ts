@@ -14,7 +14,7 @@ const requests = (method: string) => FakeNativeSocket.requests.filter(r => r.met
 describe("native session over shared JSON-RPC client", () => {
   it("creates a profile-scoped draft without claiming its ID is durable", async () => {
     await start();
-    expect(requests("session.create")[0].params).toMatchObject({ profile: "work", source: "web" });
+    expect(requests("session.create")[0].params).toMatchObject({ profile: "work", source: "webui" });
     expect(session.getSnapshot()).toMatchObject({ runtimeId: "runtime", storedId: "stored", durable: false, ready: true });
   });
   it("submits once, uses runtime identity, records durable acceptance and stops", async () => {
@@ -70,12 +70,19 @@ describe("native session over shared JSON-RPC client", () => {
     expect(session.getSnapshot().conversation.error).toBeTruthy();
     expect(FakeNativeSocket.requests.map(r => r.method)).toEqual([method]);
   });
-  it("shows definitive submission rejection and lets the user recover the draft", async () => {
+  it.each([null, "saved-id"])("rolls back definitive submission rejection without changing prior messages (resume=%s)", async resume => {
+    session = new NativeSession("work", resume);
     await start();
+    const before = session.getSnapshot();
     FakeNativeSocket.responder = (request, socket) => socket.fail(request);
-    await session.submit("hello");
+    await session.submit("rejected prompt");
     expect(session.getSnapshot().ready).toBe(true);
     expect(session.getSnapshot().conversation.running).toBe(false);
+    expect(session.getSnapshot().conversation.messages).toBe(before.conversation.messages);
+    expect(JSON.stringify(session.getSnapshot().conversation.messages)).not.toContain("rejected prompt");
+    expect(session.getSnapshot().conversation.error).toContain("rejected");
+    expect(session.getSnapshot().durable).toBe(before.durable);
+    await vi.advanceTimersByTimeAsync(10_000);
     expect(requests("prompt.submit")).toHaveLength(1);
   });
   it("detects unsupported requests and ignores another runtime", async () => {

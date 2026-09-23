@@ -57,6 +57,27 @@ describe("native event contract", () => {
 });
 
 describe("history and live reconciliation", () => {
+  it("hides synthetic display rows while preserving user/skill rows and the next live turn", () => {
+    const kinds = ["model_switch", "personality_switch", "auto_continue", "async_delegation_complete", "hidden"];
+    const response: NativeSessionResponse = { session_id: "runtime", messages: [
+      { role: "user", text: "normal message", row_id: 1 },
+      ...kinds.map((display_kind, index) => ({ role: "user" as const, text: `[System: internal ${display_kind}]`, display_kind, row_id: index + 2 })),
+      { role: "assistant", text: "normal reply", row_id: 7 },
+      { role: "user", text: "[System: user supplied text]", row_id: 8 },
+      { role: "user", text: "/my-skill", display_kind: "skill_invocation", row_id: 9 },
+      { role: "assistant", text: "skill reply", row_id: 10 },
+    ] };
+    let state = hydrateNativeHistory(response);
+    expect(state.messages.map(m => m.parts[0].text)).toEqual(["normal message", "normal reply", "[System: user supplied text]", "/my-skill", "skill reply"]);
+    expect(JSON.stringify(state)).not.toContain("internal");
+    const history = state.messages;
+    state = beginPrompt(state, "next");
+    state = reduceNativeEvent(state, event("message.delta", { text: "live" }));
+    state = reduceNativeEvent(state, event("message.complete", { text: "live reply" }));
+    expect(state.messages.slice(0, history.length)).toEqual(history);
+    expect(state.messages.at(-1)?.parts[0].text).toBe("live reply");
+    expect(new Set(state.messages.map(m => m.id)).size).toBe(state.messages.length);
+  });
   const response: NativeSessionResponse = { session_id: "runtime", session_key: "stored", messages: [{ role: "user", text: "hello", row_id: 1 }, { role: "assistant", text: "Checking", reasoning: "think", row_id: 2 }, { role: "tool", name: "terminal", context: "pwd" }, { role: "assistant", text: "Done", row_id: 4 }], running: false };
   it("coalesces tool/commentary/final into one assistant and then streams a new turn", () => {
     let state = hydrateNativeHistory(response);

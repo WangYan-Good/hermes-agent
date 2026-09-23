@@ -1,6 +1,12 @@
 import type { GatewayEvent } from "@hermes/shared";
 import { emptyConversation, record, reduceNativeEvent, string } from "./native-events";
-import type { NativeConversationState, NativeMessage, NativeSessionResponse } from "./native-types";
+import type { NativeConversationState, NativeHistoryMessage, NativeMessage, NativeSessionResponse } from "./native-types";
+
+const syntheticDisplayKinds = new Set(["model_switch", "personality_switch", "auto_continue", "async_delegation_complete"]);
+
+function isSyntheticDisplayRow(row: NativeHistoryMessage): boolean {
+  return syntheticDisplayKinds.has(row.display_kind ?? "");
+}
 
 function reasoningText(row: Record<string, unknown>): string {
   for (const key of ["reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items"]) {
@@ -17,7 +23,9 @@ function reasoningText(row: Record<string, unknown>): string {
 export function hydrateNativeHistory(response: NativeSessionResponse): NativeConversationState {
   const messages: NativeMessage[] = [];
   for (const [index, row] of (response.messages ?? []).entries()) {
-    if (row.role === "system" || row.display_kind === "hidden") continue;
+    // Provider role is not display attribution. MVP omits system timeline
+    // entries using the gateway's structured contract, never a text heuristic.
+    if (row.role === "system" || row.display_kind === "hidden" || isSyntheticDisplayRow(row)) continue;
     let message = messages.at(-1);
     if (row.role === "user" || !message || message.role !== "assistant") {
       message = { id: `history-${row.row_id ?? index}-${row.role}`, role: row.role === "user" ? "user" : "assistant", parts: [] };

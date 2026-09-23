@@ -76,7 +76,7 @@ export class NativeSession {
         // an expired draft behind an automatic replacement session.
         response = await gateway.request("session.activate", { session_id: this.state.runtimeId });
       } else {
-        response = await gateway.request("session.create", { profile: this.profile, source: "web", close_on_disconnect: false });
+        response = await gateway.request("session.create", { profile: this.profile, source: "webui", close_on_disconnect: false });
       }
       if (!current()) return;
       const resumed = Boolean(storedId && (this.state.durable || this.target || this.uncertainSubmit));
@@ -112,8 +112,9 @@ export class NativeSession {
   submit = async (text: string) => {
     if (!text.trim() || !this.state.ready || this.state.conversation.running || this.state.conversation.blocked || !this.gateway || !this.state.runtimeId) return;
     const generation = this.generation;
+    const beforeSubmit = this.state.conversation;
     this.uncertainSubmit = true;
-    this.set({ ...this.state, conversation: beginPrompt(this.state.conversation, text) });
+    this.set({ ...this.state, conversation: beginPrompt(beforeSubmit, text) });
     try {
       await this.gateway.request("prompt.submit", { session_id: this.state.runtimeId, text });
       if (generation !== this.generation || this.stopped) return;
@@ -123,7 +124,9 @@ export class NativeSession {
       if (generation !== this.generation || this.stopped) return;
       if (error instanceof JsonRpcGatewayError) {
         this.uncertainSubmit = false;
-        this.set({ ...this.state, conversation: failConversation(this.state.conversation, "The gateway rejected this prompt. Correct the problem and send again, or start a new session.") });
+        // A definitive RPC rejection never became a conversation turn. Keep
+        // prior messages intact; only ambiguous transport failures need resume.
+        this.set({ ...this.state, ready: true, conversation: { ...beforeSubmit, running: false, status: "", blocked: null, error: "The gateway rejected this prompt. Correct the problem and send again, or start a new session." } });
         return;
       }
       // Acceptance is ambiguous on timeout. Disable sends until authoritative

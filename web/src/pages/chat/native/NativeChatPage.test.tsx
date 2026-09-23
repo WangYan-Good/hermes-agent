@@ -86,6 +86,35 @@ it("resumes on fresh mount using durable URL identity", async () => {
   expect(FakeNativeSocket.requests[0]).toMatchObject({ method: "session.resume", params: { session_id: "saved" } });
   expect(container.textContent).toContain("restored");
 });
+it("keeps the shared runtime parent chain intact after filtering synthetic history", async () => {
+  FakeNativeSocket.responder = (request, socket) => {
+    if (request.method !== "session.resume") return FakeNativeSocket.defaultResponse(request, socket);
+    socket.reply(request, { session_id: "runtime", session_key: "stored", running: false, messages: [
+      { role: "user", text: "original user", row_id: 1 },
+      ...["model_switch", "personality_switch", "auto_continue", "async_delegation_complete"].map((display_kind, index) => ({ role: "user", text: `[System: internal ${display_kind}]`, display_kind, row_id: index + 2 })),
+      { role: "assistant", text: "original answer", row_id: 6 },
+    ] });
+  };
+  await render("/chat?chat_mode=native&resume=saved");
+  expect(container.textContent).not.toContain("internal");
+  expect(container.querySelectorAll('[aria-label="Your message"]')).toHaveLength(1);
+  await send("next user");
+  await act(async () => {
+    FakeNativeSocket.instances[0].event("message.delta", { text: "live" });
+    FakeNativeSocket.instances[0].event("message.complete", { text: "next answer" });
+  });
+  expect([...container.querySelectorAll('[aria-label="Your message"], [aria-label="Hermes response"]')].map(el => el.textContent)).toEqual(["original user", "original answer", "next user", "next answer"]);
+});
+it("removes a definitively rejected optimistic turn and displays the rejection", async () => {
+  await render();
+  FakeNativeSocket.responder = (request, socket) => socket.fail(request);
+  await send("rejected input");
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("rejected");
+  expect(container.querySelectorAll('[aria-label="Your message"], [aria-label="Hermes response"]')).toHaveLength(0);
+  expect(container.querySelector("textarea")?.disabled).toBe(false);
+  expect(FakeNativeSocket.requests.filter(r => r.method === "prompt.submit")).toHaveLength(1);
+  expect(container.querySelector("output")?.textContent).not.toContain("resume=");
+});
 it("shows unsupported requests without responding and Stop uses the real interrupt RPC", async () => {
   await render(); await send("hello");
   await act(async () => FakeNativeSocket.instances[0].event("approval.request", { command: "secret details" }));
