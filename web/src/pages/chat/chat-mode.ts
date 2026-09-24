@@ -8,6 +8,7 @@ export function normalizeChatMode(value: unknown): ChatMode | null {
 }
 
 export interface ChatModeRequest {
+  urlMode?: unknown;
   browserMode?: unknown;
   serverMode?: unknown;
   nativeAvailable?: boolean;
@@ -20,11 +21,13 @@ export interface ChatModeResolution {
 
 /** Mode selects presentation only; it must never select agent/session state. */
 export function resolveChatMode({
+  urlMode,
   browserMode,
   serverMode,
   nativeAvailable = false,
 }: ChatModeRequest = {}): ChatModeResolution {
   const requested =
+    normalizeChatMode(urlMode) ??
     normalizeChatMode(browserMode) ??
     normalizeChatMode(serverMode) ??
     DEFAULT_CHAT_MODE;

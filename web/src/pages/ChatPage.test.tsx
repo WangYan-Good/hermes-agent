@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, type ReactNode } from "react";
+import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   MemoryRouter,
@@ -7,6 +7,8 @@ import {
   useNavigate,
 } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { FakeNativeSocket, flushNative } from "./chat/native/fake-websocket.test-support";
 
 import { PTY_TICKET_TIMEOUT_MS } from "@/lib/pty-reconnect";
 
@@ -138,8 +140,10 @@ vi.mock("@/i18n", () => ({
 }));
 vi.mock("@/lib/dashboard-auth-reload", () => ({
   maybeReloadForLoopbackWsAuthFailure,
+  clearDashboardTokenReloadAttempt: vi.fn(),
 }));
 vi.mock("@/lib/api", () => ({
+  HERMES_BASE_PATH: "",
   api: apiMocks,
   buildWsUrl: apiMocks.buildWsUrl,
 }));
@@ -741,4 +745,39 @@ describe("ChatPage PTY ticket connect deadline", () => {
     await advance(PTY_TICKET_TIMEOUT_MS);
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1);
   });
+});
+
+
+it("explicit native creates one gateway and zero PTYs even after late native config and route navigation", async () => {
+  FakeNativeSocket.reset();
+  vi.stubGlobal("WebSocket", FakeNativeSocket);
+  apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/ws?ticket=fresh");
+  Element.prototype.scrollTo = vi.fn();
+  let resolveConfig!: (value: Record<string, unknown>) => void;
+  apiMocks.getConfig.mockImplementation(() => new Promise(resolve => { resolveConfig = resolve; }));
+  const { default: ChatPage } = await import("./ChatPage");
+  // Load the lazy chunk before act so Suspense's timer does not obscure lifecycle assertions.
+  await import("./chat/native/NativeChatPage");
+  await render(<StrictMode><MemoryRouter initialEntries={["/chat?chat_mode=native"]}><RouteAwareChatHarness ChatPage={ChatPage} /></MemoryRouter></StrictMode>);
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)); await flushNative(); });
+  await act(async () => resolveConfig({ dashboard: { chat: { default_mode: "native" } } }));
+  expect(FakeTerminal.instances).toHaveLength(0);
+  expect(FakeNativeSocket.instances).toHaveLength(1);
+  expect(apiMocks.buildWsUrl).toHaveBeenCalledWith("/api/ws");
+  expect(apiMocks.buildWsUrl).not.toHaveBeenCalledWith("/api/pty", expect.anything());
+  await act(async () => (container.querySelector('[data-testid="sessions"]') as HTMLElement).click());
+  await act(async () => (container.querySelector('[data-testid="chat"]') as HTMLElement).click());
+  expect(FakeNativeSocket.instances).toHaveLength(1);
+  expect(FakeTerminal.instances).toHaveLength(0);
+});
+
+it("default chat never constructs Native even when server config later requests native", async () => {
+  let resolveConfig!: (value: Record<string, unknown>) => void;
+  apiMocks.getConfig.mockImplementation(() => new Promise(resolve => { resolveConfig = resolve; }));
+  const { default: ChatPage } = await import("./ChatPage");
+  await render(<MemoryRouter initialEntries={["/chat"]}><ChatPage /></MemoryRouter>);
+  await act(async () => resolveConfig({ dashboard: { chat: { default_mode: "native" } } }));
+  expect(FakeWebSocket.instances.length).toBeGreaterThan(0);
+  expect(FakeWebSocket.instances.every(socket => socket.url.includes("/api/pty"))).toBe(true);
+  expect(apiMocks.buildWsUrl).not.toHaveBeenCalledWith("/api/ws");
 });

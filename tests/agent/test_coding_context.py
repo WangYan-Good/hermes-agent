@@ -39,6 +39,23 @@ def _git_init(path):
 
 class TestIsCodingContext:
 
+    def test_webui_auto_uses_coding_posture_in_code_workspace(self, tmp_path):
+        _git_init(tmp_path)
+        cfg = {"agent": {"coding_context": "auto"}}
+        mode = cc.resolve_runtime_mode(platform="webui", cwd=tmp_path, config=cfg)
+        assert mode.is_coding
+        assert mode.profile is cc.CODING_PROFILE
+        assert mode.toolset_selection(cfg) is None  # auto remains prompt-only
+        assert any("Workspace" in block for block in mode.system_blocks())
+
+    def test_webui_auto_stays_general_outside_code_workspace(self, tmp_path):
+        (tmp_path / "notes.md").write_text("Personal notes\n")
+        mode = cc.resolve_runtime_mode(
+            platform="webui", cwd=tmp_path, config={"agent": {"coding_context": "auto"}},
+        )
+        assert not mode.is_coding
+        assert mode.system_blocks() == []
+
 
 
     def test_auto_bare_git_repo_without_code_stays_general(self, tmp_path):
@@ -68,10 +85,11 @@ class TestIsCodingContext:
 # ── toolset substitution ────────────────────────────────────────────────────
 
 class TestCodingSelection:
-    def test_selects_coding_under_focus(self, tmp_path):
+    @pytest.mark.parametrize("platform", ["cli", "tui", "webui"])
+    def test_selects_coding_under_focus(self, tmp_path, platform):
         _git_init(tmp_path)
         cfg = {"agent": {"coding_context": "focus"}}
-        out = cc.coding_selection(platform="cli", cwd=tmp_path, config=cfg)
+        out = cc.coding_selection(platform=platform, cwd=tmp_path, config=cfg)
         assert out is not None
         assert out[0] == cc.CODING_TOOLSET
 

@@ -84,6 +84,19 @@ class TestResolveSessionSource:
 
 class TestResolveAgentPlatform:
 
+    def test_explicit_webui_keeps_browser_identity_on_desktop_backend(self, clean_env):
+        from agent.prompt_builder import PLATFORM_HINTS
+
+        clean_env.setenv("HERMES_DESKTOP", "1")
+        srv = _reload_resolver()
+        source = srv._resolve_session_source("webui")
+        platform = srv._resolve_agent_platform(source)
+        assert source == platform == "webui"
+        assert source in srv._NON_GATEWAY_SOURCES
+        assert PLATFORM_HINTS[platform]
+        assert PLATFORM_HINTS[platform] != PLATFORM_HINTS["tui"]
+        assert PLATFORM_HINTS[platform] != PLATFORM_HINTS["desktop"]
+
     def test_missing_source_falls_back_to_env_resolved_platform(self, clean_env):
         clean_env.setenv("HERMES_DESKTOP", "1")
         _srv = _reload_resolver()
@@ -95,5 +108,4 @@ class TestSessionSourceFallback:
         clean_env.setenv("HERMES_DESKTOP", "1")
         _srv = _reload_resolver()
         assert _srv._session_source({"source": "telegram"}) == "telegram"
-
 
