@@ -61,6 +61,104 @@ describe("native session over shared JSON-RPC client", () => {
     await vi.advanceTimersByTimeAsync(1000); await flushNative();
     expect(requests("prompt.submit")).toHaveLength(1);
     expect(requests("session.resume")).toHaveLength(1);
+    expect(requests("session.activate")).toHaveLength(0);
+    expect(session.getSnapshot()).toMatchObject({ ready: true, durable: true, connection: "open" });
+  });
+  it.each([false, true])("inspects an uncertain first draft after stored resume 4007 (running=%s)", async running => {
+    await start();
+    FakeNativeSocket.responder = (request, socket) => {
+      if (request.method === "prompt.submit") return socket.close(1006);
+      if (request.method === "session.resume") return socket.fail(request); // no persisted row
+      if (request.method === "session.activate") return socket.reply(request, {
+        session_id: "runtime", session_key: "stored", running,
+        messages: running ? [{ role: "user", text: "uncertain first prompt" }] : [],
+        ...(running ? { inflight: { user: "uncertain first prompt", assistant: "In progress", streaming: true } } : {}),
+      });
+      FakeNativeSocket.defaultResponse(request, socket);
+    };
+    await session.submit("uncertain first prompt");
+    await vi.advanceTimersByTimeAsync(1000); await flushNative();
+    expect(requests("prompt.submit")).toHaveLength(1);
+    expect(requests("session.resume")).toHaveLength(1);
+    expect(requests("session.resume")[0].params).toEqual({ session_id: "stored", profile: "work" });
+    expect(requests("session.activate")).toHaveLength(1);
+    expect(requests("session.activate")[0].params).toEqual({ session_id: "runtime" });
+    expect(requests("session.create")).toHaveLength(1);
+    const recovered = session.getSnapshot();
+    expect(recovered).toMatchObject({ ready: true, connection: "open", durable: false, runtimeId: "runtime", storedId: "stored" });
+    expect(recovered.conversation).toMatchObject({ running, error: null });
+    if (running) {
+      expect(recovered.conversation.messages.map(m => [m.role, m.parts[0]?.text])).toEqual([["user", "uncertain first prompt"], ["assistant", "In progress"]]);
+      FakeNativeSocket.instances.at(-1)!.event("message.complete", { text: "Completed after recovery" });
+      expect(session.getSnapshot().conversation.running).toBe(false);
+    } else expect(recovered.conversation.messages).toEqual([]);
+    // A later disconnect reattaches by runtime ID: uncertainty was cleared,
+    // so the failed stored resume is not retried forever.
+    FakeNativeSocket.instances.at(-1)!.close(1006);
+    await vi.advanceTimersByTimeAsync(1000); await flushNative();
+    expect(requests("session.resume")).toHaveLength(1);
+    expect(requests("prompt.submit")).toHaveLength(1);
+    if (!running) {
+      FakeNativeSocket.responder = FakeNativeSocket.defaultResponse;
+      await session.submit("user explicitly sends a new prompt");
+      expect(requests("prompt.submit").map(r => r.params.text)).toEqual(["uncertain first prompt", "user explicitly sends a new prompt"]);
+      expect(session.getSnapshot().durable).toBe(true);
+    }
+  });
+  it("does not activate a known runtime when its durable stored session is missing", async () => {
+    await start(); await session.submit("accepted");
+    FakeNativeSocket.responder = (request, socket) => socket.fail(request);
+    FakeNativeSocket.instances[0].close(1006);
+    await vi.advanceTimersByTimeAsync(1000); await flushNative();
+    expect(session.getSnapshot()).toMatchObject({ durable: true, ready: false, connection: "error", runtimeId: "runtime" });
+    expect(session.getSnapshot().conversation.error).toContain("restore");
+    expect(requests("session.resume")).toHaveLength(1);
+    expect(requests("session.activate")).toHaveLength(0);
+    expect(requests("prompt.submit")).toHaveLength(1);
+    expect(requests("session.create")).toHaveLength(1);
+  });
+  it("surfaces a failed draft activation without creating a replacement or replaying", async () => {
+    await start();
+    FakeNativeSocket.responder = (request, socket) => request.method === "prompt.submit" ? socket.close(1006) : socket.fail(request);
+    await session.submit("unknown");
+    await vi.advanceTimersByTimeAsync(1000); await flushNative();
+    expect(session.getSnapshot()).toMatchObject({ ready: false, durable: false, connection: "error" });
+    expect(session.getSnapshot().conversation.error).toContain("restore");
+    expect(requests("session.activate")).toHaveLength(1);
+    expect(requests("session.create")).toHaveLength(1);
+    expect(requests("prompt.submit")).toHaveLength(1);
+  });
+  it("does not activate a draft after a different resume RPC error", async () => {
+    await start();
+    FakeNativeSocket.responder = (request, socket) => request.method === "prompt.submit" ? socket.close(1006) : socket.frame({ id: request.id, error: { code: 4030, message: "denied" } });
+    await session.submit("unknown");
+    await vi.advanceTimersByTimeAsync(1000); await flushNative();
+    expect(session.getSnapshot()).toMatchObject({ ready: false, connection: "error" });
+    expect(requests("session.activate")).toHaveLength(0);
+    expect(requests("prompt.submit")).toHaveLength(1);
+  });
+  it.each(["resume", "activate"])("ignores a replaced connection while uncertain recovery waits for %s", async phase => {
+    await start();
+    FakeNativeSocket.responder = (request, socket) => {
+      if (request.method === "prompt.submit") return socket.close(1006);
+      if (request.method === "session.resume" && phase === "activate") return socket.fail(request);
+      // Leave the selected recovery RPC pending until its controller is replaced.
+    };
+    await session.submit("old unknown prompt");
+    await vi.advanceTimersByTimeAsync(1000); await flushNative();
+    const oldSocket = FakeNativeSocket.instances.at(-1)!;
+    const oldRequest = FakeNativeSocket.requests.at(-1)!;
+    expect(oldRequest.method).toBe(`session.${phase}`);
+    FakeNativeSocket.responder = FakeNativeSocket.defaultResponse;
+    session.select(null); await flushNative();
+    const replacement = session.getSnapshot();
+    oldSocket.frame({ id: oldRequest.id, ...(phase === "resume" ? { error: { code: 4007, message: "session not found" } } : { result: { session_id: "old", running: true, messages: [{ role: "user", text: "stale" }] } }) });
+    await flushNative();
+    expect(session.getSnapshot()).toBe(replacement);
+    expect(requests("session.activate")).toHaveLength(phase === "activate" ? 1 : 0);
+    expect(requests("prompt.submit")).toHaveLength(1);
+    expect(replacement.conversation.messages).toEqual([]);
+    expect(FakeNativeSocket.instances.filter(s => s.readyState === 1)).toHaveLength(1);
   });
   it.each(["session.create", "session.resume"])("surfaces %s failure without silently creating another session", async method => {
     if (method === "session.resume") session = new NativeSession("work", "missing");

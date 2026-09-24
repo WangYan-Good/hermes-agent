@@ -69,8 +69,20 @@ export class NativeSession {
       if (!current()) return;
       const storedId = this.state.storedId || this.target;
       let response: NativeSessionResponse;
+      let resumed = false;
       if (storedId && (this.state.durable || this.target || this.uncertainSubmit)) {
-        response = await gateway.request("session.resume", { session_id: storedId, profile: this.profile });
+        try {
+          response = await gateway.request("session.resume", { session_id: storedId, profile: this.profile });
+          resumed = true;
+        } catch (error) {
+          if (!current()) return;
+          // The first prompt may never have reached acceptance: its allocated
+          // stored ID then has no DB row, while the live draft can still exist.
+          // Only inspect that uncertain draft; never mask a lost durable row.
+          if (!this.uncertainSubmit || this.state.durable || !this.state.runtimeId ||
+              !(error instanceof JsonRpcGatewayError) || error.code !== 4007) throw error;
+          response = await gateway.request("session.activate", { session_id: this.state.runtimeId });
+        }
       } else if (this.state.runtimeId) {
         // Empty drafts have no DB row. Reattach their live runtime; never hide
         // an expired draft behind an automatic replacement session.
@@ -79,7 +91,6 @@ export class NativeSession {
         response = await gateway.request("session.create", { profile: this.profile, source: "webui", close_on_disconnect: false });
       }
       if (!current()) return;
-      const resumed = Boolean(storedId && (this.state.durable || this.target || this.uncertainSubmit));
       const conversation = reconcileNativeResume(response, this.buffered, this.state.conversation);
       this.hydrating = false; this.buffered = []; this.retries = 0; this.uncertainSubmit = false;
       this.set({ runtimeId: response.session_id, storedId: response.stored_session_id || response.session_key || response.info?.stored_session_id || storedId, durable: resumed || this.state.durable, ready: true, connection: "open", conversation });
