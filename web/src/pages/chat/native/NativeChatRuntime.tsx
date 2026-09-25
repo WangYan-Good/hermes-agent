@@ -1,3 +1,4 @@
+import { hasInteraction } from "./native-interactions";
 import { useMemo, useState, type ReactNode } from "react";
 import { AssistantRuntimeProvider, fromThreadMessageLike, type ThreadMessage } from "@assistant-ui/react";
 import { useIncrementalExternalStoreRuntime } from "@hermes/chat-ui";
@@ -33,12 +34,12 @@ export function NativeChatRuntime({ state, session, children }: NativeChatRuntim
   const adapter = useMemo(() => ({
     messageRepository,
     isRunning: state.conversation.running,
-    isDisabled: !state.ready || Boolean(state.conversation.blocked),
+    isDisabled: !state.ready || hasInteraction(state.interactions),
     onNew: async (message: { content: readonly { type: string; text?: string }[] }) => {
       await session.submit(message.content.filter(part => part.type === "text").map(part => part.text ?? "").join("\n"));
     },
     onCancel: session.interrupt,
-  }), [messageRepository, state.conversation.running, state.conversation.blocked, state.ready, session]);
+  }), [messageRepository, state.conversation.running, state.interactions, state.ready, session]);
   const runtime = useIncrementalExternalStoreRuntime(adapter);
   return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>;
 }

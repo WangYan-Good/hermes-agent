@@ -2,7 +2,7 @@ import type { GatewayEvent } from "@hermes/shared";
 import type { NativeConversationState, NativeMessage, NativePart } from "./native-types";
 
 export function emptyConversation(): NativeConversationState {
-  return { messages: [], running: false, activeId: null, status: "", error: null, blocked: null, nextId: 1 };
+  return { messages: [], running: false, activeId: null, status: "", error: null, nextId: 1 };
 }
 
 export function record(value: unknown): Record<string, unknown> {
@@ -12,7 +12,7 @@ export function string(value: unknown): string { return typeof value === "string
 
 export function beginPrompt(state: NativeConversationState, text: string): NativeConversationState {
   const next: NativeConversationState = {
-    ...state, running: true, activeId: null, error: null, blocked: null, status: "Sending…",
+    ...state, running: true, activeId: null, error: null, status: "Sending…",
     nextId: state.nextId + 1,
     messages: [...state.messages, { id: `user-${state.nextId}`, role: "user", parts: [{ type: "text", text }] }],
   };
@@ -32,29 +32,26 @@ function update(state: NativeConversationState, message: NativeMessage): NativeC
 
 export function failConversation(state: NativeConversationState, error: string): NativeConversationState {
   return {
-    ...state, running: false, status: "", blocked: null, error,
+    ...state, running: false, status: "", error,
     messages: state.messages.map(m => m.id === state.activeId ? { ...m, pending: false, error, parts: m.parts.map(p => p.type === "tool" && p.status === "running" ? { ...p, status: "error" } : p) } : m),
   };
 }
 
-const unsupported = new Set(["approval.request", "clarify.request", "secret.request", "sudo.request", "mcp.setup.request"]);
 
 /** Pure, forward-compatible reducer. Routing and transport live outside it. */
 export function reduceNativeEvent(state: NativeConversationState, event: GatewayEvent): NativeConversationState {
   const p = record(event.payload);
   const text = string(p.text);
-  if (unsupported.has(event.type)) {
-    return { ...state, running: true, blocked: event.type, status: "This interaction requires Terminal. Stop this turn before opening Terminal." };
-  }
   if (event.type === "error") return failConversation(state, string(p.message) || "Gateway error");
   // The current gateway thinking callback carries spinner/status snapshots,
   // including an empty string to clear it; it is not reasoning token data.
   if (event.type === "thinking.delta") return { ...state, status: text };
   if (event.type === "status.update") return { ...state, status: text || string(p.status) };
   if (event.type === "session.info") {
-    if (p.running === false) return { ...state, running: false, blocked: null, status: "", messages: state.messages.map(m => m.pending ? { ...m, pending: false } : m) };
+    if (p.running === false) return { ...state, running: false, status: "", messages: state.messages.map(m => m.pending ? { ...m, pending: false } : m) };
     return state;
   }
+  if (event.type === "tool.generating" || (event.type === "tool.progress" && !string(p.tool_id))) return { ...state, status: string(p.preview) || `Preparing ${string(p.name) || "tool"}…` };
   const supported = ["message.start", "message.delta", "message.interim", "message.complete", "reasoning.delta", "thinking.delta", "tool.start", "tool.progress", "tool.complete"];
   if (!supported.includes(event.type)) return state;
   // Late duplicate completion is idempotent; do not open another bubble.
@@ -62,6 +59,7 @@ export function reduceNativeEvent(state: NativeConversationState, event: Gateway
     const current = state.messages.find(m => m.id === state.activeId);
     if (current?.parts.some(part => part.final && part.text === text) && !p.error) return state;
   }
+  if (event.type.startsWith("tool.") && !string(p.tool_id) && !string(p.tool_call_id) && !string(p.id)) return state;
   let message: NativeMessage;
   [state, message] = assistant(state);
   let parts = [...message.parts];
@@ -100,7 +98,9 @@ export function reduceNativeEvent(state: NativeConversationState, event: Gateway
   } else {
     const id = string(p.tool_id) || string(p.tool_call_id) || string(p.id);
     const name = string(p.name) || "tool";
-    const i = id ? parts.findIndex(part => part.type === "tool" && part.id === id) : parts.findLastIndex(part => part.type === "tool" && part.name === name && part.status === "running");
+    if (!id) return state; // Never correlate a completion by tool name.
+    const i = parts.findIndex(part => part.type === "tool" && part.id === id);
+    if (i >= 0 && parts[i].status !== "running") return state;
     const result = record(p.result);
     const tool: NativePart = {
       type: "tool", id: id || parts[i]?.id || `tool-${state.nextId}-${parts.length}`, name: string(p.name) || parts[i]?.name || name,
@@ -110,5 +110,5 @@ export function reduceNativeEvent(state: NativeConversationState, event: Gateway
     if (i >= 0) parts[i] = tool;
     else parts.push(tool);
   }
-  return update({ ...state, running, error: error ?? null, blocked: running ? state.blocked : null, status: running ? state.status : "" }, { ...message, parts, pending: running, error });
+  return update({ ...state, running, error: error ?? null, status: running ? state.status : "" }, { ...message, parts, pending: running, error });
 }

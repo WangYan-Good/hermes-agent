@@ -1071,22 +1071,24 @@ export const api = {
     }),
 
   // ── Admin: MCP servers ──────────────────────────────────────────────
-  getMcpServers: () => fetchJSON<{ servers: McpServer[] }>("/api/mcp/servers"),
+  getMcpServers: (profile?: string) => fetchJSON<{ servers: McpServer[] }>(mcpProfileUrl("/api/mcp/servers", profile)),
   addMcpServer: (body: McpServerCreate) =>
     fetchJSON<McpServer>("/api/mcp/servers", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     }),
-  authMcpServer: (name: string) =>
+  authMcpServer: (name: string, profile?: string, setup?: McpSetupRequest) =>
     fetchJSON<McpOAuthFlow>(
-      `/api/mcp/servers/${encodeURIComponent(name)}/auth`,
+      mcpSetupUrl(`/api/mcp/servers/${encodeURIComponent(name)}/auth`, profile, setup),
       { method: "POST" },
     ),
   getMcpOAuthFlow: (flowId: string) =>
     fetchJSON<McpOAuthFlow>(
       `/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`,
     ),
+  cancelMcpOAuthFlow: (flowId: string) => fetchJSON<{ ok: boolean; status: string }>(`/api/mcp/oauth/flows/${encodeURIComponent(flowId)}`, { method: "DELETE" }),
+  getMcpSetupOperation: (setup: McpSetupRequest, profile: string) => fetchJSON<{ operation: McpSetupOperation | null }>(mcpSetupUrl(`/api/mcp/setup/${encodeURIComponent(setup.request_id)}/operation`, profile, setup)),
   removeMcpServer: (name: string) =>
     fetchJSON<{ ok: boolean }>(`/api/mcp/servers/${encodeURIComponent(name)}`, {
       method: "DELETE",
@@ -1096,26 +1098,28 @@ export const api = {
       `/api/mcp/servers/${encodeURIComponent(name)}/test`,
       { method: "POST" },
     ),
-  setMcpServerEnabled: (name: string, enabled: boolean) =>
+  setMcpServerEnabled: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
-      `/api/mcp/servers/${encodeURIComponent(name)}/enabled`,
+      mcpProfileUrl(`/api/mcp/servers/${encodeURIComponent(name)}/enabled`, profile),
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ enabled }),
       },
     ),
-  getMcpCatalog: () =>
+  getMcpCatalog: (profile?: string) =>
     fetchJSON<{ entries: McpCatalogEntry[]; diagnostics: McpCatalogDiagnostic[] }>(
-      "/api/mcp/catalog",
+      mcpProfileUrl("/api/mcp/catalog", profile),
     ),
   installMcpCatalogEntry: (
     name: string,
     env: Record<string, string> = {},
     enable = true,
+    profile?: string,
+    setup?: McpSetupRequest,
   ) =>
-    fetchJSON<{ ok: boolean; name: string; background: boolean; action?: string }>(
-      "/api/mcp/catalog/install",
+    fetchJSON<{ ok: boolean; name: string; background: boolean; action?: string; operation?: McpSetupOperation }>(
+      mcpSetupUrl("/api/mcp/catalog/install", profile, setup),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1607,12 +1611,25 @@ export interface McpTestResult {
 }
 
 export interface McpOAuthFlow {
+  operation?: McpSetupOperation;
   flow_id: string;
   server_name: string;
   status: "starting" | "authorization_required" | "approved" | "error";
   authorization_url: string | null;
   error: string | null;
   tools?: Array<{ name: string; description: string }>;
+}
+
+export interface McpSetupRequest { session_id: string; request_id: string }
+export interface McpSetupOperation {
+  kind: "install" | "authorize";
+  id: string;
+  state: "starting" | "running" | "failed";
+  profile: string;
+}
+function mcpSetupUrl(url: string, profile?: string, setup?: McpSetupRequest): string {
+  const scoped = mcpProfileUrl(url, profile);
+  return setup ? `${scoped}${scoped.includes("?") ? "&" : "?"}${new URLSearchParams({ session_id: setup.session_id, request_id: setup.request_id })}` : scoped;
 }
 
 export interface MessagingPlatformEnvVar {
@@ -2764,4 +2781,9 @@ export interface AgentPluginUpdateResponse {
 export interface PluginProvidersPutRequest {
   memory_provider?: string;
   context_engine?: string;
+}
+
+/** Explicit Native session scope wins over a later management-profile switch. */
+function mcpProfileUrl(url: string, profile?: string): string {
+  return profile === undefined ? url : `${url}?profile=${encodeURIComponent(profile)}`;
 }

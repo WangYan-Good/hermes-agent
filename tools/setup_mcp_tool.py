@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Propose an MCP server to the user as an inline card in the desktop chat.
+"""Propose an MCP server through an inline GUI consent interaction.
 
-The card (install / enable / authorize + decline) lives in the desktop
-renderer, so this tool round-trips through the gateway's blocking-prompt
+The card (install / enable / authorize + decline) is supported by Desktop
+and Web Native Chat, so this tool uses the gateway's blocking-prompt
 bridge — the same one ``clarify`` uses: tui_gateway emits
 ``mcp.setup.request``, the renderer walks the user through the flow via the
 existing REST endpoints (catalog install, enable, OAuth), and answers with
 ``mcp.setup.respond`` once the flow settles. This module is just schema + a
 thin dispatcher over the platform-injected callback.
 
-Lives in the ``desktop_ui`` toolset, which the GUI gateway enables only for
-desktop-sourced sessions — on every other surface the agent falls back to
+Lives in ``gui_interactions``, enabled for desktop- and webui-sourced
+sessions with an inline setup renderer. Other surfaces fall back to
 ``hermes mcp install <name>`` in the terminal.
 """
 
@@ -28,10 +28,11 @@ def setup_mcp_tool(
     reason: str = "",
     callback: Optional[Callable] = None,
 ) -> str:
-    """Ask the desktop GUI to run an MCP setup flow; return its JSON outcome."""
+    """Ask a supported GUI to run MCP setup; return its JSON outcome."""
     if callback is None:
         return tool_error(
-            "setup_mcp is only available in the Hermes desktop app. Use the "
+            "setup_mcp requires an inline MCP setup renderer (Hermes Desktop "
+            "or Web Native Chat). Use the "
             "terminal instead: `hermes mcp install <name>` for catalog entries, "
             "`hermes mcp login <name>` for OAuth."
         )
@@ -64,7 +65,7 @@ def setup_mcp_tool(
             ensure_ascii=False,
         )
 
-    # Desktop answers with a JSON object; pass it through, else wrap the raw text.
+    # The GUI answers with a JSON object; pass it through, else wrap raw text.
     try:
         return json.dumps(json.loads(raw), ensure_ascii=False)
     except (TypeError, ValueError):
@@ -75,9 +76,9 @@ SETUP_MCP_SCHEMA = {
     "name": "setup_mcp",
     "description": (
         "Propose an MCP server to the user as an inline consent card in the "
-        "Hermes desktop chat. The card lets them install a catalog entry, "
+        "Hermes Desktop or Web Native Chat. The card lets them install a catalog entry, "
         "re-enable a disabled server, or run an OAuth login — right there, "
-        "without opening the Capabilities tab — and blocks until they act or "
+        "without leaving the conversation — and blocks until they act or "
         "decline. Use when the user asks to add/set up an MCP (e.g. \"add the "
         "linear mcp\"), or when a task clearly needs one that is missing or "
         "unauthorized. Never call it twice for the same server after a "
@@ -122,7 +123,7 @@ SETUP_MCP_SCHEMA = {
 
 registry.register(
     name="setup_mcp",
-    toolset="desktop_ui",
+    toolset="gui_interactions",
     schema=SETUP_MCP_SCHEMA,
     handler=lambda args, **kw: setup_mcp_tool(
         server=args.get("server", ""),

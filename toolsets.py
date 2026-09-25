@@ -279,8 +279,12 @@ TOOLSETS = {
             "open_preview", "read_preview",
             "read_window_below",
             "focus_pane", "react_to_message",
-            "setup_mcp",
         ],
+        "includes": []
+    },
+    "gui_interactions": {
+        "description": "GUI consent interactions supported by Desktop and Web Native Chat",
+        "tools": ["setup_mcp"],
         "includes": []
     },
     

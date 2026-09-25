@@ -2031,6 +2031,46 @@ def _approval_request_payload(data: dict | None) -> dict:
     return payload
 
 
+def _pending_interaction_payloads(sid: str) -> list[dict]:
+    """Metadata-only live recovery; the blocking registry remains authoritative.
+
+    Never project answers or arbitrary callback payload keys (credentials can
+    only travel through respond). Multiple concurrent prompts must survive a
+    reconnect independently, including prompts of the same kind.
+    """
+    from tui_gateway.mcp_setup import operation_snapshot
+
+    fields = {
+        "clarify.request": ("question", "choices", "multi_select"),
+        "secret.request": ("env_var", "prompt"),
+        "sudo.request": (),
+        "mcp.setup.request": ("server", "action", "reason"),
+    }
+    result = []
+    with _prompt_lock:
+        for request_id, (owner_sid, event) in _pending.items():
+            if owner_sid != sid or event.is_set():
+                continue
+            kind, payload = _pending_prompt_payloads.get(request_id, ("", {}))
+            if kind not in fields:
+                continue
+            metadata = {"request_id": request_id}
+            for key in fields[kind]:
+                value = payload.get(key)
+                if key == "choices" and isinstance(value, list):
+                    metadata[key] = [v for v in value if isinstance(v, str) and v.strip()]
+                elif key == "multi_select" and isinstance(value, bool):
+                    metadata[key] = value
+                elif key not in {"choices", "multi_select"} and isinstance(value, str):
+                    metadata[key] = value
+            if kind == "mcp.setup.request":
+                operation = operation_snapshot(payload.get("operation"))
+                if operation:
+                    metadata["operation"] = operation
+            result.append({"type": kind, "payload": metadata})
+    return result
+
+
 def _pending_clarify_request_payload(sid: str) -> dict | None:
     """Read the clarify prompt still blocking a session, if there is one.
 
@@ -2041,14 +2081,11 @@ def _pending_clarify_request_payload(sid: str) -> dict | None:
     read-only snapshot, the registry stays authoritative and `clarify.respond`
     with the embedded request_id resolves it.
     """
-    with _prompt_lock:
-        for rid, (owner_sid, _ev) in _pending.items():
-            if owner_sid != sid:
-                continue
-            event, prompt_payload = _pending_prompt_payloads.get(rid, ("", {}))
-            if event == "clarify.request":
-                return dict(prompt_payload)
-    return None
+    return next(
+        (item["payload"] for item in _pending_interaction_payloads(sid)
+         if item["type"] == "clarify.request"),
+        None,
+    )
 
 
 def _pending_approval_request_payload(session_key: str) -> dict | None:
@@ -4558,7 +4595,7 @@ def _load_tool_progress_mode() -> str:
 def _gui_surface_toolsets(platform: str) -> set[str]:
     """Toolsets that exist because of the CLIENT on the other end, not the host.
 
-    Both entries are deliberately off ``_HERMES_CORE_TOOLS`` — every other
+    These entries are deliberately off ``_HERMES_CORE_TOOLS`` — every other
     platform would carry their schema for nothing — so this resolver is the one
     gate that exposes them.
 
@@ -4573,6 +4610,8 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
     surfaces = {"project"}
     if platform == "desktop":
         surfaces.add("desktop_ui")
+    if platform in {"desktop", "webui"}:
+        surfaces.add("gui_interactions")
     return surfaces
 
 
@@ -6314,7 +6353,7 @@ def _agent_cbs(sid: str) -> dict:
             {},
             timeout=30,
         ),
-        # setup_mcp tool (desktop GUI): the renderer shows an inline consent
+        # setup_mcp tool (Desktop/Web Native): renderer shows inline consent
         # card and walks the user through install/enable/OAuth via the REST
         # endpoints, then answers mcp.setup.respond with the JSON outcome.
         # Long timeout on purpose — the flow can include typing an API key or
@@ -9107,6 +9146,7 @@ def _live_session_payload(
         payload["pending_approval"] = approval
     if clarify := _pending_clarify_request_payload(sid):
         payload["pending_clarify"] = clarify
+    payload["pending_interactions"] = _pending_interaction_payloads(sid)
     return payload
 
 

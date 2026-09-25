@@ -183,12 +183,12 @@ describe("native session over shared JSON-RPC client", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(requests("prompt.submit")).toHaveLength(1);
   });
-  it("detects unsupported requests and ignores another runtime", async () => {
+  it("isolates structured requests from another runtime", async () => {
     await start(); await session.submit("hello");
     const socket = FakeNativeSocket.instances[0];
     socket.event("message.delta", { text: "wrong" }, "other");
-    socket.event("secret.request", { prompt: "private" });
-    expect(session.getSnapshot().conversation.blocked).toBe("secret.request");
+    socket.event("secret.request", { request_id: "secret-1", prompt: "Enter key" });
+    expect(session.getSnapshot().interactions["secret:secret-1"]).toMatchObject({ kind: "secret", requestId: "secret-1" });
     expect(JSON.stringify(session.getSnapshot())).not.toContain("private");
     await session.submit("second");
     expect(requests("prompt.submit")).toHaveLength(1);
@@ -213,4 +213,112 @@ describe("native session over shared JSON-RPC client", () => {
     await vi.advanceTimersByTimeAsync(10_000);
     expect(FakeNativeSocket.instances).toHaveLength(1);
   });
+});
+
+describe("native interaction and control recovery", () => {
+  it.each(["approval", "clarify", "secret", "sudo", "mcp.setup"])("recovers %s metadata without duplicating responses", async kind => {
+    FakeNativeSocket.responder = (r, s) => {
+      if (r.method === "session.activate") return s.reply(r, { session_id: "runtime", session_key: "stored", running: true, pending_interactions: kind === "approval" ? [] : [{ type: `${kind}.request`, payload: { request_id: "r", question: "Q", prompt: "Enter", server: "test", action: "install" } }], ...(kind === "approval" ? { pending_approval: { request_id: "r" } } : {}) });
+      FakeNativeSocket.defaultResponse(r, s);
+    };
+    await start(); FakeNativeSocket.instances[0].event(`${kind}.request`, { request_id: "r" });
+    FakeNativeSocket.instances[0].close(1006); await vi.advanceTimersByTimeAsync(1000); await flushNative();
+    expect(Object.values(session.getSnapshot().interactions)).toHaveLength(1);
+    expect(session.getSnapshot().interactions[`${kind}:r`]).toMatchObject({ phase: "pending", runtimeId: "runtime" });
+    expect(FakeNativeSocket.requests.filter(r => r.method.endsWith(".respond"))).toHaveLength(0);
+  });
+  it.each(["secret", "sudo", "clarify", "mcp.setup"])("settles late %s responses as expired", async kind => {
+    await start(); FakeNativeSocket.instances[0].event(`${kind}.request`, { request_id: "a" });
+    const r = session.getSnapshot().interactions[`${kind}:a`];
+    FakeNativeSocket.responder = (req, s) => s.reply(req, { status: "expired" });
+    if (kind === "secret") await session.respondSecret(r, "private");
+    if (kind === "sudo") await session.respondSudo(r, "private");
+    if (kind === "clarify") await session.respondClarify(r, "answer");
+    if (kind === "mcp.setup") await session.respondMcpSetup(r, { status: "declined", server: "test" });
+    expect(session.getSnapshot().interactions[r.key].phase).toBe("expired");
+    expect(JSON.stringify(session.getSnapshot())).not.toContain("private");
+  });
+  it("deduplicates response clicks and prevents an old response/expiry/error clearing a new request", async () => {
+    await start(); const socket = FakeNativeSocket.instances[0]; socket.event("secret.request", { request_id: "a" });
+    const old = session.getSnapshot().interactions["secret:a"];
+    FakeNativeSocket.responder = () => undefined;
+    const sending = session.respondSecret(old, "private"); await session.respondSecret(old, "private"); await flushNative();
+    expect(requests("secret.respond")).toHaveLength(1);
+    socket.event("secret.request", { request_id: "b" }); socket.event("secret.expire", { request_id: "a" });
+    socket.fail(requests("secret.respond")[0]); await sending;
+    expect(session.getSnapshot().interactions["secret:b"].phase).toBe("pending");
+    expect(session.getSnapshot().interactions["secret:a"].phase).toBe("expired");
+  });
+  it("an old-generation response cannot resolve recovered input", async () => {
+    await start(); const socket = FakeNativeSocket.instances[0]; socket.event("sudo.request", { request_id: "a" });
+    const r = session.getSnapshot().interactions["sudo:a"];
+    FakeNativeSocket.responder = (req, s) => req.method === "sudo.respond" ? undefined : s.reply(req, { session_id: "runtime", pending_interactions: [{ type: "sudo.request", payload: { request_id: "a" } }] });
+    const promise = session.respondSudo(r, "private"); await flushNative();
+    session.retry(); await flushNative(); await promise;
+    const current = session.getSnapshot();
+    socket.reply(requests("sudo.respond")[0], { status: "ok" }); socket.event("sudo.expire", { request_id: "a" });
+    expect(session.getSnapshot()).toBe(current);
+    expect(current.interactions["sudo:a"].phase).toBe("pending");
+    expect(requests("sudo.respond")).toHaveLength(1);
+  });
+  it("snapshot in flight cannot discard a newly arrived request", async () => {
+    await start(); await session.submit("start");
+    FakeNativeSocket.responder = () => undefined;
+    FakeNativeSocket.instances[0].event("message.complete", { text: "done" }); await flushNative();
+    const refresh = requests("session.activate")[0];
+    FakeNativeSocket.instances[0].event("secret.request", { request_id: "new" });
+    FakeNativeSocket.instances[0].reply(refresh, { session_id: "runtime", running: false, pending_interactions: [] }); await flushNative();
+    expect(session.getSnapshot().interactions["secret:new"].phase).toBe("pending");
+  });
+  it.each(["queued", "steered", "redirected"])("busy submit respects authoritative %s without a fresh local turn", async status => {
+    await start(); await session.submit("first"); const before = session.getSnapshot().conversation.messages;
+    FakeNativeSocket.responder = (r, s) => r.method === "prompt.submit" ? s.reply(r, { status }) : s.reply(r, { session_id: "runtime", running: true, ...(status === "queued" ? { queued: { user: "second" } } : {}) });
+    await session.submit("second"); await flushNative();
+    expect(session.getSnapshot().conversation.messages).toBe(before);
+    expect(session.getSnapshot().control.queued).toBe(status === "queued" ? "second" : null);
+    expect(requests("prompt.submit")).toHaveLength(2);
+  });
+  it("explicit queue uses backend queued:true and Stop never drains it", async () => {
+    await start(); await session.submit("first");
+    FakeNativeSocket.responder = (r, s) => r.method === "prompt.submit" ? s.reply(r, { status: "queued" }) : r.method === "session.activate" ? s.reply(r, { session_id: "runtime", running: false, pending_interactions: [] }) : FakeNativeSocket.defaultResponse(r, s);
+    await session.submit("next", true); await session.interrupt();
+    expect(requests("prompt.submit")[1].params).toEqual({ session_id: "runtime", text: "next", queued: true });
+    await vi.advanceTimersByTimeAsync(5000); expect(requests("prompt.submit")).toHaveLength(2);
+    expect(session.getSnapshot().control.queued).toBeNull();
+  });
+  it.each(["queued", "rejected"])("explicit steer %s never falls back to submit", async status => {
+    await start(); await session.submit("first"); FakeNativeSocket.responder = (r, s) => s.reply(r, { status });
+    await session.steer("correction");
+    expect(requests("session.steer")[0].params).toEqual({ session_id: "runtime", text: "correction" });
+    expect(requests("prompt.submit")).toHaveLength(1);
+    expect(session.getSnapshot().control.notice).toContain(status === "queued" ? "queued" : "rejected");
+  });
+  it("ambiguous busy queue submission reconnects without replay and restores backend queue", async () => {
+    await start(); await session.submit("first");
+    FakeNativeSocket.responder = (r, s) => r.method === "prompt.submit" ? s.close(1006) : s.reply(r, { session_id: "runtime", running: true, queued: { user: "later" }, pending_interactions: [] });
+    await session.submit("later", true); await vi.advanceTimersByTimeAsync(1000); await flushNative();
+    expect(requests("prompt.submit")).toHaveLength(2); expect(session.getSnapshot().control.queued).toBe("later");
+  });
+});
+
+it("rejects old-generation, expired and cross-request MCP operation updates", async () => {
+  await start();
+  const payload = (request_id: string) => ({ request_id, server: "test", action: "install" });
+  FakeNativeSocket.instances[0].event("mcp.setup.request", payload("a"));
+  FakeNativeSocket.instances[0].event("mcp.setup.request", payload("b"));
+  const old = session.getSnapshot().interactions["mcp.setup:a"];
+  const b = session.getSnapshot().interactions["mcp.setup:b"];
+  const op = { kind: "install", id: "action-b", state: "running", profile: "work" };
+  session.rememberMcpOperation(b, op);
+  session.rememberMcpOperation(b, { ...op, id: "old-action-a" });
+  expect(session.getSnapshot().interactions["mcp.setup:b"]).toMatchObject({ operation: op });
+  FakeNativeSocket.responder = (r, s) => s.reply(r, { session_id: "runtime", pending_interactions: [{ type: "mcp.setup.request", payload: { ...payload("a"), operation: { ...op, id: "action-a" } } }] });
+  session.retry(); await flushNative();
+  session.rememberMcpOperation(old, { ...op, id: "late-action" });
+  expect(session.getSnapshot().interactions["mcp.setup:a"]).toMatchObject({ operation: { id: "action-a" } });
+  const current = session.getSnapshot().interactions["mcp.setup:a"];
+  FakeNativeSocket.instances.at(-1)!.event("mcp.setup.expire", { request_id: "a" });
+  const before = session.getSnapshot();
+  session.rememberMcpOperation(current, { ...op, id: "late-action" });
+  expect(session.getSnapshot()).toBe(before);
 });

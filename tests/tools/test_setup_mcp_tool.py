@@ -1,4 +1,4 @@
-"""setup_mcp tool — the desktop inline MCP consent card's tool half.
+"""setup_mcp tool — the shared GUI inline MCP consent card's tool half.
 
 Behavior contracts:
 - no callback (not the desktop app) → tool_error pointing at the CLI path

@@ -1,3 +1,5 @@
+import type { Interactions } from "./native-interactions";
+import type { NativeControl } from "./native-control";
 /** Wire contracts audited against tui_gateway's session and prompt handlers. */
 export interface NativeHistoryMessage {
   role: "user" | "assistant" | "tool" | "system";
@@ -20,10 +22,12 @@ export interface NativeSessionResponse {
   messages?: NativeHistoryMessage[];
   running?: boolean;
   status?: string;
-  info?: { stored_session_id?: string; running?: boolean };
+  info?: { stored_session_id?: string; running?: boolean; usage?: Record<string, unknown> };
   inflight?: { user: string; assistant: string; streaming: boolean; error?: string } | null;
   pending_approval?: unknown;
   pending_clarify?: unknown;
+  pending_interactions?: { type: string; payload: unknown }[];
+  queued?: { user?: string };
 }
 
 export interface NativePart {
@@ -50,7 +54,6 @@ export interface NativeConversationState {
   activeId: string | null;
   status: string;
   error: string | null;
-  blocked: string | null;
   nextId: number;
 }
 
@@ -61,4 +64,6 @@ export interface NativeSessionState {
   connection: "connecting" | "open" | "error" | "closed";
   ready: boolean;
   conversation: NativeConversationState;
+  interactions: Interactions;
+  control: NativeControl;
 }
