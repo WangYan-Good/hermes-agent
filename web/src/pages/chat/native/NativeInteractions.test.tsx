@@ -18,6 +18,10 @@ function Harness() {
   return <NativeChatRuntime session={session} state={state}><ThreadPrimitive.Root><NativeThread /><NativeInteractions session={session} state={state} /></ThreadPrimitive.Root></NativeChatRuntime>;
 }
 beforeEach(async () => {
+  // Node 26's globals otherwise shadow jsdom's browser storage in Vitest.
+  const browser = (globalThis as unknown as { jsdom: { window: Window } }).jsdom.window;
+  vi.stubGlobal("localStorage", browser.localStorage);
+  vi.stubGlobal("sessionStorage", browser.sessionStorage);
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("WebSocket", FakeNativeSocket);
   vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
@@ -85,7 +89,15 @@ it.each(["secret", "sudo"])("%s is masked, never stored/projected/logged, and cl
   const assertAbsent = () => {
     expect(JSON.stringify(session.getSnapshot())).not.toContain(sensitive);
     expect(container.textContent).not.toContain(sensitive);
-    expect(JSON.stringify(localStorage)).not.toContain(sensitive); expect(JSON.stringify(sessionStorage)).not.toContain(sensitive);
+    // Read the browser stores explicitly: Node 26 also exposes a global
+    // localStorage getter, which is unavailable without a storage file.
+    for (const storage of [window.localStorage, window.sessionStorage]) {
+      const entries = Array.from({ length: storage.length }, (_, index) => {
+        const key = storage.key(index)!;
+        return [key, storage.getItem(key)];
+      });
+      expect(JSON.stringify(entries)).not.toContain(sensitive);
+    }
     expect(location.href).not.toContain(sensitive);
     expect(JSON.stringify([log.mock.calls, warn.mock.calls, error.mock.calls])).not.toContain(sensitive);
   };
