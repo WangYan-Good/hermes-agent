@@ -1,5 +1,6 @@
 """Real auth/HTTP/WS/SessionDB resume keeps runtime and display authority split."""
 from fastapi.testclient import TestClient
+import pytest
 from starlette.responses import JSONResponse
 
 from hermes_cli import web_server
@@ -68,3 +69,54 @@ def test_compression_resume_rest_failure_retry_and_cross_segment_tool(tmp_path, 
             assert rows[1]["tool_calls"][0]["id"] == rows[2]["tool_call_id"] == "call"
             assert rows[3]["display_metadata"]["turn_id"] == "turn"
         server._sessions.pop(resumed["session_id"], None)
+
+
+@pytest.mark.parametrize("branched", [False, True])
+def test_old_id_binds_runtime_and_rest_to_same_compression_tip(tmp_path, monkeypatch, branched):
+    import hermes_state
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", "fork-transport")
+    monkeypatch.setattr(web_server.app.state, "auth_required", False, raising=False)
+    monkeypatch.setattr(web_server.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(server, "_schedule_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda *a, **k: False)
+    monkeypatch.setattr(server, "_ensure_active_session_slot", lambda *a, **k: None)
+    def no_submit(*args, **kwargs):
+        raise AssertionError("Resume must never submit/replay a prompt")
+    monkeypatch.setattr(server, "_run_prompt_submit", no_submit)
+    cfg = {"_branched_from": "root"} if branched else None
+    with SessionDB(tmp_path / "state.db") as db:
+        db.create_session("root", source="webui")
+        db.append_message("root", "assistant", content="Excluded root")
+        db.end_session("root", "compression")
+        parent = "root" if branched else None
+        for name in ("A", "B", "C"):
+            if parent:
+                db.end_session(parent, "compression")
+            db.create_session(name, source="webui", parent_session_id=parent, model_config=cfg)
+            db.append_message(name, "assistant", content=f"Visible {name}")
+            parent = name
+    with TestClient(web_server.app, base_url="http://127.0.0.1", client=("127.0.0.1", 43210)) as client:
+        with client.websocket_connect("ws://127.0.0.1/api/ws?token=fork-transport") as ws:
+            ws.send_json({"jsonrpc": "2.0", "id": 1, "method": "session.resume", "params": {"session_id": "A", "omit_messages": True}})
+            while (response := ws.receive_json()).get("id") != 1:
+                pass
+            assert "result" in response, response
+            resumed = response["result"]
+            try:
+                assert resumed["session_key"] == "C"
+                assert resumed.get("messages", []) == []
+                runtime = server._sessions[resumed["session_id"]]
+                assert runtime["session_key"] == "C"
+                url = "/api/sessions/A/messages?view=display&order=latest&include_compacted=true"
+                assert client.get(url, headers={"Authorization": "Bearer wrong"}).status_code == 401
+                response = client.get(url, headers={"Authorization": "Bearer fork-transport"})
+                assert response.status_code == 200
+                payload = response.json()
+                assert payload["session_id"] == "C"
+                assert [r["content"] for r in payload["messages"]] == ["Visible A", "Visible B", "Visible C"]
+            finally:
+                server._sessions.pop(resumed["session_id"], None)

@@ -52,3 +52,20 @@ def test_display_view_cap_and_cursor_validation(client_db):
     assert client.get(url, params={"view": "unknown"}).status_code == 400
     assert client.get(url, params={"view": "display", "before_id": 1, "order": "oldest"}).status_code == 400
     assert client.get(url, headers={"Authorization": "Bearer wrong"}).status_code == 401
+
+
+def test_old_branch_id_resolves_branch_tip_without_original_root(client_db):
+    client, db = client_db
+    cfg = {"_branched_from": "parent"}
+    db.create_session("branch", source="webui", parent_session_id="parent", model_config=cfg)
+    db.append_message("branch", "assistant", content="Branch A")
+    db.end_session("branch", "compression")
+    db.create_session("branch-tip", source="webui", parent_session_id="branch", model_config=cfg)
+    db.append_message("branch-tip", "assistant", content="Branch B")
+    response = client.get("/api/sessions/branch/messages", params={
+        "view": "display", "order": "latest", "include_compacted": "true",
+    })
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["session_id"] == "branch-tip"
+    assert [r["content"] for r in payload["messages"]] == ["Branch A", "Branch B"]
