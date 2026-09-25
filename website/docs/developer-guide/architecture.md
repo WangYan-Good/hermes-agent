@@ -312,6 +312,14 @@ request version invalidate stale reads. The backend's resolved stored ID is
 adopted after session compaction. Attachment history uses persisted references;
 unavailable resources stay unavailable instead of being uploaded again.
 
+Backward paging is enabled only after the latest page for the current stored
+session has hydrated successfully. A transient reconnect history failure keeps
+completed display rows and reconciles current inflight/control state, with a
+non-destructive retry notice. Retry reads latest without `before_id`, rebuilding
+the cursor before older pages are allowed. Stored-ID rotation resets the cache;
+late or concurrent requests cannot reuse a predecessor's cursor or overwrite a
+newer conversation. None of these read retries resubmits a prompt.
+
 ### Attachment ownership and protocol
 
 `tui_gateway/attachments.py` owns an in-memory draft ledger. A draft binds an
@@ -361,11 +369,17 @@ filenames are rejected. PNG/JPEG/GIF/WebP/BMP content is decoded and bounded by
 pixel/frame budgets; MIME spoofing fails. HTML/SVG/PDF remain ordinary files;
 there is no PDF-to-image conversion or executable document preview.
 
-Drafts expire after 24 idle hours. The reaper deletes only module-owned
-unclaimed staging files. Startup discards unfinished files; old completed
-orphans are removed only after checking durable references. Claimed files
-survive cancellation/expiry. Unknown ownership and database failures retain
-files. Authenticated resource reads constrain profile roots, resolved paths and
+Drafts expire after 24 idle hours; drafts supporting an active submitted turn
+remain protected. The reaper revisits every profile home that has created a
+browser draft, including profiles first used after process startup. Under the
+same lock as upload/claim/cancel/recovery, it retains live ledger items and
+removes only generated completed files older than the retention period whose
+content/metadata references are absent from a successful read-only SessionDB
+lookup. Claimed files survive cancellation/expiry themselves; a later sweep can
+reclaim them after their durable session is deleted and no live owner remains.
+Unowned temporary uploads are cleaned; symlinks and unknown names are never
+followed or deleted. Unknown ownership and database failures retain files.
+Authenticated resource reads constrain profile roots, resolved paths and
 size, use no-sniff responses, and do not serve HTML/SVG inline.
 
 Renderers bound tool results/diffs to pages of 200 lines or 32 KiB and fall back

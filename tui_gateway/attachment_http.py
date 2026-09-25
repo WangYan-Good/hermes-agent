@@ -149,4 +149,4 @@ async def run_attachment_reaper():
     await asyncio.to_thread(store.cleanup_orphans, get_hermes_home())
     while True:
         await asyncio.sleep(60)
-        await asyncio.to_thread(store.expire)
+        await asyncio.to_thread(store.sweep)

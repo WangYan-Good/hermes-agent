@@ -9,10 +9,12 @@ import os
 import secrets
 import re
 import sqlite3
+import sys
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -66,12 +68,13 @@ class AttachmentStore:
     def __init__(self):
         self.lock = threading.RLock()
         self.drafts: dict[str, Draft] = {}
-        self.cleaned_homes: set[Path] = set()
+        self.homes: set[Path] = set()
 
     def create(self, runtime_id: str, profile: str, home: Path, owner: object) -> Draft:
         with self.lock:
             self.expire()
-            self.cleanup_orphans(Path(home))
+            if Path(home).resolve() not in self.homes:
+                self.cleanup_orphans(Path(home))
             if sum(d.owner is owner for d in self.drafts.values()) >= 20 or len(self.drafts) >= 1000:
                 raise ValueError("Too many attachment drafts")
             d = Draft(uuid.uuid4().hex, runtime_id, profile, Path(home), owner, principal=owner_principal(owner))
@@ -237,6 +240,7 @@ class AttachmentStore:
             for a in items:
                 a.state = "submitted"
                 a.turn_id = turn_id
+            d.updated = time.time()
             return items
 
     def reject_claim(self, d, ids, turn_id):
@@ -253,18 +257,27 @@ class AttachmentStore:
             return [a.public() for a in d.items.values()]
 
     def cleanup_orphans(self, home):
-        """One scan per profile/process; never follow symlinks or delete unknown files.
+        """Repeatable, conservative scan, serialized with every ledger transition.
 
-        Completed orphans are retained unless a durable reference scan proves
-        they are unreferenced and the draft retention period has elapsed.
+        A live item protects both its temporary and completed names. Only old
+        generated completed files with a successful negative durable lookup
+        are removable. An unreadable directory/database is never an orphan.
         """
-        home = home.resolve()
-        if home in self.cleaned_homes:
-            return
-        self.cleaned_homes.add(home)
+        with self.lock:
+            home = home.resolve()
+            self.homes.add(home)
+            live = {(d.id, a.id) for d in self.drafts.values() if d.home.resolve() == home
+                    for a in d.items.values() if a.state != "cancelled"}
+            try:
+                self._cleanup_home(home, live)
+            except OSError:
+                pass  # Retain anything whose filesystem ownership is uncertain.
+
+    def _cleanup_home(self, home, live):
         for category in ("images", "attachments"):
             root = home / category / "web-drafts"
-            if not root.is_dir() or root.is_symlink() or not root.resolve().is_relative_to(home):
+            if (not root.is_dir() or (home / category).is_symlink() or root.is_symlink()
+                    or not root.resolve().is_relative_to(home)):
                 continue
             for folder in root.iterdir():
                 if folder.is_symlink() or not folder.is_dir() or not re.fullmatch(r"[0-9a-f]{32}", folder.name):
@@ -272,21 +285,41 @@ class AttachmentStore:
                 for path in folder.iterdir():
                     if path.is_symlink() or not path.is_file():
                         continue
-                    if re.fullmatch(r"[0-9a-f]{32}\.[0-9a-f]{32}\.upload", path.name):
+                    temporary = re.fullmatch(r"([0-9a-f]{32})\.[0-9a-f]{32}\.upload", path.name)
+                    completed = re.fullmatch(r"([0-9a-f]{32})(?:\.[^./]+)?", path.name)
+                    identity = temporary or completed
+                    if not identity or (folder.name, identity[1]) in live:
+                        continue
+                    if temporary:
                         path.unlink(missing_ok=True)
-                    elif re.fullmatch(r"[0-9a-f]{32}(?:\.[^/]+)?", path.name) and time.time() - path.stat().st_mtime > TTL:
+                    elif time.time() - path.stat().st_mtime > TTL:
                         try:
-                            with sqlite3.connect(f"file:{home / 'state.db'}?mode=ro", uri=True) as db:
-                                found = db.execute("SELECT 1 FROM messages WHERE instr(content, ?) > 0 OR instr(COALESCE(display_metadata, ''), ?) > 0 LIMIT 1", (path.stem, path.stem)).fetchone()
+                            with closing(sqlite3.connect((home / "state.db").as_uri() + "?mode=ro", uri=True)) as db:
+                                found = db.execute("SELECT 1 FROM messages WHERE instr(content, ?) > 0 OR instr(COALESCE(display_metadata, ''), ?) > 0 LIMIT 1", (identity[1], identity[1])).fetchone()
                             if not found:
                                 path.unlink(missing_ok=True)
                         except (OSError, sqlite3.Error):
                             pass  # Unknown ownership is retained, never guessed.
 
+    def sweep(self):
+        """Revisit every profile that has hosted browser drafts in this process."""
+        with self.lock:
+            self.expire()
+            for home in tuple(self.homes):
+                self.cleanup_orphans(home)
+
     def expire(self):
         with self.lock:
             for key, d in list(self.drafts.items()):
                 if time.time() - d.updated <= TTL:
+                    continue
+                # The gateway takes history_lock before this ledger lock.
+                # Do not acquire history_lock here (reverse lock order). The
+                # runtime's running flag is published before claim dispatch;
+                # retaining on any active turn is intentionally conservative.
+                gateway = sys.modules.get("tui_gateway.server")
+                session = getattr(gateway, "_sessions", {}).get(d.runtime_id)
+                if session and session.get("running") and any(a.state == "submitted" for a in d.items.values()):
                     continue
                 for a in d.items.values():
                     self.cancel(d, a.id)

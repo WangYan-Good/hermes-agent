@@ -41,3 +41,94 @@ it('pages before the oldest row and completes calls crossing the page boundary',
   const tools = session.getSnapshot().conversation.messages.flatMap(m => m.parts).filter(p => p.type === 'tool');
   expect(tools).toHaveLength(1); expect(tools[0].args).toEqual({ path: 'a' }); expect(tools[0].result).toBe('done');
 });
+
+const turn = (id: number, text: string) => [
+  { id, role: 'user', content: text, display_metadata: { turn_id: `turn-${id}` } },
+  { id: id + 1, role: 'assistant', content: `Answer ${text}`, display_metadata: { turn_id: `turn-${id}` } },
+];
+const visibleText = () => session.getSnapshot().conversation.messages.flatMap(m => m.parts.map(p => p.text));
+
+it.each([false, true])('preserves history on failed reconnect and retries latest before paging (rotation=%s)', async rotate => {
+  let stored = 'stored';
+  let inflight = false;
+  FakeNativeSocket.responder = (request, socket) => socket.reply(request, {
+    session_id: 'runtime', session_key: stored, running: inflight, messages: [],
+    ...(inflight ? { inflight: { turn_id: 'turn-current', user: 'Current', assistant: 'Partial', streaming: true } } : {}),
+  });
+  history.mockResolvedValueOnce(page(turn(10, 'Old'), 2));
+  session.start(); await flushNative();
+  expect(visibleText()).toContain('Old');
+  stored = rotate ? 'compressed' : 'stored'; inflight = true;
+  history.mockRejectedValueOnce(new Error('temporary REST failure'));
+  FakeNativeSocket.instances[0].close(1006); session.retry(); await flushNative();
+  expect(visibleText()).toContain('Old');
+  expect(visibleText()).toContain('Partial');
+  expect(session.getSnapshot().conversation.running).toBe(true);
+  expect(session.getSnapshot().control.notice).toMatch(/history.*unavailable/i);
+  expect(FakeNativeSocket.requests.filter(r => r.method === 'prompt.submit')).toHaveLength(0);
+
+  history.mockResolvedValueOnce({ ...page([...turn(10, 'Old'), ...turn(12, 'New')], 4), session_id: stored });
+  await session.loadOlder();
+  expect(history.mock.calls[2].slice(0, 3)).toEqual(['work', stored, undefined]);
+  expect(visibleText().filter(t => t === 'New')).toHaveLength(1);
+  expect(visibleText().filter(t => t === 'Old')).toHaveLength(1);
+  expect(visibleText()).toContain('Partial');
+  history.mockResolvedValueOnce({ ...page(turn(8, 'Earlier')), session_id: stored });
+  await session.loadOlder();
+  expect(history.mock.calls[3].slice(0, 3)).toEqual(['work', stored, 10]);
+  expect(visibleText()).toContain('Earlier');
+  expect(FakeNativeSocket.requests.filter(r => r.method === 'prompt.submit')).toHaveLength(0);
+});
+
+it('aborts and ignores an older-page response after selecting a different stored session', async () => {
+  let finish!: (value: HistoryPage) => void;
+  history.mockResolvedValueOnce(page(turn(10, 'A'), 2))
+    .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }))
+    .mockResolvedValueOnce({ ...page(turn(50, 'B')), session_id: 'other' });
+  FakeNativeSocket.responder = (request, socket) => socket.reply(request, {
+    session_id: request.params.session_id === 'other' ? 'runtime-b' : 'runtime',
+    session_key: request.params.session_id, running: false,
+  });
+  session.start(); await flushNative();
+  const pending = session.loadOlder(); await flushNative();
+  const signal = history.mock.calls[1][3] as AbortSignal;
+  session.select('other'); await flushNative();
+  finish(page(turn(2, 'STALE'))); await pending;
+  expect(signal?.aborted).toBe(true);
+  expect(visibleText()).toEqual(['B', 'Answer B']);
+});
+
+it('coalesces simultaneous older-page loads', async () => {
+  let finish!: (value: HistoryPage) => void;
+  history.mockResolvedValueOnce(page(turn(10, 'Old'), 2))
+    .mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  session.start(); await flushNative();
+  const first = session.loadOlder(); const second = session.loadOlder(); await flushNative();
+  expect(history).toHaveBeenCalledTimes(2);
+  finish(page(turn(8, 'Earlier'))); await Promise.all([first, second]);
+  expect(visibleText().filter(t => t === 'Earlier')).toHaveLength(1);
+});
+
+it('rebuilds the retry cursor from latest when disconnected turns exceed a page', async () => {
+  FakeNativeSocket.responder = (request, socket) => socket.reply(request, { session_id: 'runtime', session_key: 'stored', running: false, messages: [] });
+  history.mockResolvedValueOnce(page(turn(10, 'Old'), 2)).mockRejectedValueOnce(new Error('unavailable'));
+  session.start(); await flushNative();
+  FakeNativeSocket.instances[0].close(1006); session.retry(); await flushNative();
+  expect(visibleText()).toContain('Old');
+  history.mockResolvedValueOnce(page(turn(100, 'Latest'), 2));
+  await session.loadOlder();
+  history.mockResolvedValueOnce(page(turn(98, 'Gap')));
+  await session.loadOlder();
+  expect(history.mock.calls.at(-1)?.slice(0, 3)).toEqual(['work', 'stored', 100]);
+  expect(visibleText()).toContain('Gap');
+});
+
+it('fetches latest when an older-page response reports a rotated stored identity', async () => {
+  history.mockResolvedValueOnce(page(turn(10, 'Old'), 2))
+    .mockResolvedValueOnce({ ...page(turn(8, 'Partial ancestor')), session_id: 'rotated' })
+    .mockResolvedValueOnce({ ...page(turn(100, 'Current')), session_id: 'rotated' });
+  session.start(); await flushNative();
+  await session.loadOlder();
+  expect(history.mock.calls[2]?.slice(0, 3)).toEqual(['work', 'rotated', undefined]);
+  expect(visibleText()).toContain('Current');
+});

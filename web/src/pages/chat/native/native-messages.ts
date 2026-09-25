@@ -88,8 +88,17 @@ export function hydrateNativeHistory(response: NativeSessionResponse): NativeCon
 
 /** A resume snapshot and events can cross on the wire. Reconcile their shared
  * text boundary instead of appending the snapshot to the existing transcript. */
-export function reconcileNativeResume(response: NativeSessionResponse, buffered: GatewayEvent[], previous: NativeConversationState): NativeConversationState {
+export function reconcileNativeResume(response: NativeSessionResponse, buffered: GatewayEvent[], previous: NativeConversationState, preserveHistory = false): NativeConversationState {
   let state = hydrateNativeHistory(response.durable_rows ? { ...response, messages: durableRowsToHistory(response.durable_rows) } : response);
+  if (preserveHistory && !response.durable_rows && !response.messages?.length) {
+    // The RPC intentionally omitted history and REST failed. Retain completed
+    // display rows, while the current snapshot owns inflight/control state.
+    // This is display continuity only: the controller scopes/reset its cursor
+    // separately when the backend rotates the durable identity.
+    const turns = new Set(state.messages.map(m => m.turnId).filter(Boolean));
+    const retained = previous.messages.filter(m => !m.pending && !m.id.startsWith('inflight-') && (!m.turnId || !turns.has(m.turnId)));
+    state = { ...state, messages: [...retained, ...state.messages], nextId: Math.max(previous.nextId, state.nextId) };
+  }
   const events = buffered.filter(e => e.session_id === response.session_id);
   const final = events.findLast(e => e.type === "message.complete" || e.type === "error");
   // If history already contains this terminal frame, its tool/commentary

@@ -10,13 +10,16 @@ import { reconcileNativeResume } from "./native-messages";
 import type { NativeSessionResponse, NativeSessionState } from "./native-types";
 
 const initial = (): NativeSessionState => ({ runtimeId: null, storedId: null, durable: false, connection: "closed", ready: false, conversation: emptyConversation(), interactions: {}, control: emptyControl() });
+const historyUnavailable = "History is unavailable. Use Load earlier messages to retry; live controls remain available.";
 
 export class NativeSession {
   private state = initial();
   readonly attachments: NativeAttachments;
   private historyAbort?: AbortController;
   private historyRows: Record<string, unknown>[] = [];
-  private historyOffset = 0;
+  private historyStoredId: string | null = null;
+  private historyLatest = false;
+  private historyLoading = false;
   private historyMore = false;
   private listeners = new Set<() => void>();
   private gateway: NativeGateway | null = null;
@@ -48,6 +51,12 @@ export class NativeSession {
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private set(next: NativeSessionState) { this.state = next; this.listeners.forEach(fn => fn()); }
+  private invalidateHistory(storedId = this.historyStoredId) {
+    this.historyAbort?.abort(); this.historyAbort = undefined;
+    this.historyLoading = false; this.historyLatest = false; this.historyMore = true;
+    if (storedId !== this.historyStoredId) this.historyRows = [];
+    this.historyStoredId = storedId;
+  }
   start = () => { if (!this.stopped) return; this.stopped = false; void this.connect(); };
   stop = () => {
     this.attachments.invalidate(true); this.historyAbort?.abort();
@@ -59,14 +68,14 @@ export class NativeSession {
 
   select = (storedId: string | null) => {
     if (storedId && (storedId === this.state.storedId || storedId === this.target)) return;
-    this.attachments.reset(); this.historyAbort?.abort(); this.historyRows = []; this.historyOffset = 0;
+    this.attachments.reset(); this.invalidateHistory(null);
     this.target = storedId; this.uncertainSubmit = false;
     this.set(initial()); this.retries = 0;
     if (!this.stopped) void this.connect();
   };
 
   private async connect() {
-    this.attachments.invalidate(); this.historyAbort?.abort();
+    this.attachments.invalidate(); this.invalidateHistory();
     const generation = ++this.generation;
     clearTimeout(this.timer);
     this.gateway?.close();
@@ -116,12 +125,15 @@ export class NativeSession {
       if (!current()) return;
       let historyFailed = false;
       const durableId = response.stored_session_id || response.session_key || response.info?.stored_session_id || storedId;
+      this.invalidateHistory(durableId);
       if (durableId && (resumed || this.state.durable || response.running)) {
-        this.historyAbort = new AbortController();
+        const controller = new AbortController();
+        this.historyAbort = controller;
         try {
-          const page = await readHistory(this.profile, durableId, undefined, this.historyAbort.signal);
-          if (!current()) return;
-          this.historyRows = page.messages; this.historyOffset = page.pagination.returned; this.historyMore = page.pagination.returned === page.pagination.limit;
+          const page = await readHistory(this.profile, durableId, undefined, controller.signal);
+          if (!current() || controller.signal.aborted || this.historyAbort !== controller) return;
+          this.historyStoredId = page.session_id; this.historyLatest = true;
+          this.historyRows = page.messages; this.historyMore = page.pagination.returned === page.pagination.limit;
           response = { ...response, durable_rows: page.messages, stored_session_id: page.session_id };
         } catch {
           if (!current()) return;
@@ -129,10 +141,10 @@ export class NativeSession {
           this.historyMore = true; historyFailed = true;
         }
       }
-      const conversation = reconcileNativeResume(response, this.buffered, this.state.conversation);
+      const conversation = reconcileNativeResume(response, this.buffered, this.state.conversation, historyFailed);
       let interactions = recoverInteractions(response, generation);
       let control = recoverControl(response);
-      if (historyFailed) control = { ...control, notice: "History is unavailable. Use Load earlier messages to retry; live controls remain available." };
+      if (historyFailed) control = { ...control, notice: historyUnavailable };
       for (const e of this.buffered.filter(e => e.session_id === response.session_id)) {
         interactions = reduceInteractions(interactions, e, generation);
         control = reduceControl(control, e);
@@ -166,6 +178,7 @@ export class NativeSession {
     this.eventRevision++;
     const payload = record(event.payload);
     const storedId = event.type === "session.info" ? string(payload.stored_session_id) : "";
+    if (storedId && storedId !== this.historyStoredId) this.invalidateHistory(storedId);
     this.set({ ...this.state, storedId: storedId || this.state.storedId, conversation: reduceNativeEvent(this.state.conversation, event), interactions: reduceInteractions(this.state.interactions, event, this.generation), control: reduceControl(this.state.control, event) });
     if (hasInteraction(this.state.interactions) && !this.state.conversation.running) this.set({ ...this.state, conversation: { ...this.state.conversation, running: true } });
     this.ackApprovals();
@@ -202,23 +215,40 @@ export class NativeSession {
 
   loadOlder = async () => {
     const storedId = this.state.storedId;
-    if (!storedId || !this.state.ready || !this.historyMore) return;
+    if (!storedId || !this.state.ready || this.stopped) return;
+    if (storedId !== this.historyStoredId) this.invalidateHistory(storedId);
+    if (this.historyLoading || (this.historyLatest && !this.historyMore)) return;
     const generation = this.generation; const runtimeId = this.state.runtimeId;
-    const offset = this.historyOffset;
+    const latest = !this.historyLatest;
+    const controller = new AbortController(); this.historyAbort = controller; this.historyLoading = true;
+    const current = () => generation === this.generation && runtimeId === this.state.runtimeId && storedId === this.state.storedId && !this.stopped && !controller.signal.aborted && this.historyAbort === controller;
     try {
-      const page = await readHistory(this.profile, storedId, this.historyRows.length ? Math.min(...this.historyRows.map(row => Number(row.id))) : undefined);
-      if (generation !== this.generation || runtimeId !== this.state.runtimeId || storedId !== this.state.storedId || this.stopped || offset !== this.historyOffset) return;
-      const rows = new Map([...page.messages, ...this.historyRows].map(row => [row.id, row]));
+      const beforeId = !latest && this.historyRows.length ? Math.min(...this.historyRows.map(row => Number(row.id))) : undefined;
+      const page = await readHistory(this.profile, storedId, beforeId, controller.signal);
+      if (!current()) return;
+      if (!latest && page.session_id !== storedId) {
+        this.invalidateHistory(page.session_id);
+        this.set({ ...this.state, storedId: page.session_id });
+        await this.loadOlder();
+        return;
+      }
+      // A remapped durable identity starts a fresh cursor. Never carry rows
+      // from its predecessor into this session's backwards paging state.
+      const rows = new Map([...(!latest && page.session_id === this.historyStoredId ? this.historyRows : []), ...page.messages].map(row => [row.id, row]));
       this.historyRows = [...rows.values()].sort((a, b) => Number(a.id) - Number(b.id));
-      this.historyOffset += page.pagination.returned; this.historyMore = page.pagination.returned === page.pagination.limit;
+      this.historyStoredId = page.session_id; this.historyLatest = true;
+      // Rebuild from latest: retaining a disjoint older cache could skip turns
+      // committed during a long disconnect when paging from its oldest row.
+      this.historyMore = page.pagination.returned === page.pagination.limit;
       const older = hydrateDurableHistory(this.historyRows).messages;
       const durableTurns = new Set(older.map(m => m.turnId).filter(Boolean));
       const live = this.state.conversation.messages.filter(m => !m.id.startsWith('history-') && (!m.turnId || !durableTurns.has(m.turnId) || m.pending));
       const pendingTurns = new Set(live.filter(m => m.pending).map(m => m.turnId).filter(Boolean));
       const tools = new Set(older.flatMap(m => m.parts.filter(p => p.type === 'tool').map(p => p.id)));
       const messages = [...older.filter(m => !(m.role === 'assistant' && pendingTurns.has(m.turnId))), ...live.map(m => ({ ...m, parts: m.parts.filter(p => p.type !== 'tool' || m.pending || !tools.has(p.id)) }))];
-      this.set({ ...this.state, conversation: { ...this.state.conversation, messages } });
-    } catch { if (generation === this.generation) this.set({ ...this.state, control: { ...this.state.control, notice: "Could not load earlier messages. Reconnect or retry." } }); }
+      this.set({ ...this.state, storedId: page.session_id, control: { ...this.state.control, notice: this.state.control.notice === historyUnavailable ? "" : this.state.control.notice }, conversation: { ...this.state.conversation, messages } });
+    } catch { if (current()) this.set({ ...this.state, control: { ...this.state.control, notice: latest ? historyUnavailable : "Could not load earlier messages. Reconnect or retry." } }); }
+    finally { if (this.historyAbort === controller) this.historyLoading = false; }
   };
 
   isCurrent = (r: NativeInteraction) => !this.stopped && this.state.ready && r.generation === this.generation && r.runtimeId === this.state.runtimeId && this.state.interactions[r.key]?.generation === r.generation && activeInteraction(this.state.interactions[r.key]);
