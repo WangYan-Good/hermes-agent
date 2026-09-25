@@ -280,15 +280,15 @@ This chain means tool registration happens at import time, before any agent inst
 
 ## Rich chat presentation and browser attachments (UI-P5)
 
-The experimental Web Native surface and Electron Desktop share the portable
+The Web Native surface and Electron Desktop share the portable
 `apps/chat-ui` package. Desktop retains its Electron/filesystem adapter and
 preview rail; Web uses authenticated HTTP resources, owned object URLs, and
 source-only HTML/SVG previews. The shared package owns data contracts, Markdown
 processing, math/block caches, lazy code highlighting, artifact detection and
 diff parsing. Dependency tests reject host imports in the shared package.
-Terminal remains the default dashboard surface and `/api/pty` is unchanged.
-This phase does not implement UI-P6/P7 or alter model tool schemas, prompt
-caching, approvals or session recovery semantics.
+Native is the default dashboard surface. Terminal remains selectable and uses
+`/api/pty`. Presentation changes do not alter model tool schemas, prompt caching,
+approvals, or SessionDB schemas.
 
 ### Live and durable display data
 
@@ -414,3 +414,90 @@ Native hydration races, resource cleanup, XSS and package boundaries. Browser
 validation also exercises refresh after upload and matching live/history
 artifacts and generated images. Controlled workers verify the transport and
 persistence contracts; they do not validate an external model provider.
+
+
+## Dashboard Chat Interface selection and handoff (UI-P6)
+
+Native is browser-native Hermes chat over `/api/ws`; Terminal is the supported
+classic xterm + Ink interface over `/api/pty`. Both load lazily. Selecting an
+interface does not change the Agent Loop, provider semantics, or stored history.
+
+Settings exposes `dashboard.chat.default_mode` as a Native/Terminal profile
+default and a separate browser selector: Follow profile default / Native /
+Terminal. The only browser mode key is `hermes.dashboard.chat.mode`. Resolution
+is valid `chat_mode` URL override, browser override, profile default, then Native.
+Invalid values are ignored. Reading legacy configuration merges defaults without
+rewriting the file. Explicit Terminal settings remain Terminal. The UI identifies
+the effective source, so a browser override cannot silently mask a saved default.
+
+Legacy `/chat?chat_mode=native|terminal` bookmarks remain temporary overrides.
+They never write preferences themselves. An explicit browser selection replaces
+the URL override only after successful handoff. Clearing the browser preference
+restores the profile default. Blocked storage affects persistence, not the
+in-memory interface choice. Back/forward navigation never submits a prompt.
+
+The persistent host coordinates `initializing`, `stable-native`,
+`stable-terminal`, `switch-requested`, `waiting-for-idle`, `switching`, and
+`failed`. A route hide/show is only visibility. A pending switch waits for the
+current owner to settle; changing back cancels it, and repeated intent is
+coalesced. The target is not active merely because React rendered its component.
+It must authenticate and confirm its session before input and preference commit.
+Only one presentation accepts input, and the source releases before the target
+opens. Existing Terminal sidebar management sockets are not Native Agent owners.
+
+Native uses its live recovery state and `session.handoff` (status, prepare,
+cancel, release) to confirm idle ownership under the submission lock. Running
+workers, queues, pending interactions, and uncertain submissions prevent release.
+The idle condition includes worker finalization after `message.complete`.
+Unknown prompt acceptance is recovered through existing resume/activate and
+attachment-ledger paths, never by replay. Dashboard resume explicitly disables
+crash auto-continuation, including deferred history hydration. Other clients keep
+their existing continuation policy.
+
+Terminal negotiates `hermes.pty-control.v1`. Binary frames remain raw terminal
+input; text frames carry correlated lifecycle controls and cannot be pasted as
+commands. The dashboard relays controls to the actual Ink process over an
+instance-bound `/api/pub` connection, which checks its composer/overlays and its
+real gateway owner. This works with both attached and profile-local gateways.
+Control requests bind the profile and viewer generation. An input-byte fence waits
+for already accepted PTY bytes to reach Ink before sampling its composer. The
+private control connection can reconnect and recover a lost prepare ticket;
+missing or stale control authority blocks switching. Ordinary disconnections
+still detach for keep-alive; explicit release closes/removes the idle PTY before
+acknowledging handoff. Failed targets that never admitted terminal input can be
+explicitly aborted from the registry before restoring the source. Legacy non-negotiating clients retain their byte protocol.
+
+Both directions pass only the canonical durable ID through the existing resume
+contract. Runtime IDs, prompts, terminal commands, and attachment IDs are never
+transferred as input. No durable ID means an explicitly identified new draft.
+A failed target preserves the durable identity and offers retry/return; failed
+recovery never silently creates a replacement conversation or commits preference.
+
+Approval, clarify, secret, sudo and MCP interactions retain their single responder
+until resolution or expiry. Queue/Steer/Stop retain their meanings; Stop only
+permits handoff after authoritative settlement. Native unsent text and attachments
+require a non-modal discard-or-cancel choice. Attachment discard waits for confirmed
+cancellation; uncertain or active uploads remain owned. Terminal unfinished input
+must be handled in Terminal before switching.
+
+Profile changes invalidate pending handoffs, config responses and durable IDs.
+Browser preference is global; profile defaults and conversation identities are
+scoped. Initial built-in activation waits for a fresh plugin-manifest response,
+including when cached manifests contain no override. A plugin owning `/chat`
+prevents both built-in transports from mounting; Settings alone never starts one.
+
+Only mode preferences enter localStorage. Errors exposed by the coordinator are
+sanitized; credentials, transcript content and sensitive interaction values do
+not enter its persistent state. Terminal retirement and UI-P7 are outside this
+phase.
+
+The container-only real-browser fixture is
+`tests/e2e/fixtures/chat_handoff_server.py`, driven by
+`node web/e2e/chat-interface.cjs` after building Web and TUI. It creates a temporary
+Hermes home and serves a deterministic OpenAI-compatible provider on loopback;
+authentication, agent execution, file tools, attachment HTTP, WS, PTY, Ink,
+profiles, plugins and SessionDB use their production paths. `CHAT_E2E_BROWSER`
+can select a preinstalled Chromium executable. Use an isolated disposable
+container with no inherited host proxy; the fixture is not a deployable server.
+The browser assertions distinguish agent, PTY and management connections, compare
+real durable history across a round trip and reject extra submit/replay frames.

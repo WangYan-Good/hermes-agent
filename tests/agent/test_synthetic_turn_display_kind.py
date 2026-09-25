@@ -104,3 +104,13 @@ def test_a_real_user_turn_stays_untyped(agent_db):
 
     row, = [r for r in db.get_messages_as_conversation(sid) if r["role"] == "user"]
     assert row.get("display_kind") is None
+
+
+def test_user_attachment_metadata_is_persisted_without_synthetic_kind(agent_db):
+    agent, db, sid = agent_db
+    metadata = {'turn_id': 'turn', 'attachments': [{'id': 'file', 'name': 'report.txt'}]}
+    _build(agent, user_message='read this', persist_user_display_metadata=metadata)
+    row, = [r for r in db.get_messages_as_conversation(sid) if r['role'] == 'user']
+    assert row.get('display_kind') is None
+    assert row['display_metadata'] == metadata
+    assert row['content'] == 'read this'

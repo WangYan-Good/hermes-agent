@@ -23,6 +23,7 @@ export class NativeAttachments {
   private listeners = new Set<() => void>();
   private sources = new Map<string, File>();
   private controllers = new Map<string, AbortController>();
+  private cancelling = new Set<string>();
   private authority: DraftAuthority | null = null;
   private preparing: Promise<DraftAuthority> | null = null;
   private epoch = 0;
@@ -50,7 +51,7 @@ export class NativeAttachments {
     }) });
   }
   invalidate = (clear = false) => {
-    this.epoch++; this.preparing = null; this.authority = null;
+    this.epoch++; this.preparing = null; this.authority = null; this.cancelling.clear();
     this.controllers.forEach(c => c.abort()); this.controllers.clear();
     if (clear) {
       this.state.items.forEach(a => { if (a.preview) URL.revokeObjectURL(a.preview); });
@@ -72,8 +73,9 @@ export class NativeAttachments {
       if (!this.current(scope, epoch)) return;
       this.authority = { draft_id: result.draft_id, draft_token: result.draft_token }; this.merge(result.attachments);
       for (const item of this.state.items.filter(a => a.state === 'cancelled' && a.id)) {
-        await this.rpc('attachment.cancel', { ...this.params(scope), attachment_id: item.id });
+        const cancelled = await this.rpc('attachment.cancel', { ...this.params(scope), attachment_id: item.id }) as { attachments?: NativeAttachment[] };
         if (!this.current(scope, epoch)) return;
+        if (cancelled.attachments?.find(a => a.id === item.id)?.state !== 'cancelled') throw new Error('Cancellation not confirmed');
       }
       // A submitted ledger record is an accepted turn, never a retry candidate.
       this.set({ uncertain: false });
@@ -145,7 +147,7 @@ export class NativeAttachments {
         } catch { if (this.current(scope, epoch)) this.update(occurrence, { state: 'failed' }); }
         if (this.current(scope, epoch)) this.set({ error: 'Upload was not confirmed. Inspect the attachment before retrying.' });
       }
-    } finally { if (this.controllers.get(occurrence) === controller) this.controllers.delete(occurrence); }
+    } finally { if (this.controllers.get(occurrence) === controller) { this.controllers.delete(occurrence); this.set({}); } }
   };
   remove = async (occurrence: string) => {
     if (this.state.uncertain) return;
@@ -154,8 +156,29 @@ export class NativeAttachments {
     this.update(occurrence, { state: 'cancelled' }); this.sources.delete(occurrence);
     if (item.preview) URL.revokeObjectURL(item.preview);
     if (item.id && scope && this.authority) {
-      try { await this.rpc('attachment.cancel', { ...this.params(scope), attachment_id: item.id }); }
-      catch { this.set({ error: 'Removal was not confirmed by the server. Reconnect to inspect the draft.' }); }
+      const epoch = this.epoch;
+      this.cancelling.add(occurrence); this.set({});
+      try {
+        const result = await this.rpc('attachment.cancel', { ...this.params(scope), attachment_id: item.id }) as { attachments?: NativeAttachment[] };
+        if (result.attachments?.find(a => a.id === item.id)?.state !== 'cancelled') throw new Error('Cancellation not confirmed');
+      }
+      catch { if (this.current(scope, epoch)) this.set({ uncertain: true, error: 'Removal was not confirmed by the server. Reconnect to inspect the draft.' }); }
+      finally { this.cancelling.delete(occurrence); if (this.current(scope, epoch)) this.set({}); }
+    }
+  };
+  get pendingOperations() { return this.controllers.size > 0 || this.cancelling.size > 0 || this.preparing !== null; }
+  discardForHandoff = async () => {
+    if (this.state.uncertain || this.state.recovering || this.pendingOperations) throw new Error('Wait for attachment operations');
+    const scope = this.scope();
+    for (const item of this.state.items.filter(a => !['submitted', 'cancelled'].includes(a.state))) {
+      if (item.id) {
+        if (!scope || !this.authority) throw new Error('Attachment ownership unavailable');
+        const result = await this.rpc('attachment.cancel', { ...this.params(scope), attachment_id: item.id }) as { attachments?: NativeAttachment[] };
+        if (result.attachments?.find(a => a.id === item.id)?.state !== 'cancelled') throw new Error('Attachment is owned by a turn');
+      }
+      this.update(item.occurrence_id, { state: 'cancelled' });
+      if (item.preview) URL.revokeObjectURL(item.preview);
+      this.sources.delete(item.occurrence_id);
     }
   };
   submitPayload(): Partial<DraftAuthority> & { attachment_ids?: string[] } {

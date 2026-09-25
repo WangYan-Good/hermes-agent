@@ -1,6 +1,6 @@
 # @hermes/chat-ui
 
-Host-neutral chat presentation shared by Desktop and experimental Web Native
+Host-neutral chat presentation shared by Desktop and Web Native
 Chat. The backend remains authoritative for sessions, turns, tools and approvals.
 
 ## Shared surface

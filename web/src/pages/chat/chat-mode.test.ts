@@ -1,77 +1,27 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-import {
-  CHAT_MODE_STORAGE_KEY,
-  normalizeChatMode,
-  readBrowserChatMode,
-  resolveChatMode,
-} from "./chat-mode";
-
+import { afterEach, expect, it, vi } from 'vitest';
+import { CHAT_MODE_STORAGE_KEY, normalizeChatMode, readBrowserChatMode, resolveChatMode, writeBrowserChatMode } from './chat-mode';
 afterEach(() => vi.unstubAllGlobals());
-
-describe("chat mode contract", () => {
-  it.each(["terminal", "native"])("accepts only the literal %s", (value) => {
-    expect(normalizeChatMode(value)).toBe(value);
-  });
-
-  it.each([null, undefined, "", "TUI", "xterm", "chatgpt", "Native", " terminal ", "future-mode", 1, {}, []])(
-    "rejects unknown value %j",
-    (value) => {
-      expect(normalizeChatMode(value)).toBeNull();
-      expect(resolveChatMode({ browserMode: value, serverMode: value })).toEqual({
-        requested: "terminal", effective: "terminal",
-      });
-    },
-  );
-
-  it("falls back to terminal without any preference", () => {
-    expect(resolveChatMode()).toEqual({ requested: "terminal", effective: "terminal" });
-  });
-
-  it("uses server default, but falls back for unsupported native", () => {
-    expect(resolveChatMode({ serverMode: "native" })).toEqual({
-      requested: "native", effective: "terminal",
-    });
-  });
-
-  it("prefers valid browser preference over server default", () => {
-    expect(resolveChatMode({ browserMode: "terminal", serverMode: "native" })).toEqual({
-      requested: "terminal", effective: "terminal",
-    });
-    expect(resolveChatMode({ browserMode: "native", serverMode: "terminal" })).toEqual({
-      requested: "native", effective: "terminal",
-    });
-    expect(resolveChatMode({ browserMode: "future-mode", serverMode: "native" }).requested).toBe("native");
-  });
-
-  it("resolves available native only with explicit support", () => {
-    expect(resolveChatMode({ serverMode: "native", nativeAvailable: true })).toEqual({
-      requested: "native", effective: "native",
-    });
-  });
-
-  it.each(["native", "terminal", '{"mode":"native"}', "future-mode", "", null])(
-    "reads browser storage without writing: %j", (value) => {
-      const getItem = vi.fn(() => value);
-      const setItem = vi.fn();
-      vi.stubGlobal("window", { localStorage: { getItem, setItem } });
-      expect(readBrowserChatMode()).toBe(normalizeChatMode(value));
-      expect(getItem).toHaveBeenCalledWith(CHAT_MODE_STORAGE_KEY);
-      expect(setItem).not.toHaveBeenCalled();
-      expect(resolveChatMode({ browserMode: readBrowserChatMode() }).effective).toBe("terminal");
-    },
-  );
-
-  it("survives blocked storage and non-browser rendering", () => {
-    vi.stubGlobal("window", { get localStorage() { throw new Error("blocked"); } });
-    expect(readBrowserChatMode()).toBeNull();
-    vi.stubGlobal("window", undefined);
-    expect(readBrowserChatMode()).toBeNull();
-  });
+it.each([null, undefined, '', 'Native', ' terminal ', 'unknown', 1, {}, []])('ignores corrupt preferences %j', value => {
+  expect(normalizeChatMode(value)).toBeNull();
+  expect(resolveChatMode({ urlMode: value, browserMode: value, serverMode: value })).toEqual({ requested: 'native', effective: 'native', source: 'default' });
 });
-
-it("prioritizes explicit URL modes and keeps unrequested native unavailable", () => {
-  expect(resolveChatMode({ urlMode: "native", browserMode: "terminal", nativeAvailable: true }).effective).toBe("native");
-  expect(resolveChatMode({ urlMode: "terminal", browserMode: "native", serverMode: "native", nativeAvailable: true }).effective).toBe("terminal");
-  expect(resolveChatMode({ serverMode: "native", nativeAvailable: false }).effective).toBe("terminal");
+it('resolves URL, browser, profile and canonical default in order without an availability gate', () => {
+  expect(resolveChatMode({ urlMode: 'terminal', browserMode: 'native', serverMode: 'native' }).source).toBe('url');
+  expect(resolveChatMode({ urlMode: 'invalid', browserMode: 'terminal', serverMode: 'native' })).toMatchObject({ effective: 'terminal', source: 'browser' });
+  expect(resolveChatMode({ browserMode: 'native', serverMode: 'terminal' }).effective).toBe('native');
+  expect(resolveChatMode({ serverMode: 'terminal' })).toMatchObject({ effective: 'terminal', source: 'profile' });
+  expect(resolveChatMode().effective).toBe('native');
+});
+it('reads without writes, persists explicit choices and clears to follow profile', () => {
+  const data = new Map<string, string>();
+  const setItem = vi.fn((k: string, v: string) => data.set(k, v));
+  vi.stubGlobal('window', { localStorage: { getItem: (k: string) => data.get(k), setItem, removeItem: (k: string) => data.delete(k) } });
+  expect(readBrowserChatMode()).toBeNull(); expect(setItem).not.toHaveBeenCalled();
+  expect(writeBrowserChatMode('terminal')).toBe(true); expect(data.get(CHAT_MODE_STORAGE_KEY)).toBe('terminal');
+  expect(readBrowserChatMode()).toBe('terminal'); expect(writeBrowserChatMode(null)).toBe(true); expect(readBrowserChatMode()).toBeNull();
+});
+it('handles blocked storage without persisting URL resolution', () => {
+  vi.stubGlobal('window', { get localStorage() { throw new Error('blocked'); } });
+  expect(readBrowserChatMode()).toBeNull(); expect(writeBrowserChatMode('native')).toBe(false);
+  expect(resolveChatMode({ urlMode: 'terminal' }).effective).toBe('terminal');
 });

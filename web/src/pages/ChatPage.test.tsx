@@ -219,7 +219,7 @@ function NavigationHarness({ children }: { children: ReactNode }) {
   );
 }
 
-function RouteAwareChatHarness({ ChatPage }: { ChatPage: typeof import("./ChatPage").default }) {
+function RouteAwareChatHarness({ ChatPage }: { ChatPage: typeof import("./chat/TerminalChatPage").default }) {
   const location = useLocation();
   const navigate = useNavigate();
   return (
@@ -317,35 +317,8 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
-  it.each([undefined, "terminal", "native", "future-mode"])(
-    "mounts only Terminal for server mode %s without waiting for config", async (mode) => {
-      let settle!: (config: Record<string, unknown>) => void;
-      apiMocks.getConfig.mockImplementationOnce(() => new Promise((resolve) => { settle = resolve; }));
-      const { default: ChatPage } = await import("./ChatPage");
-      await render(<MemoryRouter><ChatPage /></MemoryRouter>);
-      expect(FakeTerminal.instances).toHaveLength(1);
-      expect(FakeWebSocket.instances).toHaveLength(1);
-      const terminal = FakeTerminal.instances[0];
-      const socket = FakeWebSocket.instances[0];
-      await act(async () => settle({ dashboard: { chat: { default_mode: mode } } }));
-      expect(FakeTerminal.instances).toEqual([terminal]);
-      expect(FakeWebSocket.instances).toEqual([socket]);
-      expect(apiMocks.buildWsUrl).toHaveBeenCalledExactlyOnceWith("/api/pty", expect.any(Object));
-    },
-  );
-
-  it("fails safe with a native browser preference and rejected config request", async () => {
-    localStorageMock.setItem("hermes.dashboard.chat.mode", "native");
-    apiMocks.getConfig.mockRejectedValueOnce(new Error("offline"));
-    const { default: ChatPage } = await import("./ChatPage");
-    await render(<MemoryRouter><ChatPage /></MemoryRouter>);
-    expect(FakeTerminal.instances).toHaveLength(1);
-    expect(FakeWebSocket.instances).toHaveLength(1);
-    expect(localStorageMock.getItem("hermes.dashboard.chat.mode")).toBe("native");
-  });
-
   it("latches activation and preserves Terminal/PTY through /chat → /sessions → /chat", async () => {
-    const { default: ChatPage } = await import("./ChatPage");
+    const { default: ChatPage } = await import("./chat/TerminalChatPage");
     await render(
       <MemoryRouter initialEntries={["/sessions"]}>
         <RouteAwareChatHarness ChatPage={ChatPage} />
@@ -379,7 +352,7 @@ describe("ChatPage", () => {
       (values as Uint8Array).fill(++seed);
       return values;
     });
-    const { default: ChatPage } = await import("./ChatPage");
+    const { default: ChatPage } = await import("./chat/TerminalChatPage");
     const ui = () => <MemoryRouter initialEntries={["/chat"]}><RouteAwareChatHarness ChatPage={ChatPage} /></MemoryRouter>;
     await render(ui());
     const firstSocket = FakeWebSocket.instances[0];
@@ -390,7 +363,6 @@ describe("ChatPage", () => {
     profileScope.profile = "work";
     await act(async () => root.render(ui()));
     expect(resumedSocket.readyState).toBe(3);
-    expect(apiMocks.getConfig).toHaveBeenLastCalledWith("work");
     expect(apiMocks.buildWsUrl).toHaveBeenLastCalledWith("/api/pty", expect.objectContaining({ resume: "session-a", profile: "work" }));
     expect(FakeTerminal.instances).toHaveLength(3);
     expect(FakeWebSocket.instances).toHaveLength(3);
@@ -448,7 +420,7 @@ describe("ChatPage", () => {
   });
 
   it("lets xterm encode wheel events and forwards only SGR wheel reports", async () => {
-    const { default: ChatPage } = await import("./ChatPage");
+    const { default: ChatPage } = await import("./chat/TerminalChatPage");
 
     await render(
       <MemoryRouter initialEntries={["/chat"]}>
@@ -489,7 +461,7 @@ describe("ChatPage", () => {
   });
 
   it("treats loopback 4401 closes as stale-token reload candidates", async () => {
-    const { default: ChatPage } = await import("./ChatPage");
+    const { default: ChatPage } = await import("./chat/TerminalChatPage");
 
     await render(
       <MemoryRouter initialEntries={["/chat"]}>
@@ -519,7 +491,7 @@ describe("ChatPage", () => {
       configurable: true,
       value: { addEventListener, removeEventListener, width: 1280 },
     });
-    const { default: ChatPage } = await import("./ChatPage");
+    const { default: ChatPage } = await import("./chat/TerminalChatPage");
 
     await render(
       <MemoryRouter initialEntries={["/chat"]}>
@@ -555,7 +527,7 @@ describe("ChatPage", () => {
   });
 
   it("hands a learn route to an already-open persistent PTY", async () => {
-    const { default: ChatPage } = await import("./ChatPage");
+    const { default: ChatPage } = await import("./chat/TerminalChatPage");
 
     await render(
       <MemoryRouter initialEntries={["/chat"]}>
@@ -585,7 +557,7 @@ describe("ChatPage", () => {
   });
 
   it("leaves learn parameters untouched while the persistent chat is hidden", async () => {
-    const { default: ChatPage } = await import("./ChatPage");
+    const { default: ChatPage } = await import("./chat/TerminalChatPage");
 
     await render(
       <MemoryRouter initialEntries={["/chat"]}>
@@ -615,7 +587,7 @@ describe("ChatPage", () => {
 
 describe("ChatPage side panel collapse", () => {
   async function renderChat() {
-    const { default: ChatPage } = await import("./ChatPage");
+    const { default: ChatPage } = await import("./chat/TerminalChatPage");
     await render(
       <MemoryRouter initialEntries={["/chat"]}>
         <ChatPage isActive />
@@ -676,7 +648,7 @@ describe("ChatPage PTY ticket connect deadline", () => {
   });
 
   async function renderChat() {
-    const { default: ChatPage } = await import("./ChatPage");
+    const { default: ChatPage } = await import("./chat/TerminalChatPage");
     await render(
       <MemoryRouter initialEntries={["/chat"]}>
         <ChatPage isActive />
@@ -772,13 +744,18 @@ it("explicit native creates one gateway and zero PTYs even after late native con
   expect(FakeTerminal.instances).toHaveLength(0);
 });
 
-it("default chat never constructs Native even when server config later requests native", async () => {
+it("new users wait for profile config and open Native without an experimental URL", async () => {
+  FakeNativeSocket.reset(); vi.stubGlobal("WebSocket", FakeNativeSocket);
+  apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/ws?ticket=fresh");
+  Element.prototype.scrollTo = vi.fn();
   let resolveConfig!: (value: Record<string, unknown>) => void;
   apiMocks.getConfig.mockImplementation(() => new Promise(resolve => { resolveConfig = resolve; }));
   const { default: ChatPage } = await import("./ChatPage");
   await render(<MemoryRouter initialEntries={["/chat"]}><ChatPage /></MemoryRouter>);
-  await act(async () => resolveConfig({ dashboard: { chat: { default_mode: "native" } } }));
-  expect(FakeWebSocket.instances.length).toBeGreaterThan(0);
-  expect(FakeWebSocket.instances.every(socket => socket.url.includes("/api/pty"))).toBe(true);
-  expect(apiMocks.buildWsUrl).not.toHaveBeenCalledWith("/api/ws");
+  expect(FakeNativeSocket.instances).toHaveLength(0);
+  await act(async () => { resolveConfig({}); await flushNative(); });
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)); await flushNative(); });
+  expect(FakeNativeSocket.instances).toHaveLength(1);
+  expect(FakeTerminal.instances).toHaveLength(0);
+  expect(apiMocks.buildWsUrl).not.toHaveBeenCalledWith("/api/pty", expect.anything());
 });

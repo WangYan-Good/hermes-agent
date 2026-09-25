@@ -9,6 +9,7 @@ import { WebSocket as UndiciWebSocket } from 'undici'
 import type { GatewayEvent } from './gatewayTypes.js'
 import { CircularBuffer } from './lib/circularBuffer.js'
 import { recordParentLifecycle } from './lib/parentLog.js'
+import { connectPresentationControl, presentationChanged, presentationFrozen } from "./presentationControl.js"
 
 const MAX_GATEWAY_LOG_LINES = 200
 const MAX_LOG_LINE_BYTES = 4096
@@ -135,6 +136,7 @@ export class GatewayClient extends EventEmitter {
   private proc: ChildProcess | null = null
   private ws: WebSocket | null = null
   private wsConnectPromise: Promise<void> | null = null
+  private closePresentation?: () => void
   private sidecarWs: WebSocket | null = null
   private attachUrl: null | string = null
   private sidecarUrl: null | string = null
@@ -158,6 +160,8 @@ export class GatewayClient extends EventEmitter {
   }
 
   private publish(ev: GatewayEvent) {
+    if (ev.type === "session.handoff_status" || ev.type === "session.info" || ev.type === "message.complete") {presentationChanged()}
+
     if (ev.type === 'gateway.ready') {
       this.ready = true
 
@@ -527,6 +531,8 @@ export class GatewayClient extends EventEmitter {
 
     this.attachUrl = attachUrl
     this.sidecarUrl = sidecarUrl
+    this.closePresentation?.()
+    this.closePresentation = connectPresentationControl((method, params) => this.request(method, params))
     this.resetStartupState()
 
     if (this.proc && !this.proc.killed && this.proc.exitCode === null) {
@@ -722,6 +728,7 @@ export class GatewayClient extends EventEmitter {
   }
 
   request<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+    if (presentationFrozen && ["prompt.submit", "session.steer", "slash.exec"].includes(method)) {return Promise.reject(new Error("Presentation handoff in progress"))}
     const attachUrl = resolveGatewayAttachUrl()
 
     if (attachUrl) {
@@ -776,6 +783,8 @@ export class GatewayClient extends EventEmitter {
   }
 
   kill(reason = 'requested') {
+    this.closePresentation?.()
+    this.closePresentation = undefined
     const proc = this.proc
     const killed = proc?.kill()
 

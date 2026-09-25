@@ -451,7 +451,9 @@ def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
         assert info["tools"] == {"core": ["terminal"]}
         assert info["usage"]["total"] == 140
         assert "credential_warning" not in info
-        assert emitted[-1] == ("session.info", "iso-sid", info)
+        assert ("session.info", "iso-sid", info) in emitted
+        assert emitted[-1] == ("session.handoff_status", "iso-sid", {})
+        assert session["_presentation_workers"] == 0
     finally:
         server._sessions.pop("iso-sid", None)
 

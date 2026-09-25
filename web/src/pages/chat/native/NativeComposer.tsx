@@ -5,22 +5,23 @@ import { hasInteraction } from "./native-interactions";
 import type { NativeSessionState } from "./native-types";
 import type { NativeSession } from "./native-session";
 
-interface NativeComposerProps { state: NativeSessionState; session: NativeSession }
-export function NativeComposer({ state, session }: NativeComposerProps) {
-  const [text, setText] = useState("");
+interface NativeComposerProps { state: NativeSessionState; session: NativeSession; inputEnabled?: boolean }
+export function NativeComposer({ state, session, inputEnabled = true }: NativeComposerProps) {
+  const text = session.draftText;
+  const setText = (value: string | ((old: string) => string)) => session.setDraft(typeof value === "function" ? value(session.draftText) : value);
   const [refKind, setRefKind] = useState("url"); const [refValue, setRefValue] = useState("");
   const [dropError, setDropError] = useState(""); const input = useRef<HTMLInputElement>(null);
   const attachments = useSyncExternalStore(session.attachments.subscribe, session.attachments.getSnapshot);
   const items = attachments.items.filter(a => !["submitted", "cancelled"].includes(a.state));
   const richBlocked = items.length > 0 && (state.conversation.running || items.some(a => a.state !== "uploaded"));
-  const add = (files: File[]) => { if (state.ready && !state.control.submitting && !attachments.uncertain) void session.attachments.add(files); };
+  const add = (files: File[]) => { if (inputEnabled && !session.inputFrozen && state.ready && !state.control.submitting && !attachments.uncertain) void session.attachments.add(files); };
   const addReference = () => {
     const value = refValue.trim(); if (!value || [...value].some(char => char.charCodeAt(0) < 32) || (refKind === "url" && !safeExternalUrl(value))) return;
     const quote = !value.includes('`') ? '`' : !value.includes('"') ? '"' : !value.includes("'") ? "'" : "";
     if (!quote) return;
     setText(t => `${t}${t ? " " : ""}@${refKind}:${quote}${value}${quote}`); setRefValue("");
   };
-  const disabled = !state.ready || state.control.submitting || hasInteraction(state.interactions) || attachments.recovering || attachments.uncertain;
+  const disabled = !inputEnabled || !state.ready || state.control.submitting || hasInteraction(state.interactions) || attachments.recovering || attachments.uncertain;
   const send = (mode: "send" | "queue" | "steer") => {
     if (disabled || richBlocked || (!text.trim() && !items.length) || (mode !== "send" && items.length)) return;
     setText("");

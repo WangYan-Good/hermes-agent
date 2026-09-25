@@ -126,3 +126,17 @@ def test_child_eof_closes_socket_and_bridge(pty_client, monkeypatch):
     while not bridges[0].closed and time.monotonic() < deadline:
         time.sleep(0.01)
     assert bridges[0].closed is True
+
+
+def test_negotiated_controls_require_attach_identity_and_never_reach_stdin(pty_client, monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+    from hermes_cli.pty_control import PROTOCOL
+    ws, client, token = pty_client
+    monkeypatch.setattr(ws, '_resolve_chat_argv', lambda **kwargs: (['fake-tui'], None, None))
+    def no_spawn(*args, **kwargs):
+        raise AssertionError('An unbound control connection must not spawn a PTY')
+    monkeypatch.setattr(ws.PtyBridge, 'spawn', no_spawn)
+    with client.websocket_connect(_url(token), subprotocols=[PROTOCOL]) as connection:
+        with pytest.raises(WebSocketDisconnect) as closed:
+            connection.receive_text()
+        assert closed.value.code == 4400

@@ -73,7 +73,7 @@ it("renders a real shared runtime with text, separate reasoning, tools, and Stop
   expect(container.textContent).toContain("/workspace");
   expect(container.querySelector("output")?.textContent).toContain("resume=stored");
 });
-it("preserves the socket/session while hidden and restores the explicit native URL", async () => {
+it("preserves the socket/session while hidden without manufacturing a mode override", async () => {
   await render(); await send("hello");
   await click('[data-nav="away"]');
   await act(async () => { FakeNativeSocket.instances[0].event("message.complete", { text: "finished while hidden" }); });
@@ -82,7 +82,7 @@ it("preserves the socket/session while hidden and restores the explicit native U
   expect(FakeNativeSocket.requests.filter(r => r.method === "session.create")).toHaveLength(1);
   expect(FakeNativeSocket.requests.filter(r => r.method === "prompt.submit")).toHaveLength(1);
   expect(container.textContent).toContain("finished while hidden");
-  expect(container.querySelector("output")?.textContent).toContain("chat_mode=native");
+  expect(container.querySelector("output")?.textContent).not.toContain("chat_mode=");
 });
 it("resumes on fresh mount using durable URL identity", async () => {
   await render("/chat?chat_mode=native&resume=saved");

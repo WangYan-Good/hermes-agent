@@ -58,22 +58,22 @@ it("ignores a superseded profile response and fails safe on malformed config", a
   let finishOld!: (config: Record<string, unknown>) => void;
   getConfig.mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }));
   await renderProfile("");
-  expect(container.textContent).toBe("terminal/terminal");
+  expect(container.textContent).toBe("native/native");
   getConfig.mockResolvedValueOnce({ dashboard: { chat: { default_mode: "native" } } });
   await renderProfile("work");
-  expect(container.textContent).toBe("native/terminal");
+  expect(container.textContent).toBe("native/native");
   await act(async () => finishOld({ dashboard: { chat: { default_mode: "terminal" } } }));
-  expect(container.textContent).toBe("native/terminal");
+  expect(container.textContent).toBe("native/native");
   getConfig.mockResolvedValueOnce({ dashboard: { chat: "broken" } });
   await renderProfile("other");
-  expect(container.textContent).toBe("terminal/terminal");
+  expect(container.textContent).toBe("native/native");
 });
 
 it("does not reuse a previous profile preference when the next config fails", async () => {
   getConfig.mockResolvedValueOnce({ dashboard: { chat: { default_mode: "native" } } });
   await renderProfile("");
-  expect(container.textContent).toBe("native/terminal");
+  expect(container.textContent).toBe("native/native");
   getConfig.mockRejectedValueOnce(new Error("offline"));
   await renderProfile("work");
-  expect(container.textContent).toBe("terminal/terminal");
+  expect(container.textContent).toBe("native/native");
 });

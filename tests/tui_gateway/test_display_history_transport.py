@@ -8,6 +8,16 @@ from hermes_state import SessionDB
 from tui_gateway import server
 
 
+@pytest.fixture(autouse=True)
+def fresh_gateway_db(monkeypatch):
+    # Each transport test changes HERMES_HOME. A process-global DB opened by
+    # an earlier module must not redirect this test's real resume lookup.
+    monkeypatch.setattr(server, '_db', None)
+    yield
+    if server._db is not None:
+        server._db.close()
+
+
 def test_compression_resume_rest_failure_retry_and_cross_segment_tool(tmp_path, monkeypatch):
     import hermes_state
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

@@ -30,7 +30,7 @@ describe("native session over shared JSON-RPC client", () => {
   it("resumes from URL durable identity and then continues streaming", async () => {
     session = new NativeSession("work", "saved-id");
     await start();
-    expect(requests("session.resume")[0].params).toEqual({ session_id: "saved-id", profile: "work", omit_messages: true });
+    expect(requests("session.resume")[0].params).toEqual({ session_id: "saved-id", profile: "work", omit_messages: true, allow_auto_continue: false });
     expect(requests("session.create")).toHaveLength(0);
     await session.submit("next");
     FakeNativeSocket.instances[0].event("message.delta", { text: "next reply" });
@@ -80,7 +80,7 @@ describe("native session over shared JSON-RPC client", () => {
     await vi.advanceTimersByTimeAsync(1000); await flushNative();
     expect(requests("prompt.submit")).toHaveLength(1);
     expect(requests("session.resume")).toHaveLength(1);
-    expect(requests("session.resume")[0].params).toEqual({ session_id: "stored", profile: "work", omit_messages: true });
+    expect(requests("session.resume")[0].params).toEqual({ session_id: "stored", profile: "work", omit_messages: true, allow_auto_continue: false });
     expect(requests("session.activate")).toHaveLength(1);
     expect(requests("session.activate")[0].params).toEqual({ session_id: "runtime", omit_messages: true });
     expect(requests("session.create")).toHaveLength(1);
