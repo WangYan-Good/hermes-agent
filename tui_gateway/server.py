@@ -8468,11 +8468,14 @@ def _inflight_snapshot(session: dict) -> dict | None:
     if not user and not assistant and not streaming and not error:
         return None
     snapshot = {
-        "turn_id": turn.get("turn_id"),
         "assistant": assistant,
         "streaming": streaming,
         "user": user,
     }
+    # Older live turns have no display identity. Keep the additive field
+    # absent for them, while preserving the same ID across repeated resumes.
+    if turn.get("turn_id"):
+        snapshot["turn_id"] = turn["turn_id"]
     raw_corrections = turn.get("corrections") or []
     raw_offsets = turn.get("correction_offsets") or []
     correction_pairs = [

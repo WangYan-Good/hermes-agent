@@ -14611,10 +14611,14 @@ def test_session_activate_returns_inflight_stream_before_completion(monkeypatch)
         )
 
         inflight = resp["result"].get("inflight")
+        turn_id = server._sessions["sid-live"]["inflight_turn"]["turn_id"]
+        assert turn_id == server._sessions["sid-live"]["_display_turn_id"]
+        assert turn_id
         assert inflight == {
             "assistant": "partial answer",
             "streaming": True,
             "user": "write a long answer",
+            "turn_id": turn_id,
         }
         turn_started_at = resp["result"]["turn_started_at"]
         assert turn_started_at == server._sessions["sid-live"]["inflight_turn"]["started_at"]
