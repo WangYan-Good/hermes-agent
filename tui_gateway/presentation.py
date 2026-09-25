@@ -1,5 +1,6 @@
 """Allowlisted tool display metadata, independent of agent execution semantics."""
 import mimetypes
+import re
 from urllib.parse import urlsplit
 
 
@@ -36,8 +37,14 @@ def tool_presentation(tool_id, name, args, result, diff):
                 path = path[2:]
             if not path or any(ord(c) < 32 for c in path):
                 continue
+            operation = "delete" if target == "/dev/null" else "create" if source == "/dev/null" else None
+            # Snapshot diffs use a/b headers even for missing or unreadable
+            # files. Zero-length sides cannot prove create/delete/modify.
+            ranges = [re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line) for line in lines]
+            if operation is None and any(match and int(match[2] or 1) > 0 and int(match[4] or 1) > 0 for match in ranges):
+                operation = "modify"
             changes.append({"path": path, "diff": "\n".join(lines),
-                            "operation": "delete" if target == "/dev/null" else "create" if source == "/dev/null" else "modify",
+                            **({"operation": operation} if operation else {}),
                             "added": sum(s.startswith("+") and not s.startswith("+++") for s in lines),
                             "removed": sum(s.startswith("-") and not s.startswith("---") for s in lines)})
         if changes:

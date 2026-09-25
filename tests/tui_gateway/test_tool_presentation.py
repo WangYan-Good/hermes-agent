@@ -62,3 +62,12 @@ def test_content_identity_uses_durable_rows_and_survives_partial_history(tmp_pat
         recent = db.get_messages("s", limit=1, latest=True)[0]
         assert recent["display_metadata"] == {"existing": True, "turn_id": "turn", "content_source": sources[-1]}
         assert finalize_turn_presentation(db, "s", "another-turn") == []
+
+
+def test_zero_length_snapshot_side_does_not_invent_file_operation():
+    from tui_gateway.presentation import tool_presentation
+    ambiguous = "--- a/file\n+++ b/file\n@@ -0,0 +1 @@\n+new"
+    change = tool_presentation("id", "write_file", {}, {"success": True}, ambiguous)["changes"][0]
+    assert "operation" not in change
+    explicit = ambiguous.replace("--- a/file", "--- /dev/null")
+    assert tool_presentation("id", "patch", {}, {"success": True}, explicit)["changes"][0]["operation"] == "create"
