@@ -37,9 +37,9 @@ describe("native event contract", () => {
     expect(state.error).toBe("failed");
     expect(state.messages[1].parts[0].text).toBe("Partial");
   });
-  it.each(["approval.request", "clarify.request", "secret.request", "sudo.request", "mcp.setup.request"])("blocks unsupported %s without retaining sensitive payload", type => {
+  it.each(["approval.request", "clarify.request", "secret.request", "sudo.request", "mcp.setup.request"])("leaves %s outside transcript state", type => {
     const state = reduceNativeEvent(started(), event(type, { secret: "private-value" }));
-    expect(state.blocked).toBe(type);
+    expect(state).not.toHaveProperty("blocked");
     expect(state.running).toBe(true);
     expect(JSON.stringify(state)).not.toContain("private-value");
   });
@@ -109,7 +109,7 @@ describe("history and live reconciliation", () => {
   it("restores a failed inflight turn and pending interaction", () => {
     const state = hydrateNativeHistory({ session_id: "runtime", inflight: { user: "hello", assistant: "partial", streaming: false, error: "failure" }, pending_approval: { command: "private" } });
     expect(state.error).toBe("failure");
-    expect(state.blocked).toBe("approval.request");
+    expect(state).not.toHaveProperty("blocked");
     expect(JSON.stringify(state)).not.toContain("private");
   });
 });
@@ -143,4 +143,16 @@ it("retains observed commentary and tools across an inflight reconnect and final
   state = reduceNativeEvent(state, event("message.complete", { text: "Final" }));
   expect(state.messages[1].parts.filter(p => p.type === "text").map(p => p.text)).toEqual(["Checking", "Final"]);
   expect(state.messages[1].parts.some(p => p.type === "tool")).toBe(true);
+});
+it("tool completion is idempotent and idless progress never joins a tool by name", () => {
+  let state = started();
+  state = reduceNativeEvent(state, event("tool.generating", { name: "terminal" }));
+  expect(state.status).toContain("terminal"); expect(state.messages[1].parts).toHaveLength(0);
+  state = reduceNativeEvent(state, event("tool.start", { tool_id: "a", name: "terminal" }));
+  state = reduceNativeEvent(state, event("tool.start", { tool_id: "b", name: "terminal" }));
+  state = reduceNativeEvent(state, event("tool.progress", { name: "terminal", preview: "working" }));
+  expect(state.messages[1].parts.every(p => p.text === "")).toBe(true);
+  state = reduceNativeEvent(state, event("tool.complete", { tool_id: "a", name: "terminal" }));
+  const again = reduceNativeEvent(state, event("tool.complete", { tool_id: "a", name: "terminal" }));
+  expect(again).toBe(state); expect(state.messages[1].parts[1].status).toBe("running");
 });

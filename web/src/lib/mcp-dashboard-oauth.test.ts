@@ -144,3 +144,14 @@ describe("completeMcpDashboardOAuth", () => {
     expect(status).toHaveBeenCalledTimes(2);
   });
 });
+
+it("cancels a flow exactly once even when cancellation precedes its start response", async () => {
+  const abort = new AbortController();
+  let resolve!: (flow: import("./api").McpOAuthFlow) => void;
+  const cancel = vi.fn(async () => ({}));
+  const close = vi.fn();
+  const promise = completeMcpDashboardOAuth({ serverName: "test", start: () => new Promise(r => { resolve = r; }), status: vi.fn(), open: () => ({ close, location: { href: "" } }), signal: abort.signal, cancel });
+  const rejection = expect(promise).rejects.toThrow("cancelled");
+  abort.abort(); resolve({ flow_id: "one", server_name: "test", status: "authorization_required", authorization_url: "https://example.test", error: null });
+  await rejection; expect(cancel).toHaveBeenCalledExactlyOnceWith("one"); expect(close).toHaveBeenCalledOnce();
+});

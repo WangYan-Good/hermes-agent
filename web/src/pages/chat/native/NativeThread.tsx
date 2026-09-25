@@ -6,9 +6,9 @@ function Text({ text }: TextMessagePartProps) {
 function Reasoning({ text }: ReasoningMessagePartProps) {
   return <details className="my-3 text-sm opacity-70"><summary className="cursor-pointer">Reasoning</summary><div className="whitespace-pre-wrap py-3">{text}</div></details>;
 }
-function Tool({ toolName, result, isError, args }: ToolCallMessagePartProps) {
+function Tool({ toolName, toolCallId, result, isError, args }: ToolCallMessagePartProps) {
   return <div className="my-3 rounded-lg border border-current/15 px-3 py-2 text-sm" aria-label={`Tool ${toolName}`}>
-    <span className="font-medium">{toolName}</span><span className="ml-3 opacity-65">{isError ? "Error" : result !== undefined ? "Completed" : "Running…"}</span>
+    <span className="font-medium">{toolName}</span><code className="ml-2 text-xs opacity-50">{toolCallId}</code><span className="ml-3 opacity-65">{isError ? "Error" : result !== undefined ? "Completed" : "Running…"}</span>
     {typeof args.preview === "string" && args.preview ? <div className="mt-1 truncate opacity-60">{args.preview}</div> : null}
   </div>;
 }

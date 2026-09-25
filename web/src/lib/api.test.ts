@@ -301,3 +301,14 @@ describe("api migration targets", () => {
     expect((init as RequestInit).method).toBe("POST");
   });
 });
+
+it("binds Native MCP operations to their captured profile and reuses OAuth cancellation", async () => {
+  const fetch = jsonFetchMock(); vi.stubGlobal("fetch", fetch);
+  await api.getMcpServers("work"); await api.getMcpCatalog("work");
+  await api.installMcpCatalogEntry("test", { KEY: "transient" }, true, "work");
+  await api.setMcpServerEnabled("test", true, "work"); await api.authMcpServer("test", "work");
+  expect(fetch.mock.calls.slice(0, 5).every(([url]) => String(url).endsWith("profile=work"))).toBe(true);
+  await api.cancelMcpOAuthFlow("flow/one");
+  expect(fetch.mock.calls.at(-1)?.[0]).toBe("/api/mcp/oauth/flows/flow%2Fone");
+  expect(fetch.mock.calls.at(-1)?.[1]?.method).toBe("DELETE");
+});

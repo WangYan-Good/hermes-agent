@@ -56,10 +56,9 @@ export function hydrateNativeHistory(response: NativeSessionResponse): NativeCon
   }
   return {
     ...emptyConversation(), messages, nextId: messages.length + 1,
-    running: Boolean(response.running || inflight?.streaming || response.pending_approval || response.pending_clarify),
+    running: Boolean(response.running || inflight?.streaming || response.pending_approval || response.pending_clarify || response.pending_interactions?.length),
     activeId: messages.at(-1)?.role === "assistant" ? messages.at(-1)!.id : null,
     error: inflight?.error ?? null,
-    blocked: response.pending_approval ? "approval.request" : response.pending_clarify ? "clarify.request" : null,
   };
 }
 

@@ -115,11 +115,11 @@ it("removes a definitively rejected optimistic turn and displays the rejection",
   expect(FakeNativeSocket.requests.filter(r => r.method === "prompt.submit")).toHaveLength(1);
   expect(container.querySelector("output")?.textContent).not.toContain("resume=");
 });
-it("shows unsupported requests without responding and Stop uses the real interrupt RPC", async () => {
+it("renders approval without automatically responding and Stop uses the real interrupt RPC", async () => {
   await render(); await send("hello");
   await act(async () => FakeNativeSocket.instances[0].event("approval.request", { command: "secret details" }));
-  expect(container.querySelector('[role="alert"]')?.textContent).toContain("not supported");
-  expect(container.textContent).not.toContain("secret details");
+  expect(container.textContent).toContain("Approval required");
+  expect(container.textContent).toContain("secret details");
   const stop = [...container.querySelectorAll("button")].find(b => b.textContent === "Stop")!;
   await act(async () => { stop.click(); await flushNative(); });
   expect(FakeNativeSocket.requests.some(r => r.method === "session.interrupt")).toBe(true);
