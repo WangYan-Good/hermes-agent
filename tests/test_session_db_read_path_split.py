@@ -156,6 +156,7 @@ def test_session_resume_reads_do_not_take_writer_lock(db):
     db.create_session(session_id="parent1", source="cli", model="m")
     db.append_message("parent1", role="user", content="parent turn")
     db.append_message("parent1", role="assistant", content="parent reply")
+    db.end_session("parent1", "compression")
     db.create_session(session_id="child1", source="cli", model="m", parent_session_id="parent1")
     db.append_message("child1", role="user", content="child turn")
     db.append_message("child1", role="assistant", content="child reply")

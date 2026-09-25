@@ -5495,7 +5495,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         return self._execute_write(_do)
 
     # Children that carry a ``parent_session_id`` but are NOT compression
-    # continuations: branches, delegate/subagent runs, and tool sessions.
+    # continuations: branches, delegate/subagent runs, resets, and tool sessions.
     # A marker only disqualifies a child when it points at the parent being
     # queried — compression continuations inherit the rotated agent's
     # ``model_config`` verbatim (``publish_compression_child`` callers pass
@@ -5503,12 +5503,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # continuation carries ``_delegate_from=<the delegate's own parent>``.
     # Matching markers by mere presence misclassified those real
     # continuations as delegate children (fail-open for orphan reopen,
-    # fail-closed for adoption). Bind the parent id for both markers.
-    _NON_CONTINUATION_CHILD_FILTER_SQL = (
+    # fail-closed for adoption). Compare each marker to the actual parent.
+    # Share the marker set with the Python row classifier below.
+    _FORK_CHILD_MARKERS = ("_branched_from", "_delegate_from", "_reset_from")
+    _NON_CONTINUATION_CHILD_FILTER_SQL = "".join(
         "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._branched_from'), '') != ?\n"
-        "  AND COALESCE(json_extract(COALESCE({alias}model_config, '{{}}'),"
-        " '$._delegate_from'), '') != ?\n"
+        f" '$.{marker}'), '') != {{alias}}parent_session_id\n"
+        for marker in _FORK_CHILD_MARKERS
+    ) + (
         "  AND COALESCE({alias}source, '') != 'tool'\n"
     )
 
@@ -5551,7 +5553,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 ORDER BY s.started_at ASC
                 LIMIT 2
                 """,
-                (parent_session_id, parent_session_id, parent_session_id),
+                (parent_session_id,),
             ).fetchall()
         return self._session_row_dict(rows[0]) if len(rows) == 1 else None
 
@@ -5579,7 +5581,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ):
                 return False
 
-            # Treat any direct non-branch/non-delegate/non-tool child as a
+            # Treat any direct non-fork/non-reset/non-tool child as a
             # continuation, regardless of its current ended state. Reopening
             # in that case could create a second live head for one lineage.
             child = conn.execute(
@@ -5592,7 +5594,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 + """
                 LIMIT 1
                 """,
-                (session_id, session_id, session_id),
+                (session_id,),
             ).fetchone()
             if child is not None:
                 return False
@@ -8558,7 +8560,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         the real continuation chain.
 
         Instead, only follow children of compression-ended parents, exclude
-        explicit branch/delegate/tool children, and prefer children that are
+        direct branch/delegate/reset/tool children, and prefer children that are
         themselves continuing the compression chain (``end_reason='compression'``)
         or still live over stale closed siblings such as ``ws_orphan_reap``.
         Returns the latest continuation tip, or the input id when no
@@ -8577,9 +8579,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     JOIN sessions child ON child.parent_session_id = parent.id
                     WHERE parent.id = ?
                       AND parent.end_reason = 'compression'
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._branched_from') IS NULL
-                      AND json_extract(COALESCE(child.model_config, '{{}}'), '$._delegate_from') IS NULL
-                      AND COALESCE(child.source, '') != 'tool'
+                      {self._NON_CONTINUATION_CHILD_FILTER_SQL.format(alias="child.")}
+                      AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)}
                     ORDER BY
                       CASE
                         WHEN child.end_reason = 'compression' THEN 0
@@ -10144,6 +10145,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         offset: int = 0,
         latest: bool = False,
         after_id: Optional[int] = None,
+        before_id: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Load messages for a session in insertion order.
 
@@ -10176,6 +10178,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         page seeks on huge transcripts where OFFSET degrades to O(n) per
         page. Ascending order only (incompatible with ``latest``/``offset``).
         """
+        if before_id is not None and (after_id is not None or offset):
+            raise ValueError("before_id is incompatible with after_id/offset paging")
         if after_id is not None and (latest or offset):
             raise ValueError("after_id is incompatible with latest/offset paging")
         if after_id is not None and include_compacted:
@@ -10191,6 +10195,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         else:
             active_clause = " AND active = 1"
         keyset_clause = " AND id > ?" if after_id is not None else ""
+        if before_id is not None:
+            keyset_clause += " AND id < ?"
         sql = (
             "SELECT * FROM messages WHERE session_id = ?"
             f"{active_clause}{keyset_clause} ORDER BY id {'DESC' if latest else 'ASC'}"
@@ -10198,6 +10204,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         params: list = [session_id]
         if after_id is not None:
             params.append(after_id)
+        if before_id is not None:
+            params.append(before_id)
         if include_compacted:
             # Compaction epochs copy the protected tail into each new
             # generation, so the same logical message can exist as several
@@ -10220,18 +10228,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # them verbatim, so identical tool messages across generations
                 # still collapse, while distinct tool calls that happen to
                 # share role/content/timestamp are never merged.
-                key = (
-                    row["role"],
-                    row["content"],
-                    row["timestamp"],
-                    row["tool_call_id"],
-                    row["tool_calls"],
-                    row["tool_name"],
-                )
+                key = tuple(row[column] for column in self._DISPLAY_COPY_KEY)
                 cur = seen.get(key)
                 if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                     seen[key] = row
-            rows = sorted(seen.values(), key=lambda r: r["id"])
+            rows = sorted((row for row in seen.values() if before_id is None or row["id"] < before_id), key=lambda r: r["id"])
             if latest:
                 rows = rows[::-1]
             rows = rows[offset:]
@@ -10249,6 +10250,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 rows = cursor.fetchall()
             if latest:
                 rows.reverse()
+        return self._decode_message_rows(rows)
+
+    def _decode_message_rows(self, rows) -> List[Dict[str, Any]]:
+        """Decode raw durable rows without dropping rich display/API sidecars."""
         result = []
         for row in rows:
             msg = dict(row)
@@ -10264,6 +10269,117 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
             result.append(msg)
         return result
+
+    _DISPLAY_COPY_KEY = ("role", "content", "timestamp", "tool_call_id", "tool_calls", "tool_name")
+
+    def _compression_conversation_session_ids(self, session_id: str) -> List[str]:
+        """Compression-only suffix of the canonical root-to-tip parent walk.
+
+        Shared by display projections, ancestor prefixes and resume safety so
+        each consumer owns exactly the same durable conversation segments.
+        Parent links also encode forks/delegates/resets. Use the existing
+        compression/fork discriminator, including inherited fork markers on a
+        continuation, and stop at the conversation boundary. Never walk forward
+        into a sibling: the caller has already resolved the authoritative tip.
+        """
+        chain = self._session_lineage_root_to_tip(session_id)
+        start = len(chain) - 1
+        while start > 0:
+            child = self.get_session(chain[start])
+            if not child or not self._is_compression_child_row(child):
+                break
+            # Preserve the display walk's conservative malformed-config fence.
+            if isinstance(child.get("model_config"), str):
+                try:
+                    json.loads(child["model_config"])
+                except (TypeError, ValueError):
+                    break
+            start -= 1
+        return chain[start:]
+
+    def get_display_messages(
+        self, session_id: str, *, limit: int = 100, latest: bool = True,
+        before_id: Optional[int] = None, include_compacted: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Bounded raw compression display history, addressed by durable row ID.
+
+        Apply the existing compaction-copy preference (live, then newest) and
+        resume's replayed-user rule BEFORE the cursor/limit. Correlated existence
+        checks avoid fetching/materializing the full transcript to serve a page;
+        only the selected raw rows are decoded in Python. Compaction copies are
+        compared within their owning session, never by text alone across turns.
+        """
+        if not 0 <= limit <= 500:
+            raise ValueError("display history limit must be between 0 and 500")
+        if before_id is not None and (before_id <= 0 or not latest):
+            raise ValueError("before_id requires latest order and a positive row ID")
+        if not limit:
+            return []
+        session_ids = self._compression_conversation_session_ids(session_id)
+        placeholders = ",".join("?" for _ in session_ids)
+
+        def canonical(alias):
+            if not include_compacted:
+                return f"{alias}.active = 1"
+            # Same null-safe key and preference as get_messages' display read.
+            equality = " AND ".join(f"copy.{c} IS {alias}.{c}" for c in self._DISPLAY_COPY_KEY)
+            return (
+                f"({alias}.active = 1 OR {alias}.compacted = 1) AND NOT EXISTS ("
+                "SELECT 1 FROM messages copy "
+                f"WHERE copy.session_id = {alias}.session_id "
+                f"AND (copy.active = 1 OR copy.compacted = 1) AND {equality} "
+                f"AND (copy.active > {alias}.active OR (copy.active = {alias}.active AND copy.id > {alias}.id)))"
+            )
+
+        def replay_key(content):
+            content = self._decode_content(content)
+            return (sanitize_context(content).strip() or None) if isinstance(content, str) else None
+
+        def assistant_boundary(content, tool_calls):
+            content = self._decode_content(content)
+            if isinstance(content, str):
+                content = sanitize_context(content).strip()
+            try:
+                calls = json.loads(tool_calls) if tool_calls else None
+            except (TypeError, ValueError):
+                calls = None
+            return bool(content or calls)
+
+        # _is_duplicate_replayed_user_message searches back to the last
+        # nonempty assistant. Use the same rule across arbitrary page boundaries,
+        # including sanitized string equality, without a browser text heuristic.
+        sql = f"""
+            SELECT m.* FROM messages m
+            WHERE m.session_id IN ({placeholders}) AND {canonical('m')}
+              AND NOT (m.role = 'user' AND hermes_display_replay_key(m.content) IS NOT NULL
+                AND EXISTS (
+                  SELECT 1 FROM messages previous
+                  WHERE previous.session_id IN ({placeholders}) AND previous.id < m.id
+                    AND previous.role = 'user' AND {canonical('previous')}
+                    AND hermes_display_replay_key(previous.content) = hermes_display_replay_key(m.content)
+                    AND previous.id > COALESCE((
+                      SELECT boundary.id FROM messages boundary
+                      WHERE boundary.session_id IN ({placeholders})
+                        AND boundary.id < m.id
+                        AND boundary.role = 'assistant' AND {canonical('boundary')}
+                        AND hermes_display_assistant_boundary(boundary.content, boundary.tool_calls)
+                      ORDER BY boundary.id DESC LIMIT 1
+                    ), 0)
+                ))
+              {"AND m.id < ?" if before_id is not None else ""}
+            ORDER BY m.id {"DESC" if latest else "ASC"} LIMIT ?
+        """
+        params = [*session_ids, *session_ids, *session_ids]
+        if before_id is not None:
+            params.append(before_id)
+        params.append(limit)
+        with self._read_ctx() as conn:
+            conn.create_function("hermes_display_replay_key", 1, replay_key, deterministic=True)
+            conn.create_function("hermes_display_assistant_boundary", 2, assistant_boundary, deterministic=True)
+            rows = conn.execute(sql, params).fetchall()
+        if latest:
+            rows.reverse()
+        return self._decode_message_rows(rows)
 
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
         """Tool results in these sessions that mention a GitHub PR url.
@@ -10371,98 +10487,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         }
 
     def resolve_resume_session_id(self, session_id: str) -> str:
-        """Redirect a resume target to the descendant session that holds the messages.
+        """Resolve resume using the same bounded compression walk as display.
 
-        Context compression ends the current session and forks a new child session
-        (linked via ``parent_session_id``). The flush cursor is reset, so the
-        child is where new messages actually land — the parent ends up with
-        ``message_count = 0`` rows unless messages had already been flushed to
-        it before compression. See #15000.
-
-        This helper walks ``parent_session_id`` forward from ``session_id`` and
-        returns the descendant in the chain that has the **most recent** messages.
-        Unlike the original logic, it does NOT short-circuit when the starting
-        session already has messages — a descendant that was created by
-        compression may hold the continuation content and should be preferred
-        by the WebUI and gateway for ``--resume`` and session loading.
-
-        If no descendant (including the starting session) has any messages,
-        the original ``session_id`` is returned unchanged.
-
-        The chain is always walked via the child whose ``started_at`` is
-        latest; that matches the single-chain shape that compression creates.
-        A depth cap (32) guards against accidental loops in malformed data.
+        Message presence does not identify a continuation: unrelated children
+        can contain messages too. Only compression-ended parent edges may be
+        followed, using the canonical parent-bound fork/reset exclusions and
+        child ranking in get_compression_tip(). On a read failure, retain the
+        requested identity rather than falling back to an arbitrary child walk.
         """
         if not session_id:
             return session_id
-
-        # Follow the compression-continuation chain forward to the live tip
-        # FIRST. Auto-compression ends the current session and forks a
-        # continuation child, but a long-lived parent keeps its own flushed
-        # message rows — so the empty-head walk below never redirects it, and
-        # resuming the parent id reloads the pre-compression transcript while
-        # the turns generated *after* compression (and their responses) sit in
-        # the continuation. ``get_compression_tip`` is lineage-aware: it only
-        # follows children whose parent ended with ``end_reason='compression'``
-        # (created after the parent was ended), so delegation / branch children
-        # never hijack the resume. This is the fix for the desktop "I came back
-        # and the reply isn't there" report on large sessions.
         try:
-            tip = self.get_compression_tip(session_id)
+            return self.get_compression_tip(session_id) or session_id
         except Exception:
-            tip = session_id
-        if tip and tip != session_id:
-            session_id = tip
-
-        with self._lock:
-            current = session_id
-            seen = {current}
-            best = None  # tracks the last (deepest) node with messages
-
-            for _ in range(32):
-                # Check if the current node has messages.
-                try:
-                    row = self._conn.execute(
-                        "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
-                        (current,),
-                    ).fetchone()
-                except Exception:
-                    return session_id
-                if row is not None:
-                    best = current
-
-                # Walk to the most-recently-started child — but skip explicit
-                # branch (`_branched_from`), delegate/subagent (`_delegate_from`),
-                # reset-continuation (`_reset_from` or the legacy same-key
-                # heuristic — a post-reset conversation must never be reached
-                # by resuming the parent the user reset away), and tool
-                # children. They also carry a ``parent_session_id`` yet
-                # are NOT compression continuations; following them would hijack
-                # the resume target to an unrelated session (e.g. a subagent
-                # run). This mirrors the child-exclusion in ``get_compression_tip``.
-                try:
-                    child_row = self._conn.execute(
-                        "SELECT id FROM sessions AS child "
-                        "WHERE child.parent_session_id = ? "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
-                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
-                        f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
-                        "  AND COALESCE(child.source, '') != 'tool' "
-                        "ORDER BY child.started_at DESC, child.id DESC LIMIT 1",
-                        (current,),
-                    ).fetchone()
-                except Exception:
-                    return session_id
-                if child_row is None:
-                    break
-                child_id = child_row["id"] if hasattr(child_row, "keys") else child_row[0]
-                if not child_id or child_id in seen:
-                    break
-                seen.add(child_id)
-                current = child_id
-
-            return best if best is not None else session_id
+            return session_id
 
     def get_messages_as_conversation(
         self,
@@ -10491,8 +10529,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         verbatim.
         """
         session_ids = [session_id]
-        if include_ancestors and not self._is_explicit_branch_session(session_id):
-            session_ids = self._session_lineage_root_to_tip(session_id)
+        if include_ancestors:
+            session_ids = self._compression_conversation_session_ids(session_id)
 
         active_clause = "" if include_inactive else " AND active = 1"
         with self._read_ctx() as conn:
@@ -10674,21 +10712,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           (the live-replay working conversation). Equivalent to
           ``get_messages_as_conversation(session_id, repair_alternation=True)``.
         - ``display_history`` — the full compression lineage (ancestors → tip),
-          verbatim, with replayed-user dedup. Explicit ``/branch`` sessions are
-          excluded from this lineage because their own rows already contain the
-          copied transcript; including the live parent's rows would let messages
-          written to the original after the fork leak into the branch.
+          verbatim, with replayed-user dedup. A branch owns its copied transcript
+          and subsequent compression segments; the original parent's rows are
+          excluded. Delegate, reset and tool boundaries follow the same rule.
 
         The display fetch already reads a superset of the model fetch (the tip
         rows are part of the lineage), so serving both from one lineage SELECT
         halves the resume's DB work versus two separate calls, with byte-identical
         output (see test_get_resume_conversations_matches_separate_reads).
         """
-        session_ids = (
-            [session_id]
-            if self._is_explicit_branch_session(session_id)
-            else self._session_lineage_root_to_tip(session_id)
-        )
+        session_ids = self._compression_conversation_session_ids(session_id)
         with self._read_ctx() as conn:
             placeholders = ",".join("?" for _ in session_ids)
             rows = conn.execute(
@@ -10722,7 +10755,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     def get_resume_message_count(self, session_id: str) -> int:
         """Count active rows that a full resume would materialize."""
-        session_ids = self._session_lineage_root_to_tip(session_id)
+        session_ids = self._compression_conversation_session_ids(session_id)
         placeholders = ",".join("?" for _ in session_ids)
         with self._read_ctx() as conn:
             row = conn.execute(
@@ -10753,7 +10786,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # return value, and an unbounded lineage COUNT here would do the
             # exact pathological work the disable exists to avoid.
             return 0
-        session_ids = self._session_lineage_root_to_tip(session_id)
+        session_ids = self._compression_conversation_session_ids(session_id)
         placeholders = ",".join("?" for _ in session_ids)
         with self._read_ctx() as conn:
             row = conn.execute(
@@ -10824,10 +10857,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         returns ONLY the genuine ancestor messages, identified by
         ``session_id != tip_session_id``. (#65919)
         """
-        if self._is_explicit_branch_session(session_id):
-            return []
-
-        session_ids = self._session_lineage_root_to_tip(session_id)
+        session_ids = self._compression_conversation_session_ids(session_id)
         if len(session_ids) <= 1:
             return []
         with self._read_ctx() as conn:
@@ -10847,33 +10877,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_ancestors=True,
             repair_alternation=False,
         )
-
-    def _is_explicit_branch_session(self, session_id: str) -> bool:
-        """Return whether *session_id* is a copied user-facing branch.
-
-        Branches and compression continuations both use ``parent_session_id``,
-        but they have different history semantics: a branch owns a copied
-        transcript, while a compression continuation needs its ended parent's
-        archived rows for display. The durable ``_branched_from`` marker is the
-        existing discriminator written by all branch creation paths.
-        """
-        if not session_id:
-            return False
-        with self._read_ctx() as conn:
-            row = conn.execute(
-                "SELECT model_config FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-        if row is None:
-            return False
-        raw_config = row["model_config"] if hasattr(row, "keys") else row[0]
-        if not raw_config:
-            return False
-        try:
-            config = json.loads(raw_config) if isinstance(raw_config, str) else raw_config
-        except (json.JSONDecodeError, TypeError):
-            return False
-        return isinstance(config, dict) and bool(config.get("_branched_from"))
 
     def get_conversation_root(self, session_id: str) -> str:
         """Return the ROOT id of *session_id*'s lineage chain.
@@ -11249,7 +11252,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # =========================================================================
 
     def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
-        """True when ``session`` is a branch, delegate, or tool child of its parent.
+        """True when ``session`` is a direct branch, delegate, reset, or tool child.
 
         Markers only count as a fork when they point at ``parent_session_id``.
         Compression copies ``model_config`` onto the continuation
@@ -11258,7 +11261,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         carries ``_delegate_from=<the delegate's own parent>``. Presence-only
         matching would treat that real continuation as a fork — the same
         misclassification ``_NON_CONTINUATION_CHILD_FILTER_SQL`` already
-        avoids by binding both markers to the queried parent.
+        avoids by comparing every marker to the candidate's actual parent.
         """
         if session.get("source") == "tool":
             return True
@@ -11272,11 +11275,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         if not isinstance(cfg, dict):
             return False
         parent_id = session.get("parent_session_id")
-        branched = cfg.get("_branched_from")
-        delegated = cfg.get("_delegate_from")
         if parent_id:
-            return branched == parent_id or delegated == parent_id
-        return branched is not None or delegated is not None
+            return any(cfg.get(marker) == parent_id for marker in self._FORK_CHILD_MARKERS)
+        return any(cfg.get(marker) is not None for marker in self._FORK_CHILD_MARKERS)
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")

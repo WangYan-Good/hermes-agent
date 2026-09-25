@@ -439,11 +439,15 @@ async def _lifespan(app: "FastAPI"):
     # sweeping stale sessions on schedule, independent of list requests.
     auto_archive_task = asyncio.create_task(_auto_archive_ticker_loop())
 
+    from tui_gateway.attachment_http import run_attachment_reaper
+    attachment_reaper_task = asyncio.create_task(run_attachment_reaper())
+
     try:
         yield
     finally:
         if cron_stop is not None:
             cron_stop.set()
+        attachment_reaper_task.cancel()
         pty_reaper_task.cancel()
         selftest_task.cancel()
         auto_archive_task.cancel()
@@ -16194,7 +16198,9 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             return "no_credential", "none"
 
         try:
-            consume_ticket(ticket)
+            identity = consume_ticket(ticket)
+            if isinstance(getattr(ws, "scope", None), dict):
+                ws.scope["attachment_principal"] = (identity["provider"], identity["user_id"])
             return None, "ticket"
         except TicketInvalid as exc:
             audit_log(
@@ -17291,6 +17297,11 @@ async def pty_ws(ws: WebSocket) -> None:
 # already paints. Both transports bind to the same session id when one is
 # active, so a tool.start emitted by the agent fans out to both sinks.
 # ---------------------------------------------------------------------------
+
+
+from tui_gateway.attachment_http import install as _install_attachment_http
+
+_install_attachment_http(app)
 
 
 @app.websocket("/api/ws")

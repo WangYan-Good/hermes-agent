@@ -1,3 +1,6 @@
+import { NativeAttachments, readDraftLocator } from "./native-attachments";
+import { readHistory } from "./native-history";
+import { hydrateDurableHistory } from "./native-messages";
 import { activeInteraction, hasInteraction, recoverInteractions, reduceInteractions, readInteraction, readMcpOperation, type NativeInteraction, type ApprovalChoice } from "./native-interactions";
 import { emptyControl, recoverControl, reduceControl } from "./native-control";
 import { JsonRpcGatewayError, type GatewayEvent } from "@hermes/shared";
@@ -7,9 +10,17 @@ import { reconcileNativeResume } from "./native-messages";
 import type { NativeSessionResponse, NativeSessionState } from "./native-types";
 
 const initial = (): NativeSessionState => ({ runtimeId: null, storedId: null, durable: false, connection: "closed", ready: false, conversation: emptyConversation(), interactions: {}, control: emptyControl() });
+const historyUnavailable = "History is unavailable. Use Load earlier messages to retry; live controls remain available.";
 
 export class NativeSession {
   private state = initial();
+  readonly attachments: NativeAttachments;
+  private historyAbort?: AbortController;
+  private historyRows: Record<string, unknown>[] = [];
+  private historyStoredId: string | null = null;
+  private historyLatest = false;
+  private historyLoading = false;
+  private historyMore = false;
   private listeners = new Set<() => void>();
   private gateway: NativeGateway | null = null;
   private generation = 0;
@@ -30,12 +41,25 @@ export class NativeSession {
     this.profile = profile;
     this.target = resume;
     this.makeGateway = makeGateway;
+    const locator = !resume ? readDraftLocator(profile) : null;
+    if (locator) this.state = { ...this.state, runtimeId: locator.runtimeId };
+    this.attachments = new NativeAttachments(() => this.state.runtimeId ? { runtimeId: this.state.runtimeId, profile: this.profile, generation: this.generation } : null, async (method, params) => {
+      if (!this.gateway || !this.state.ready) throw new Error("Session unavailable");
+      return this.gateway.request(method, params);
+    });
   }
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private set(next: NativeSessionState) { this.state = next; this.listeners.forEach(fn => fn()); }
+  private invalidateHistory(storedId = this.historyStoredId) {
+    this.historyAbort?.abort(); this.historyAbort = undefined;
+    this.historyLoading = false; this.historyLatest = false; this.historyMore = true;
+    if (storedId !== this.historyStoredId) this.historyRows = [];
+    this.historyStoredId = storedId;
+  }
   start = () => { if (!this.stopped) return; this.stopped = false; void this.connect(); };
   stop = () => {
+    this.attachments.invalidate(true); this.historyAbort?.abort();
     this.stopped = true; this.generation++; clearTimeout(this.timer);
     this.gateway?.close(); this.gateway = null;
     this.set({ ...this.state, ready: false, connection: "closed" });
@@ -44,12 +68,14 @@ export class NativeSession {
 
   select = (storedId: string | null) => {
     if (storedId && (storedId === this.state.storedId || storedId === this.target)) return;
+    this.attachments.reset(); this.invalidateHistory(null);
     this.target = storedId; this.uncertainSubmit = false;
     this.set(initial()); this.retries = 0;
     if (!this.stopped) void this.connect();
   };
 
   private async connect() {
+    this.attachments.invalidate(); this.invalidateHistory();
     const generation = ++this.generation;
     clearTimeout(this.timer);
     this.gateway?.close();
@@ -78,7 +104,7 @@ export class NativeSession {
       let resumed = false;
       if (storedId && (this.state.durable || this.target || this.uncertainSubmit)) {
         try {
-          response = await gateway.request("session.resume", { session_id: storedId, profile: this.profile });
+          response = await gateway.request("session.resume", { session_id: storedId, profile: this.profile, omit_messages: true });
           resumed = true;
         } catch (error) {
           if (!current()) return;
@@ -87,19 +113,38 @@ export class NativeSession {
           // Only inspect that uncertain draft; never mask a lost durable row.
           if (!this.uncertainSubmit || this.state.durable || !this.state.runtimeId ||
               !(error instanceof JsonRpcGatewayError) || error.code !== 4007) throw error;
-          response = await gateway.request("session.activate", { session_id: this.state.runtimeId });
+          response = await gateway.request("session.activate", { session_id: this.state.runtimeId, omit_messages: true });
         }
       } else if (this.state.runtimeId) {
         // Empty drafts have no DB row. Reattach their live runtime; never hide
         // an expired draft behind an automatic replacement session.
-        response = await gateway.request("session.activate", { session_id: this.state.runtimeId });
+        response = await gateway.request("session.activate", { session_id: this.state.runtimeId, omit_messages: true });
       } else {
         response = await gateway.request("session.create", { profile: this.profile, source: "webui", close_on_disconnect: false });
       }
       if (!current()) return;
-      const conversation = reconcileNativeResume(response, this.buffered, this.state.conversation);
+      let historyFailed = false;
+      const durableId = response.stored_session_id || response.session_key || response.info?.stored_session_id || storedId;
+      this.invalidateHistory(durableId);
+      if (durableId && (resumed || this.state.durable || response.running)) {
+        const controller = new AbortController();
+        this.historyAbort = controller;
+        try {
+          const page = await readHistory(this.profile, durableId, undefined, controller.signal);
+          if (!current() || controller.signal.aborted || this.historyAbort !== controller) return;
+          this.historyStoredId = page.session_id; this.historyLatest = true;
+          this.historyRows = page.messages; this.historyMore = page.pagination.returned === page.pagination.limit;
+          response = { ...response, durable_rows: page.messages, stored_session_id: page.session_id };
+        } catch {
+          if (!current()) return;
+          // A failed history read must not destroy the recovered live controls.
+          this.historyMore = true; historyFailed = true;
+        }
+      }
+      const conversation = reconcileNativeResume(response, this.buffered, this.state.conversation, historyFailed);
       let interactions = recoverInteractions(response, generation);
       let control = recoverControl(response);
+      if (historyFailed) control = { ...control, notice: historyUnavailable };
       for (const e of this.buffered.filter(e => e.session_id === response.session_id)) {
         interactions = reduceInteractions(interactions, e, generation);
         control = reduceControl(control, e);
@@ -107,6 +152,7 @@ export class NativeSession {
       this.hydrating = false; this.buffered = []; this.retries = 0; this.uncertainSubmit = false;
       this.set({ runtimeId: response.session_id, storedId: response.stored_session_id || response.session_key || response.info?.stored_session_id || storedId, durable: resumed || this.state.durable, ready: true, connection: "open", conversation, interactions, control });
       this.ackApprovals();
+      await this.attachments.recover();
     } catch {
       if (!current()) return;
       // Never surface raw transport/auth URLs or credential-bearing errors.
@@ -118,6 +164,7 @@ export class NativeSession {
 
   private disconnected(generation: number, authFailed: boolean) {
     if (this.generation !== generation || this.stopped) return;
+    this.attachments.invalidate(); this.historyAbort?.abort();
     this.generation++;
     this.gateway?.close();
     this.set({ ...this.state, ready: false, connection: "closed", conversation: { ...this.state.conversation, error: authFailed ? "Connection denied. Check authentication and retry." : "Connection lost. Recovering the session without resending your prompt…" } });
@@ -131,6 +178,7 @@ export class NativeSession {
     this.eventRevision++;
     const payload = record(event.payload);
     const storedId = event.type === "session.info" ? string(payload.stored_session_id) : "";
+    if (storedId && storedId !== this.historyStoredId) this.invalidateHistory(storedId);
     this.set({ ...this.state, storedId: storedId || this.state.storedId, conversation: reduceNativeEvent(this.state.conversation, event), interactions: reduceInteractions(this.state.interactions, event, this.generation), control: reduceControl(this.state.control, event) });
     if (hasInteraction(this.state.interactions) && !this.state.conversation.running) this.set({ ...this.state, conversation: { ...this.state.conversation, running: true } });
     this.ackApprovals();
@@ -164,6 +212,44 @@ export class NativeSession {
     this.set({ ...this.state, interactions: recovered, control: { ...this.state.control, queued: string(response.queued?.user) || null }, conversation: revision === this.eventRevision && response.running === false ? reduceNativeEvent(this.state.conversation, { type: "session.info", payload: { running: false } }) : this.state.conversation });
     this.ackApprovals();
   }
+
+  loadOlder = async () => {
+    const storedId = this.state.storedId;
+    if (!storedId || !this.state.ready || this.stopped) return;
+    if (storedId !== this.historyStoredId) this.invalidateHistory(storedId);
+    if (this.historyLoading || (this.historyLatest && !this.historyMore)) return;
+    const generation = this.generation; const runtimeId = this.state.runtimeId;
+    const latest = !this.historyLatest;
+    const controller = new AbortController(); this.historyAbort = controller; this.historyLoading = true;
+    const current = () => generation === this.generation && runtimeId === this.state.runtimeId && storedId === this.state.storedId && !this.stopped && !controller.signal.aborted && this.historyAbort === controller;
+    try {
+      const beforeId = !latest && this.historyRows.length ? Math.min(...this.historyRows.map(row => Number(row.id))) : undefined;
+      const page = await readHistory(this.profile, storedId, beforeId, controller.signal);
+      if (!current()) return;
+      if (!latest && page.session_id !== storedId) {
+        this.invalidateHistory(page.session_id);
+        this.set({ ...this.state, storedId: page.session_id });
+        await this.loadOlder();
+        return;
+      }
+      // A remapped durable identity starts a fresh cursor. Never carry rows
+      // from its predecessor into this session's backwards paging state.
+      const rows = new Map([...(!latest && page.session_id === this.historyStoredId ? this.historyRows : []), ...page.messages].map(row => [row.id, row]));
+      this.historyRows = [...rows.values()].sort((a, b) => Number(a.id) - Number(b.id));
+      this.historyStoredId = page.session_id; this.historyLatest = true;
+      // Rebuild from latest: retaining a disjoint older cache could skip turns
+      // committed during a long disconnect when paging from its oldest row.
+      this.historyMore = page.pagination.returned === page.pagination.limit;
+      const older = hydrateDurableHistory(this.historyRows).messages;
+      const durableTurns = new Set(older.map(m => m.turnId).filter(Boolean));
+      const live = this.state.conversation.messages.filter(m => !m.id.startsWith('history-') && (!m.turnId || !durableTurns.has(m.turnId) || m.pending));
+      const pendingTurns = new Set(live.filter(m => m.pending).map(m => m.turnId).filter(Boolean));
+      const tools = new Set(older.flatMap(m => m.parts.filter(p => p.type === 'tool').map(p => p.id)));
+      const messages = [...older.filter(m => !(m.role === 'assistant' && pendingTurns.has(m.turnId))), ...live.map(m => ({ ...m, parts: m.parts.filter(p => p.type !== 'tool' || m.pending || !tools.has(p.id)) }))];
+      this.set({ ...this.state, storedId: page.session_id, control: { ...this.state.control, notice: this.state.control.notice === historyUnavailable ? "" : this.state.control.notice }, conversation: { ...this.state.conversation, messages } });
+    } catch { if (current()) this.set({ ...this.state, control: { ...this.state.control, notice: latest ? historyUnavailable : "Could not load earlier messages. Reconnect or retry." } }); }
+    finally { if (this.historyAbort === controller) this.historyLoading = false; }
+  };
 
   isCurrent = (r: NativeInteraction) => !this.stopped && this.state.ready && r.generation === this.generation && r.runtimeId === this.state.runtimeId && this.state.interactions[r.key]?.generation === r.generation && activeInteraction(this.state.interactions[r.key]);
   rememberMcpOperation = (r: NativeInteraction, value: unknown) => {
@@ -221,7 +307,11 @@ export class NativeSession {
   };
 
   submit = async (text: string, queued = false) => {
-    if (!text.trim() || !this.state.ready || this.state.control.submitting || hasInteraction(this.state.interactions) || !this.gateway || !this.state.runtimeId) return;
+    let attachmentPayload: Record<string, unknown>;
+    try { attachmentPayload = this.attachments.submitPayload(); } catch { return; }
+    const rich = Array.isArray(attachmentPayload.attachment_ids);
+    if (rich && (queued || this.state.conversation.running)) return;
+    if ((!text.trim() && !rich) || !this.state.ready || this.state.control.submitting || hasInteraction(this.state.interactions) || !this.gateway || !this.state.runtimeId) return;
     const generation = this.generation;
     this.refreshVersion++;
     const beforeSubmit = this.state.conversation;
@@ -229,26 +319,33 @@ export class NativeSession {
     this.uncertainSubmit = true;
     this.set({ ...this.state, control: { ...this.state.control, submitting: true, notice: "", ...(!busy ? { todos: [], subagents: {} } : {}) }, conversation: busy ? beforeSubmit : beginPrompt(beforeSubmit, text) });
     try {
-      const response = await this.gateway.request<{ status: string }>("prompt.submit", { session_id: this.state.runtimeId, text, ...(queued ? { queued: true } : {}) });
+      const response = await this.gateway.request<{ status: string; turn_id?: string; attachments?: { ref: string }[] }>("prompt.submit", { session_id: this.state.runtimeId, text, ...attachmentPayload, ...(queued ? { queued: true } : {}) });
       if (generation !== this.generation || this.stopped) return;
       this.uncertainSubmit = false;
       const fresh = response.status === "streaming";
-      const conversation = !fresh && !busy ? beforeSubmit : fresh && busy ? beginPrompt(this.state.conversation, text) : this.state.conversation;
+      if (rich && fresh) this.attachments.accepted(attachmentPayload.attachment_ids as string[]);
+      let conversation = !fresh && !busy ? beforeSubmit : fresh && busy ? beginPrompt(this.state.conversation, text) : this.state.conversation;
+      if (fresh && response.attachments && response.turn_id) {
+        const index = conversation.messages.findLastIndex(m => m.role === 'user');
+        conversation = { ...conversation, messages: conversation.messages.map((m, i) => i === index ? { ...m, turnId: response.turn_id, parts: [{ type: 'text', text: [text, ...response.attachments!.map(a => a.ref)].join('\n') }] } : m) };
+      }
       this.set({ ...this.state, durable: this.state.durable || fresh, conversation, control: { ...this.state.control, submitting: false, notice: fresh ? "" : `Message ${response.status}.`, queued: response.status === "queued" ? text : this.state.control.queued } });
       if (!fresh) void this.refresh().catch(() => { /* accepted submit must not be rolled back by a metadata failure */ });
     } catch (error) {
       if (generation !== this.generation || this.stopped) return;
-      if (error instanceof JsonRpcGatewayError) {
+      if (error instanceof JsonRpcGatewayError && (!rich || [4001, 4032, 4090, 4093, 5070, 5071].includes(error.code ?? -1))) {
         this.uncertainSubmit = false;
         this.set({ ...this.state, ready: true, control: { ...this.state.control, submitting: false }, conversation: { ...(busy ? this.state.conversation : beforeSubmit), error: "The gateway rejected this prompt. Correct the problem and send again, or start a new session." } });
         return;
       }
+      if (rich) this.attachments.markUncertain();
       // Unknown acceptance: recover, never repeat a non-idempotent submission.
       this.set({ ...this.state, ready: false, control: { ...this.state.control, submitting: false }, conversation: failConversation(this.state.conversation, "Prompt submission failed or was not acknowledged. Reconnecting without resending.") });
       void this.connect();
     }
   };
   steer = async (text: string) => {
+    if (this.attachments.getSnapshot().items.some(a => !["submitted", "cancelled"].includes(a.state))) return;
     if (!text.trim() || !this.gateway || !this.state.runtimeId || !this.state.ready || this.state.control.submitting || hasInteraction(this.state.interactions)) return;
     const generation = this.generation;
     this.refreshVersion++;

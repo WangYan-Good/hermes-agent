@@ -19,9 +19,10 @@ export function NativeChatRuntime({ state, session, children }: NativeChatRuntim
       if (!message) {
         message = fromThreadMessageLike({
           role: source.role,
+          metadata: { custom: { sourceId: source.turnId || source.id, partSources: source.parts.map(part => part.sourceId) } },
           content: source.parts.map(part => part.type === "tool" ? {
-            type: "tool-call" as const, toolCallId: part.id!, toolName: part.name!, args: { preview: part.text }, argsText: "",
-            ...(part.status !== "running" ? { result: { status: part.status }, isError: part.status === "error" } : {}),
+            type: "tool-call" as const, toolCallId: part.id!, toolName: part.name!, args: { ...part.args, preview: part.text }, argsText: "",
+            ...(part.status !== "running" ? { result: { status: part.status, output: part.result, presentation: part.presentation }, isError: part.status === "error" } : {}),
           } : { type: part.type, text: part.text }),
           ...(source.role === "assistant" ? { status: source.pending ? { type: "running" as const } : source.error ? { type: "incomplete" as const, reason: "error" as const, error: source.error } : { type: "complete" as const, reason: "stop" as const } } : {}),
         }, source.id, { type: "complete", reason: "stop" });

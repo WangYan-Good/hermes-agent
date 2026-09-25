@@ -6,9 +6,8 @@ only the latest descendant ends up with rows in the ``messages`` table —
 the parent row has ``message_count = 0``. ``hermes --resume <parent_id>``
 used to load zero rows and show a blank chat.
 
-``SessionDB.resolve_resume_session_id()`` walks the parent → child chain
-and redirects to the first descendant that actually has messages. These
-tests pin that behaviour.
+``SessionDB.resolve_resume_session_id()`` follows compression-ended edges
+to the authoritative continuation, independently of message presence.
 """
 import time
 
@@ -54,6 +53,8 @@ def test_walks_from_middle_of_chain(db):
     # If the user happens to know an intermediate ID, we still find the msg-bearing descendant.
     _make_chain(db, [("a", None), ("b", "a"), ("c", "b"), ("d", "c")])
     db.append_message("d", role="user", content="x")
+    for sid in ("a", "b", "c"):
+        db.end_session(sid, "compression")
     assert db.resolve_resume_session_id("b") == "d"
     assert db.resolve_resume_session_id("c") == "d"
 
@@ -96,8 +97,8 @@ def test_prefers_most_recent_child_when_fork_exists(db):
         ("newer_fork", "parent"),
     ])
     db.append_message("newer_fork", role="user", content="x")
+    db.end_session("parent", "compression")
     assert db.resolve_resume_session_id("parent") == "newer_fork"
-
 
 
 

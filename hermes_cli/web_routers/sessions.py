@@ -606,7 +606,15 @@ async def get_session_messages(
     offset: int = Query(0, ge=0),
     order: Optional[str] = Query(None),
     include_compacted: bool = Query(False),
+    before_id: Optional[int] = Query(None, gt=0),
+    view: Optional[str] = Query(None),
 ):
+    if view not in (None, "display"):
+        raise HTTPException(status_code=400, detail="view must be display when specified")
+    if view == "display" and offset:
+        raise HTTPException(status_code=400, detail="display history uses before_id, not offset")
+    if before_id is not None and (offset or order != "latest"):
+        raise HTTPException(status_code=400, detail="before_id requires latest order without offset")
     if order not in (None, "oldest", "latest"):
         raise HTTPException(
             status_code=400,
@@ -628,12 +636,18 @@ async def get_session_messages(
             default_page = limit is None
             latest_page = order == "latest" or (order is None and default_page)
             _limit = 500 if default_page else min(limit, 500)
+            if view == "display":
+                return sid, _limit, db.get_display_messages(
+                    sid, limit=_limit, latest=latest_page,
+                    include_compacted=include_compacted, before_id=before_id,
+                )
             return sid, _limit, db.get_messages(
                 sid,
                 limit=_limit,
                 offset=offset,
                 latest=latest_page,
                 include_compacted=include_compacted,
+                **({"before_id": before_id} if before_id is not None else {}),
             )
         finally:
             db.close()

@@ -1,3 +1,4 @@
+import type { ChatTranscriptPart } from '@hermes/chat-ui';
 import type { Interactions } from "./native-interactions";
 import type { NativeControl } from "./native-control";
 /** Wire contracts audited against tui_gateway's session and prompt handlers. */
@@ -12,6 +13,10 @@ export interface NativeHistoryMessage {
   reasoning_details?: unknown;
   codex_reasoning_items?: unknown;
   display_kind?: string;
+  display_metadata?: Record<string, unknown>;
+  tool_call_id?: string;
+  tool_calls?: unknown[];
+  result?: unknown;
 }
 
 export interface NativeSessionResponse {
@@ -23,22 +28,15 @@ export interface NativeSessionResponse {
   running?: boolean;
   status?: string;
   info?: { stored_session_id?: string; running?: boolean; usage?: Record<string, unknown> };
-  inflight?: { user: string; assistant: string; streaming: boolean; error?: string } | null;
+  inflight?: { turn_id?: string; user: string; assistant: string; streaming: boolean; error?: string } | null;
   pending_approval?: unknown;
   pending_clarify?: unknown;
   pending_interactions?: { type: string; payload: unknown }[];
   queued?: { user?: string };
+  durable_rows?: Record<string, unknown>[];
 }
 
-export interface NativePart {
-  type: "text" | "reasoning" | "tool";
-  text: string;
-  id?: string;
-  name?: string;
-  status?: "running" | "complete" | "error";
-  sealed?: boolean;
-  final?: boolean;
-}
+export type NativePart = ChatTranscriptPart;
 
 export interface NativeMessage {
   id: string;
@@ -46,6 +44,7 @@ export interface NativeMessage {
   parts: NativePart[];
   error?: string;
   pending?: boolean;
+  turnId?: string;
 }
 
 export interface NativeConversationState {

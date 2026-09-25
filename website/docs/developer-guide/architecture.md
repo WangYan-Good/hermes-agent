@@ -277,3 +277,140 @@ run_agent.py, cli.py, batch_runner.py, environments/
 ```
 
 This chain means tool registration happens at import time, before any agent instance is created. Any `tools/*.py` file with a top-level `registry.register()` call is auto-discovered — no manual import list needed.
+
+## Rich chat presentation and browser attachments (UI-P5)
+
+The experimental Web Native surface and Electron Desktop share the portable
+`apps/chat-ui` package. Desktop retains its Electron/filesystem adapter and
+preview rail; Web uses authenticated HTTP resources, owned object URLs, and
+source-only HTML/SVG previews. The shared package owns data contracts, Markdown
+processing, math/block caches, lazy code highlighting, artifact detection and
+diff parsing. Dependency tests reject host imports in the shared package.
+Terminal remains the default dashboard surface and `/api/pty` is unchanged.
+This phase does not implement UI-P6/P7 or alter model tool schemas, prompt
+caching, approvals or session recovery semantics.
+
+### Live and durable display data
+
+The Gateway tool-complete callback produces optional version-1 `presentation`
+data from structured tool results and existing edit snapshots. It emits the
+presentation with the real tool-call ID and merges it into that exact session's
+persisted tool row `display_metadata`, preserving other sidecar fields. No
+SessionDB migration or change to model-facing results is needed. Sensitive
+output redaction still applies. Unknown tools keep their generic result view;
+old history without reliable metadata does not gain a fabricated diff. Completed
+turns also receive content source IDs from their durable assistant rows; these
+are returned in completion events and retained across partial history pages.
+
+Native session activation/resume still restores runtime state. Transcript rows
+come from authenticated `GET /api/sessions/{id}/messages?view=display&include_compacted=true&order=latest&limit=100`;
+`before_id` provides stable backward pagination without offset races. During
+hydration, WS events are buffered, then reconciled with durable rows using row,
+turn and real tool-call IDs. Complete-before-start and repeated completion
+update the same tool. Profile, runtime, stored ID, connection generation and
+request version invalidate stale reads. The backend's resolved stored ID is
+adopted after session compaction. Attachment history uses persisted references;
+unavailable resources stay unavailable instead of being uploaded again.
+
+The opt-in `view=display` selects the backend's compression-only ancestor chain
+through the resolved tip. It uses the existing parent walk and compression/fork
+discriminators; branches own their copied history, and delegate/tool/reset links
+do not pull unrelated parent messages into the display. A branch's compression
+continuation can include its branch segment without crossing the original fork.
+The legacy REST view still returns one resolved segment. Runtime resume/activate
+and model history are unchanged; Native continues to omit the WS transcript.
+
+Display pages retain raw row IDs, source session IDs, tool calls/results,
+reasoning and display/API sidecars. SQL applies the existing per-session
+compaction-copy preference (live row, then newest generation) and replayed-user
+dedupe before the keyset predicate and LIMIT. Only the selected rows are fetched
+and decoded, with a server cap of 500; no full-lineage conversation projection
+is materialized for a page. `include_compacted` controls preserved in-place rows
+independently of ancestor selection. Rows return in insertion-ID order, and
+`before_id` crosses segment boundaries without duplicates or OFFSET races with
+new appends. The display view rejects nonzero OFFSET. The client never infers
+lineage or deduplicates turns by matching their text.
+
+Backward paging is enabled only after the latest page for the current stored
+session has hydrated successfully. A transient reconnect history failure keeps
+completed display rows and reconciles current inflight/control state, with a
+non-destructive retry notice. Retry reads latest without `before_id`, rebuilding
+the cursor before older pages are allowed. Stored-ID rotation resets the cache;
+late or concurrent requests cannot reuse a predecessor's cursor or overwrite a
+newer conversation. None of these read retries resubmits a prompt.
+
+### Attachment ownership and protocol
+
+`tui_gateway/attachments.py` owns an in-memory draft ledger. A draft binds an
+authenticated principal, profile, runtime session and owning WS transport.
+Selecting the same stored session does not grant access to another draft.
+Files use generated names in the existing profile `attachments/web-drafts` or
+`images/web-drafts` roots, not managed-file identities.
+
+| Operation | Contract |
+| --- | --- |
+| `attachment.prepare` RPC | Create a draft or register an occurrence/request; return public metadata and a five-minute upload grant. |
+| `attachment.connection` RPC | Mint a one-use, one-minute handoff to authenticated HTTP for this WS owner. |
+| `POST /api/chat/attachments/{draft}/recover` | Bootstrap an HttpOnly, SameSite=Strict recovery cookie, or recover after the prior owner disconnected. Rotate in-memory authority for a new owner. |
+| `PUT /api/chat/attachments/{draft}/{attachment}` | Authenticate both dashboard principal and draft/runtime/upload grants; stream and atomically finalize bytes. |
+| `attachment.snapshot` RPC | Query local/uploading/uploaded/submitted/failed/cancelled occurrences, including accepted turn IDs. |
+| `attachment.cancel` RPC | Idempotently cancel an unclaimed occurrence; retain a tombstone and preserve claimed files. |
+| `prompt.submit` with `attachment_ids` | Under the existing session lock, reject busy submissions and atomically claim exactly the specified draft attachments for one turn. |
+
+Grants travel in headers or authenticated RPC data, never URL parameters or
+browser storage. Session storage contains only non-secret draft/runtime
+locators. Cookie paths honor the dashboard base path; HTTPS marks them Secure.
+HTTP and WS must identify the same principal. A live owner prevents takeover.
+Explicit attachment submissions never consume another owner's draft or the
+legacy implicit image queue. Files become existing `@file:` references; images
+enter the existing image input path. Text-only legacy submission remains valid.
+
+The composer accepts file selection, pasted images and drops, rejects recursive
+directory uploads, and retains drafts while the agent is busy. Sending requires
+a manual action after the agent is idle; attachments never enter queue/steer.
+Each add has a fresh occurrence ID. File/Blob objects and object URLs remain
+local and are released on removal, acceptance and teardown.
+
+| Interruption | Recovery |
+| --- | --- |
+| Upload response lost | Query the ledger before retrying; reuse completed bytes. |
+| Refresh during upload | Recover metadata; require file reselection because the browser File is lost. |
+| Refresh after upload | Recover original uploaded metadata without uploading again. |
+| Explicit submit rejection before claim | Retain the draft for correction and manual send. |
+| Submit ACK lost | Never replay automatically. Reconcile ledger/live/durable state; block uncertain combinations. |
+| Cancel races with completion | Server tombstones and client occurrence/generation checks prevent resurrection. |
+| Backend restart | Unsubmitted drafts are not guaranteed to recover; show expired/unavailable state. |
+
+Limits are 100 MiB per ordinary file, 25 MiB per image, 10 attachments, 200 MiB
+per draft and two concurrent streams. Streaming enforces the prepared byte
+limit independently of Content-Length. Empty or traversal/control-character
+filenames are rejected. PNG/JPEG/GIF/WebP/BMP content is decoded and bounded by
+pixel/frame budgets; MIME spoofing fails. HTML/SVG/PDF remain ordinary files;
+there is no PDF-to-image conversion or executable document preview.
+
+Drafts expire after 24 idle hours; drafts supporting an active submitted turn
+remain protected. The reaper revisits every profile home that has created a
+browser draft, including profiles first used after process startup. Under the
+same lock as upload/claim/cancel/recovery, it retains live ledger items and
+removes only generated completed files older than the retention period whose
+content/metadata references are absent from a successful read-only SessionDB
+lookup. Claimed files survive cancellation/expiry themselves; a later sweep can
+reclaim them after their durable session is deleted and no live owner remains.
+Unowned temporary uploads are cleaned; symlinks and unknown names are never
+followed or deleted. Unknown ownership and database failures retain files.
+Authenticated resource reads constrain profile roots, resolved paths and
+size, use no-sniff responses, and do not serve HTML/SVG inline.
+
+Renderers bound tool results/diffs to pages of 200 lines or 32 KiB and fall back
+to bounded text for Markdown larger than 256 KiB. Stable Markdown blocks reuse
+parsing caches; collapsed content does not load code highlighters. HTML/SVG
+artifacts render as escaped source in Web. External links reject executable
+schemes and embedded credentials; media fetches never forward dashboard
+credentials to an external origin.
+
+The regression suites cover the ledger, RPC/HTTP ownership, true HTTP plus WS
+submission with a controlled model worker, durable presentation and pagination,
+Native hydration races, resource cleanup, XSS and package boundaries. Browser
+validation also exercises refresh after upload and matching live/history
+artifacts and generated images. Controlled workers verify the transport and
+persistence contracts; they do not validate an external model provider.

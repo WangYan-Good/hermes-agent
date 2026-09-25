@@ -1,6 +1,6 @@
 import { NativeInteractions } from "./NativeInteractions";
 import { NativeActivity } from "./NativeActivity";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "react-router";
 import { ThreadPrimitive } from "@assistant-ui/react";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -10,8 +10,11 @@ import { NativeChatRuntime } from "./NativeChatRuntime";
 import { NativeComposer } from "./NativeComposer";
 import { NativeThread } from "./NativeThread";
 import { useNativeGateway } from "./use-native-gateway";
+import { ChatHostContext } from '@hermes/chat-ui';
+import { createNativeHost } from './native-host';
 
 function NativeSurface({ profile, initialResume, isActive = true }: ChatPageProps & { profile: string; initialResume: string | null }) {
+  const host = useMemo(() => createNativeHost(profile), [profile]);
   const [params, setParams] = useSearchParams();
   const location = useLocation();
   const { session, state } = useNativeGateway(profile, initialResume);
@@ -45,19 +48,20 @@ function NativeSurface({ profile, initialResume, isActive = true }: ChatPageProp
     lastResume.current = null;
     setParams(prev => { const next = new URLSearchParams(prev); next.delete("resume"); next.set("chat_mode", "native"); return next; }, { replace: true });
   };
-  return <NativeChatRuntime state={state} session={session}>
-    <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col" aria-label="Native Chat">
-      <header className="flex items-center justify-between border-b border-current/10 px-5 py-3"><div><span className="font-medium">Hermes</span><span className="ml-3 text-xs opacity-60">Native · Experimental</span></div><button type="button" disabled={state.conversation.running || !state.ready} onClick={newSession} className="text-sm disabled:opacity-40">New session</button></header>
+  return <ChatHostContext.Provider value={host}><NativeChatRuntime state={state} session={session}>
+    <ThreadPrimitive.Root className="flex h-full min-h-0 flex-col text-foreground" aria-label="Native Chat">
+      <header className="flex items-center justify-between border-b border-current/10 px-5 py-3"><div><span className="font-medium">Hermes</span><span className="ml-3 text-xs opacity-60">Native · Experimental</span></div><button type="button" disabled={state.conversation.running || state.connection === "connecting"} onClick={newSession} className="text-sm disabled:opacity-40">New session</button></header>
       {state.connection !== "open" || !state.ready ? <div role="status" className="px-5 py-2 text-sm">{state.connection === "connecting" ? "Connecting…" : "Connection needs attention"}</div> : null}
       {state.conversation.error ? <div role="alert" className="mx-5 my-2 rounded-lg border border-red-400/40 p-3 text-sm">{state.conversation.error}<button type="button" className="ml-3 underline" onClick={session.retry}>Reconnect</button></div> : null}
       {state.conversation.status ? <div role="status" className="px-5 py-1 text-sm opacity-60">{state.conversation.status}</div> : null}
+      {state.durable ? <button type="button" className="text-sm underline" onClick={() => void session.loadOlder()}>Load earlier messages</button> : null}
       <NativeThread />
       <NativeInteractions state={state} session={session} visible={isActive} />
       <NativeActivity control={state.control} />
       <NativeComposer state={state} session={session} />
       {!state.conversation.running && state.ready ? <a className="mb-3 text-center text-xs opacity-60 underline" href={`${HERMES_BASE_PATH}/chat?${terminalParams}`}>Open Terminal (reload page)</a> : null}
     </ThreadPrimitive.Root>
-  </NativeChatRuntime>;
+  </NativeChatRuntime></ChatHostContext.Provider>;
 }
 
 export default function NativeChatPage(props: ChatPageProps) {
