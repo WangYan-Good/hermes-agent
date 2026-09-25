@@ -300,3 +300,25 @@ describe("native interaction and control recovery", () => {
     expect(requests("prompt.submit")).toHaveLength(2); expect(session.getSnapshot().control.queued).toBe("later");
   });
 });
+
+it("rejects old-generation, expired and cross-request MCP operation updates", async () => {
+  await start();
+  const payload = (request_id: string) => ({ request_id, server: "test", action: "install" });
+  FakeNativeSocket.instances[0].event("mcp.setup.request", payload("a"));
+  FakeNativeSocket.instances[0].event("mcp.setup.request", payload("b"));
+  const old = session.getSnapshot().interactions["mcp.setup:a"];
+  const b = session.getSnapshot().interactions["mcp.setup:b"];
+  const op = { kind: "install", id: "action-b", state: "running", profile: "work" };
+  session.rememberMcpOperation(b, op);
+  session.rememberMcpOperation(b, { ...op, id: "old-action-a" });
+  expect(session.getSnapshot().interactions["mcp.setup:b"]).toMatchObject({ operation: op });
+  FakeNativeSocket.responder = (r, s) => s.reply(r, { session_id: "runtime", pending_interactions: [{ type: "mcp.setup.request", payload: { ...payload("a"), operation: { ...op, id: "action-a" } } }] });
+  session.retry(); await flushNative();
+  session.rememberMcpOperation(old, { ...op, id: "late-action" });
+  expect(session.getSnapshot().interactions["mcp.setup:a"]).toMatchObject({ operation: { id: "action-a" } });
+  const current = session.getSnapshot().interactions["mcp.setup:a"];
+  FakeNativeSocket.instances.at(-1)!.event("mcp.setup.expire", { request_id: "a" });
+  const before = session.getSnapshot();
+  session.rememberMcpOperation(current, { ...op, id: "late-action" });
+  expect(session.getSnapshot()).toBe(before);
+});

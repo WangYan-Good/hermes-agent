@@ -2038,6 +2038,8 @@ def _pending_interaction_payloads(sid: str) -> list[dict]:
     only travel through respond). Multiple concurrent prompts must survive a
     reconnect independently, including prompts of the same kind.
     """
+    from tui_gateway.mcp_setup import operation_snapshot
+
     fields = {
         "clarify.request": ("question", "choices", "multi_select"),
         "secret.request": ("env_var", "prompt"),
@@ -2061,6 +2063,10 @@ def _pending_interaction_payloads(sid: str) -> list[dict]:
                     metadata[key] = value
                 elif key not in {"choices", "multi_select"} and isinstance(value, str):
                     metadata[key] = value
+            if kind == "mcp.setup.request":
+                operation = operation_snapshot(payload.get("operation"))
+                if operation:
+                    metadata["operation"] = operation
             result.append({"type": kind, "payload": metadata})
     return result
 
@@ -4589,7 +4595,7 @@ def _load_tool_progress_mode() -> str:
 def _gui_surface_toolsets(platform: str) -> set[str]:
     """Toolsets that exist because of the CLIENT on the other end, not the host.
 
-    Both entries are deliberately off ``_HERMES_CORE_TOOLS`` — every other
+    These entries are deliberately off ``_HERMES_CORE_TOOLS`` — every other
     platform would carry their schema for nothing — so this resolver is the one
     gate that exposes them.
 
@@ -4604,6 +4610,8 @@ def _gui_surface_toolsets(platform: str) -> set[str]:
     surfaces = {"project"}
     if platform == "desktop":
         surfaces.add("desktop_ui")
+    if platform in {"desktop", "webui"}:
+        surfaces.add("gui_interactions")
     return surfaces
 
 
@@ -6345,7 +6353,7 @@ def _agent_cbs(sid: str) -> dict:
             {},
             timeout=30,
         ),
-        # setup_mcp tool (desktop GUI): the renderer shows an inline consent
+        # setup_mcp tool (Desktop/Web Native): renderer shows inline consent
         # card and walks the user through install/enable/OAuth via the REST
         # endpoints, then answers mcp.setup.respond with the JSON outcome.
         # Long timeout on purpose — the flow can include typing an API key or

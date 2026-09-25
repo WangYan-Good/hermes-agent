@@ -1,6 +1,6 @@
 """MCP dashboard routes (extracted verbatim from web_server.py).
 
-Handler bodies are byte-identical.  The OAuth flow registry
+The OAuth flow registry
 (``_mcp_oauth_flows`` + lock + pending cap) and the worker/helpers stay in
 web_server - reached via the late-binding seam in :mod:`hermes_cli.web_deps`
 (``late`` for callables, ``LateState`` for the mutable registry/lock/limit) so
@@ -56,6 +56,34 @@ _MAX_PENDING_MCP_OAUTH_FLOWS = LateState("_MAX_PENDING_MCP_OAUTH_FLOWS")
 # Config read-modify-write serialization for off-loop handlers (defined in
 # web_server.py; LateState supports ``with``-blocks, so this is the live lock).
 _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
+
+
+def _setup_home(profile: Optional[str]) -> str:
+    from hermes_constants import get_hermes_home
+
+    with _profile_scope(profile):
+        return str(get_hermes_home().expanduser().resolve())
+
+
+def _claim_setup(session_id, request_id, home, profile, name, kind, operation_id):
+    from tui_gateway.mcp_setup import claim_operation
+
+    try:
+        return claim_operation(session_id, request_id, home, profile or "current", name, kind, operation_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@router.get("/api/mcp/setup/{request_id}/operation")
+async def mcp_setup_operation(request_id: str, session_id: str, profile: Optional[str] = None):
+    """Read the operation accepted for this live request; never start/replay it."""
+    from tui_gateway.mcp_setup import read_operation
+
+    home = await asyncio.to_thread(_setup_home, profile)
+    try:
+        return {"operation": read_operation(session_id, request_id, home)}
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
 
 
 @router.get("/api/mcp/servers")
@@ -234,12 +262,15 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
 
 
 @router.post("/api/mcp/servers/{name}/auth")
-async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = None):
+async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = None,
+                          session_id: Optional[str] = None, request_id: Optional[str] = None):
     """Start MCP OAuth and hand the authorization URL to the dashboard browser."""
     from hermes_cli.mcp_config import _get_mcp_servers
     from tools.mcp_dashboard_oauth import DashboardOAuthFlow
 
     _require_token(request)
+    if bool(session_id) != bool(request_id):
+        raise HTTPException(status_code=400, detail="Both session_id and request_id are required")
     _gc_mcp_oauth_flows()
     from hermes_constants import get_hermes_home
 
@@ -269,12 +300,25 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
         or _mcp_oauth_callback_url(request, name),
         reconnect_live=flow_home == process_home,
     )
+    operation = None
     with _mcp_oauth_flows_lock:
+        if request_id:
+            # Claim before starting the worker or awaiting its URL. A lost
+            # HTTP response must not leave an accepted OAuth flow unbound.
+            operation, created = _claim_setup(session_id, request_id, flow_home, profile, name, "authorize", flow_id)
+            if not created:
+                existing = _mcp_oauth_flows.get(operation["id"])
+                if existing is None:
+                    raise HTTPException(status_code=409, detail="Accepted OAuth flow is no longer available; do not restart this request")
+                return {**existing.snapshot(), "operation": operation}
         pending = sum(
             not flow.worker_done
             for flow in _mcp_oauth_flows.values()
         )
         if pending >= _MAX_PENDING_MCP_OAUTH_FLOWS:
+            if operation:
+                from tui_gateway.mcp_setup import mark_operation
+                mark_operation(session_id, request_id, flow_home, flow_id, "failed")
             raise HTTPException(
                 status_code=429,
                 detail="Too many MCP OAuth flows are already in progress",
@@ -285,22 +329,33 @@ async def auth_mcp_server(name: str, request: Request, profile: Optional[str] = 
             and not flow.worker_done
             for flow in _mcp_oauth_flows.values()
         ):
+            if operation:
+                from tui_gateway.mcp_setup import mark_operation
+                mark_operation(session_id, request_id, flow_home, flow_id, "failed")
             raise HTTPException(
                 status_code=409,
                 detail=f"MCP OAuth for '{name}' is already in progress",
             )
         _mcp_oauth_flows[flow_id] = flow
-    threading.Thread(
-        target=_run_dashboard_mcp_oauth,
-        args=(flow, cfg),
-        daemon=True,
-        name=f"mcp-oauth-{name}",
-    ).start()
+    try:
+        threading.Thread(
+            target=_run_dashboard_mcp_oauth,
+            args=(flow, cfg),
+            daemon=True,
+            name=f"mcp-oauth-{name}",
+        ).start()
+    except Exception:
+        flow.mark_error("Could not start authorization")
+        flow.mark_worker_done()
+    if operation:
+        from tui_gateway.mcp_setup import mark_operation
+        mark_operation(session_id, request_id, flow_home, flow_id, "running")
+        operation = {**operation, "state": "running"}
     try:
         await flow.wait_for_authorization_url(timeout=30)
     except Exception as exc:
         flow.mark_error(str(exc))
-    return flow.snapshot()
+    return {**flow.snapshot(), **({"operation": operation} if operation else {})}
 
 
 @router.get("/api/mcp/oauth/flows/{flow_id}")
@@ -488,7 +543,8 @@ async def list_mcp_catalog(profile: Optional[str] = None):
 
 
 @router.post("/api/mcp/catalog/install")
-async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[str] = None):
+async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[str] = None,
+                                    session_id: Optional[str] = None, request_id: Optional[str] = None):
     """Install a catalog MCP into config.yaml.
 
     For HTTP/stdio entries with required env vars, those are written to .env
@@ -506,6 +562,33 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     # Persist any supplied env vars first (catalog entries declare which names
     # they need; we only write the ones the user provided).
     effective_profile = body.profile or profile
+    if bool(session_id) != bool(request_id):
+        raise HTTPException(status_code=400, detail="Both session_id and request_id are required")
+    if request_id:
+        # Reuse the existing CLI action runner for request-scoped installs,
+        # including fast catalog entries. The process/result remains queryable
+        # after browser teardown; action identity is unique per request/profile.
+        from tui_gateway.mcp_setup import mark_operation
+
+        home = await asyncio.to_thread(_setup_home, effective_profile)
+        action = _mcp_install_action_name(name, identity=f"{home}:{session_id}:{request_id}")
+        operation, created = _claim_setup(session_id, request_id, home, effective_profile, name, "install", action)
+        if created:
+            def _start():
+                try:
+                    with _profile_scope(effective_profile):
+                        for key, value in body.env.items():
+                            if value:
+                                save_env_value(key, value)
+                        _spawn_hermes_action(_profile_cli_args(effective_profile) + ["mcp", "install", name], action)
+                    mark_operation(session_id, request_id, home, action, "running")
+                except Exception:
+                    mark_operation(session_id, request_id, home, action, "failed")
+                    raise HTTPException(status_code=500, detail="MCP installation could not start") from None
+            # The worker continues even if the HTTP client goes away.
+            await asyncio.to_thread(_start)
+            operation = {**operation, "state": "running"}
+        return {"ok": operation["state"] != "failed", "name": name, "background": True, "action": operation["id"], "operation": operation}
     if body.env:
         def _write_env():
             with _profile_scope(effective_profile):

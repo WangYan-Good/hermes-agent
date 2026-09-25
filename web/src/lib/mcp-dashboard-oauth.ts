@@ -9,13 +9,14 @@ interface CompleteOptions {
   maxPollFailures?: number;
   signal?: AbortSignal;
   cancel?: (flowId: string) => Promise<unknown>;
+  cancelOnAbort?: boolean;
 }
 export class McpOAuthCancelled extends Error {
   constructor() { super("OAuth cancelled"); }
 }
 const defaultSleep = (milliseconds: number) => new Promise<void>(resolve => window.setTimeout(resolve, milliseconds));
 
-export async function completeMcpDashboardOAuth({ serverName, start, status, open, sleep = defaultSleep, maxPollFailures = 3, signal, cancel }: CompleteOptions): Promise<McpOAuthFlow> {
+export async function completeMcpDashboardOAuth({ serverName, start, status, open, sleep = defaultSleep, maxPollFailures = 3, signal, cancel, cancelOnAbort = true }: CompleteOptions): Promise<McpOAuthFlow> {
   // Synchronous user gesture, before any await.
   const authWindow = open("about:blank", "_blank") as Window | null;
   if (!authWindow) throw new Error("OAuth popup was blocked — allow popups for this dashboard and retry");
@@ -28,8 +29,9 @@ export async function completeMcpDashboardOAuth({ serverName, start, status, ope
     closeWindow();
     if (flowId && !cancelSent && cancel) { cancelSent = true; void cancel(flowId).catch(() => undefined); }
   };
-  const check = () => { if (signal?.aborted) { cancelFlow(); throw new McpOAuthCancelled(); } };
-  signal?.addEventListener("abort", cancelFlow, { once: true });
+  const onAbort = () => { if (cancelOnAbort) cancelFlow(); };
+  const check = () => { if (signal?.aborted) { onAbort(); throw new McpOAuthCancelled(); } };
+  signal?.addEventListener("abort", onAbort, { once: true });
   try {
     check();
     const started = await start(serverName);
@@ -52,10 +54,10 @@ export async function completeMcpDashboardOAuth({ serverName, start, status, ope
       await sleep(1000);
     }
   } catch (error) {
-    cancelFlow();
+    if (!signal?.aborted || cancelOnAbort) cancelFlow();
     throw error;
   } finally {
-    signal?.removeEventListener("abort", cancelFlow);
-    closeWindow();
+    signal?.removeEventListener("abort", onAbort);
+    if (!signal?.aborted || cancelOnAbort) closeWindow();
   }
 }

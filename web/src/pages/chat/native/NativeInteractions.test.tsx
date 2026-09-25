@@ -9,7 +9,7 @@ import { NativeChatRuntime } from "./NativeChatRuntime";
 import { NativeThread } from "./NativeThread";
 import { ThreadPrimitive } from "@assistant-ui/react";
 
-const api = vi.hoisted(() => ({ getMcpCatalog: vi.fn(), getMcpServers: vi.fn(), installMcpCatalogEntry: vi.fn(), setMcpServerEnabled: vi.fn(), authMcpServer: vi.fn(), getMcpOAuthFlow: vi.fn(), cancelMcpOAuthFlow: vi.fn(), getActionStatus: vi.fn() }));
+const api = vi.hoisted(() => ({ getMcpCatalog: vi.fn(), getMcpServers: vi.fn(), installMcpCatalogEntry: vi.fn(), setMcpServerEnabled: vi.fn(), authMcpServer: vi.fn(), getMcpOAuthFlow: vi.fn(), cancelMcpOAuthFlow: vi.fn(), getActionStatus: vi.fn(), getMcpSetupOperation: vi.fn() }));
 vi.mock("@/lib/api", () => ({ api, buildWsUrl: async () => "ws://localhost/api/ws" }));
 vi.mock("@/lib/dashboard-auth-reload", () => ({ clearDashboardTokenReloadAttempt: vi.fn(), maybeReloadForLoopbackWsAuthFailure: vi.fn() }));
 let root: Root, container: HTMLDivElement, session: NativeSession;
@@ -33,6 +33,7 @@ beforeEach(async () => {
   api.installMcpCatalogEntry.mockResolvedValue({ ok: true, background: false });
   api.setMcpServerEnabled.mockResolvedValue({ ok: true });
   api.cancelMcpOAuthFlow.mockResolvedValue({ ok: true });
+  api.getMcpSetupOperation.mockResolvedValue({ operation: null });
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   session = new NativeSession("work", null);
   await act(async () => { session.start(); await flushNative(); root.render(<Harness />); });
@@ -119,13 +120,13 @@ it("unmount clears masked fields without synthesizing a response", async () => {
 });
 it("MCP credentials are transient and a background install waits for completion", async () => {
   let resolve!: (value: unknown) => void;
-  api.installMcpCatalogEntry.mockResolvedValue({ ok: true, background: true, action: "install-test" });
+  api.installMcpCatalogEntry.mockResolvedValue({ ok: true, background: true, action: "install-test", operation: { kind: "install", id: "install-test", state: "running", profile: "work" } });
   api.getActionStatus.mockImplementation(() => new Promise(r => { resolve = r; }));
   await emit("mcp.setup.request", { request_id: "m", server: "test", action: "install", reason: "Needed" });
   await input('input[type="password"]', "MCP-PRIVATE"); await click("Confirm setup");
-  expect(api.installMcpCatalogEntry).toHaveBeenCalledWith("test", { KEY: "MCP-PRIVATE" }, true, "work");
+  expect(api.installMcpCatalogEntry).toHaveBeenCalledWith("test", { KEY: "MCP-PRIVATE" }, true, "work", { session_id: "runtime", request_id: "m" });
   expect(JSON.stringify(session.getSnapshot())).not.toContain("MCP-PRIVATE");
-  expect((container.querySelector('input[type="password"]') as HTMLInputElement).value).toBe("");
+  expect(container.querySelector('input[type="password"]')).toBeNull();
   expect(requests("mcp.setup.respond")).toHaveLength(0);
   await act(async () => { resolve({ running: false, exit_code: 0 }); await flushNative(); });
   expect(requests("reload.mcp")[0].params).toEqual({ confirm: true, session_id: "runtime" });
@@ -174,7 +175,7 @@ it.each(["secret", "sudo"])("%s transport error never renders the credential or 
   expect(JSON.stringify(logs.mock.calls)).not.toContain(sensitive);
 });
 it.each(["missing-action", "failed-exit"])("MCP %s cannot report installation success", async failure => {
-  api.installMcpCatalogEntry.mockResolvedValue({ ok: true, background: true, ...(failure === "failed-exit" ? { action: "install" } : {}) });
+  api.installMcpCatalogEntry.mockResolvedValue({ ok: true, background: true, ...(failure === "failed-exit" ? { action: "install", operation: { kind: "install", id: "install", state: "running", profile: "work" } } : {}) });
   api.getActionStatus.mockResolvedValue({ running: false, exit_code: 1, lines: ["PRIVATE-INSTALL-LOG"] });
   await emit("mcp.setup.request", { request_id: "m", server: "test", action: "install" });
   await input('input[type="password"]', "PRIVATE"); await click("Confirm setup");
@@ -189,4 +190,95 @@ it("MCP expiry prevents a late enable completion from sending success", async ()
   await emit("mcp.setup.expire", { request_id: "m" });
   await act(async () => { resolve({ ok: true }); await flushNative(); });
   expect(requests("mcp.setup.respond")).toHaveLength(0); expect(requests("reload.mcp")).toHaveLength(0);
+});
+
+async function recreateSession(pending: unknown) {
+  await act(async () => { root.unmount(); session.stop(); });
+  const respond = FakeNativeSocket.responder;
+  FakeNativeSocket.responder = (rpc, socket) => rpc.method === "session.resume" ? socket.reply(rpc, { session_id: "runtime", session_key: "stored", running: true, messages: [], pending_interactions: [{ type: "mcp.setup.request", payload: pending }] }) : respond(rpc, socket);
+  session = new NativeSession("work", "stored");
+  root = createRoot(container);
+  await act(async () => { session.start(); await flushNative(); root.render(<Harness />); await flushNative(); });
+}
+
+it("full session recreation polls the backend install identity without a second POST", async () => {
+  const credential = "MCP-PRIVATE-SENTINEL";
+  const logs = [vi.spyOn(console, "log"), vi.spyOn(console, "warn"), vi.spyOn(console, "error")];
+  const operation = { kind: "install", id: "action-bound-a", state: "running", profile: "work" };
+  let backendPending: unknown;
+  const polls: ((result: unknown) => void)[] = [];
+  api.installMcpCatalogEntry.mockImplementation(async (_name, _env, _enabled, profile, binding) => {
+    expect(profile).toBe("work"); expect(binding).toEqual({ session_id: "runtime", request_id: "a" });
+    backendPending = { request_id: "a", server: "test", action: "install", operation };
+    return { ok: true, background: true, action: operation.id, operation };
+  });
+  api.getActionStatus.mockImplementation(() => new Promise(resolve => polls.push(resolve)));
+  await emit("mcp.setup.request", { request_id: "a", server: "test", action: "install" });
+  await input('input[type="password"]', credential); await click("Confirm setup");
+  const firstSession = session;
+  await recreateSession(backendPending);
+  expect(session).not.toBe(firstSession);
+  expect(api.installMcpCatalogEntry).toHaveBeenCalledTimes(1);
+  expect(api.getActionStatus).toHaveBeenLastCalledWith(operation.id, 0);
+  expect(container.textContent).not.toContain("Confirm setup");
+  expect(container.querySelector('input[type="password"]')).toBeNull();
+  expect(JSON.stringify([backendPending, session.getSnapshot(), container.textContent, window.localStorage, window.sessionStorage, location.href])).not.toContain(credential);
+  expect(JSON.stringify(logs.map(log => log.mock.calls))).not.toContain(credential);
+  await act(async () => { polls.at(-1)!({ running: false, exit_code: 0 }); await flushNative(); });
+  expect(requests("reload.mcp")).toHaveLength(1);
+  expect(requests("mcp.setup.respond")).toHaveLength(1);
+  expect(JSON.parse(requests("mcp.setup.respond")[0].params.result as string).status).toBe("installed");
+  await act(async () => { polls[0]({ running: false, exit_code: 0 }); await flushNative(); });
+  expect(requests("mcp.setup.respond")).toHaveLength(1);
+});
+
+it.each(["approved", "cancel"])("full session recreation resumes the same OAuth flow: %s", async outcome => {
+  const operation = { kind: "authorize", id: "flow-bound-a", state: "running", profile: "work" };
+  const pending = { request_id: "a", server: "test", action: "authorize", operation };
+  const popup = { location: { href: "" }, close: vi.fn(), closed: false, opener: null };
+  vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+  api.authMcpServer.mockResolvedValue({ flow_id: operation.id, status: "authorization_required", authorization_url: "https://idp.test/auth?state=public", operation });
+  const polls: ((result: unknown) => void)[] = [];
+  api.getMcpOAuthFlow.mockImplementation(() => new Promise(resolve => polls.push(resolve)));
+  await emit("mcp.setup.request", { request_id: "a", server: "test", action: "authorize" }); await click("Confirm setup");
+  const firstSession = session;
+  await recreateSession(pending);
+  expect(session).not.toBe(firstSession);
+  expect(api.authMcpServer).toHaveBeenCalledTimes(1);
+  expect(api.authMcpServer).toHaveBeenCalledWith("test", "work", { session_id: "runtime", request_id: "a" });
+  expect(api.getMcpOAuthFlow).toHaveBeenLastCalledWith(operation.id);
+  expect(api.cancelMcpOAuthFlow).not.toHaveBeenCalled();
+  expect(window.open).toHaveBeenCalledTimes(1);
+  expect(container.textContent).toContain("original authorization window");
+  if (outcome === "cancel") {
+    await click("Cancel");
+    expect(api.cancelMcpOAuthFlow).toHaveBeenCalledExactlyOnceWith(operation.id);
+  }
+  await act(async () => { for (const resolve of polls) resolve({ status: "approved" }); await flushNative(); });
+  expect(requests("mcp.setup.respond")).toHaveLength(1);
+  expect(JSON.parse(requests("mcp.setup.respond")[0].params.result as string).status).toBe(outcome === "cancel" ? "declined" : "authorized");
+  expect(api.authMcpServer).toHaveBeenCalledTimes(1);
+});
+
+it("recovers an accepted install after losing its HTTP reply, without another POST", async () => {
+  const operation = { kind: "install", id: "accepted", state: "running", profile: "work" };
+  api.installMcpCatalogEntry.mockRejectedValue(new Error("MCP-PRIVATE-SENTINEL"));
+  api.getMcpSetupOperation.mockResolvedValue({ operation });
+  api.getActionStatus.mockResolvedValue({ running: false, exit_code: 0 });
+  await emit("mcp.setup.request", { request_id: "a", server: "test", action: "install" });
+  await input('input[type="password"]', "MCP-PRIVATE-SENTINEL"); await click("Confirm setup");
+  expect(api.installMcpCatalogEntry).toHaveBeenCalledTimes(1);
+  expect(api.getMcpSetupOperation).toHaveBeenCalledWith({ session_id: "runtime", request_id: "a" }, "work");
+  expect(requests("mcp.setup.respond")).toHaveLength(1);
+  expect(container.textContent).not.toContain("MCP-PRIVATE-SENTINEL");
+});
+
+it("starting recovery polls metadata in the initiating profile and never installs", async () => {
+  const starting = { kind: "install", id: "accepted", state: "starting", profile: "original-profile" };
+  api.getMcpSetupOperation.mockResolvedValue({ operation: { ...starting, state: "running" } });
+  api.getActionStatus.mockResolvedValue({ running: false, exit_code: 0 });
+  await recreateSession({ request_id: "a", server: "test", action: "install", operation: starting });
+  expect(api.getMcpSetupOperation).toHaveBeenCalledWith({ session_id: "runtime", request_id: "a" }, "original-profile");
+  expect(api.installMcpCatalogEntry).not.toHaveBeenCalled();
+  expect(requests("mcp.setup.respond")).toHaveLength(1);
 });

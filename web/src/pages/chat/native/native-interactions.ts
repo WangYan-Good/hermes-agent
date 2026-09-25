@@ -1,6 +1,7 @@
 import type { GatewayEvent } from "@hermes/shared";
 import { record, string } from "./native-events";
 import type { NativeSessionResponse } from "./native-types";
+import type { McpSetupOperation } from "@/lib/api";
 
 export type ApprovalChoice = "once" | "session" | "always" | "deny";
 export type InteractionKind = "approval" | "clarify" | "secret" | "sudo" | "mcp.setup";
@@ -11,11 +12,16 @@ export type NativeInteraction = Binding & (
   | { kind: "clarify"; question: string; choices: string[]; multiSelect: boolean }
   | { kind: "secret"; envVar: string; prompt: string }
   | { kind: "sudo" }
-  | { kind: "mcp.setup"; server: string; action: string; reason: string }
+  | { kind: "mcp.setup"; server: string; action: string; reason: string; operation?: McpSetupOperation }
 );
 export type Interactions = Record<string, NativeInteraction>;
 export const activeInteraction = (r: NativeInteraction) => !["resolved", "expired"].includes(r.phase);
 export const hasInteraction = (rs: Interactions) => Object.values(rs).some(activeInteraction);
+export function readMcpOperation(value: unknown): McpSetupOperation | undefined {
+  const p = record(value);
+  if ((p.kind !== "install" && p.kind !== "authorize") || typeof p.id !== "string" || !/^[A-Za-z0-9_-]{1,160}$/.test(p.id) || (p.state !== "starting" && p.state !== "running" && p.state !== "failed") || typeof p.profile !== "string") return undefined;
+  return { kind: p.kind, id: p.id, state: p.state, profile: p.profile };
+}
 export function normalizeChoices(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.filter((v): v is string => typeof v === "string" && Boolean(v.trim())))] : [];
 }
@@ -37,7 +43,7 @@ export function readInteraction(event: GatewayEvent, generation: number): Native
     case "clarify": return { ...binding, kind, question: string(p.question), choices: normalizeChoices(p.choices), multiSelect: p.multi_select === true };
     case "secret": return { ...binding, kind, envVar: string(p.env_var), prompt: string(p.prompt) };
     case "sudo": return { ...binding, kind };
-    case "mcp.setup": return { ...binding, kind, server: string(p.server), action: string(p.action), reason: string(p.reason) };
+    case "mcp.setup": return { ...binding, kind, server: string(p.server), action: string(p.action), reason: string(p.reason), operation: readMcpOperation(p.operation) };
     default: return null;
   }
 }
@@ -48,6 +54,11 @@ export function reduceInteractions(state: Interactions, event: GatewayEvent, gen
     // Replay is not another request and must not revive a settled answer.
     if (old?.generation === generation && old.runtimeId === request.runtimeId) {
       if (!activeInteraction(old)) return state;
+      // The original request event may have been buffered before a resume
+      // snapshot recorded the operation. It cannot erase accepted identity.
+      if (old.kind === "mcp.setup" && request.kind === "mcp.setup" && old.operation) {
+        request.operation = old.operation;
+      }
       const next = { ...request, phase: old.phase, error: old.error };
       return JSON.stringify(next) === JSON.stringify(old) ? state : { ...state, [request.key]: next };
     }

@@ -312,3 +312,19 @@ it("binds Native MCP operations to their captured profile and reuses OAuth cance
   expect(fetch.mock.calls.at(-1)?.[0]).toBe("/api/mcp/oauth/flows/flow%2Fone");
   expect(fetch.mock.calls.at(-1)?.[1]?.method).toBe("DELETE");
 });
+
+it("sends request/session correlation with MCP starts and keeps credentials out of URLs", async () => {
+  const fetch = jsonFetchMock(); vi.stubGlobal("fetch", fetch);
+  const setup = { session_id: "runtime/one", request_id: "request-a" };
+  await api.installMcpCatalogEntry("test", { KEY: "MCP-PRIVATE-SENTINEL" }, true, "work", setup);
+  await api.authMcpServer("test", "work", setup);
+  await api.getMcpSetupOperation(setup, "work");
+  for (const [url] of fetch.mock.calls) {
+    const parsed = new URL(String(url), "https://example.test");
+    expect(parsed.searchParams.get("profile")).toBe("work");
+    expect(parsed.searchParams.get("session_id")).toBe("runtime/one");
+    expect(parsed.searchParams.get("request_id")).toBe("request-a");
+    expect(url).not.toContain("MCP-PRIVATE-SENTINEL");
+  }
+  expect(JSON.parse(fetch.mock.calls[0][1]!.body as string).env.KEY).toBe("MCP-PRIVATE-SENTINEL");
+});

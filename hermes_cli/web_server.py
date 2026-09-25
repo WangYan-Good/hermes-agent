@@ -13678,12 +13678,13 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
 
 
 
-def _mcp_install_action_name(name: str) -> str:
+def _mcp_install_action_name(name: str, identity: str | None = None) -> str:
     """Unique per-entry mcp-install action name (+ registered log file), so a
     re-click or a second catalog install doesn't overwrite the first's tracked
     process/log while its git clone is still running."""
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:48] or "server"
-    digest = hashlib.sha1(name.encode()).hexdigest()[:8]
+    # Native requests must not share a process slot across requests/profiles.
+    digest = hashlib.sha256((identity or name).encode()).hexdigest()[:16] if identity else hashlib.sha1(name.encode()).hexdigest()[:8]
     action = f"mcp-install-{slug}-{digest}"
     _ACTION_LOG_FILES.setdefault(action, f"action-{action}.log")
     return action

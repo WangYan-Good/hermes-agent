@@ -1,4 +1,4 @@
-import { activeInteraction, hasInteraction, recoverInteractions, reduceInteractions, readInteraction, type NativeInteraction, type ApprovalChoice } from "./native-interactions";
+import { activeInteraction, hasInteraction, recoverInteractions, reduceInteractions, readInteraction, readMcpOperation, type NativeInteraction, type ApprovalChoice } from "./native-interactions";
 import { emptyControl, recoverControl, reduceControl } from "./native-control";
 import { JsonRpcGatewayError, type GatewayEvent } from "@hermes/shared";
 import { beginPrompt, emptyConversation, failConversation, record, reduceNativeEvent, string } from "./native-events";
@@ -24,7 +24,6 @@ export class NativeSession {
   private eventRevision = 0;
   private acknowledged = new Set<string>();
   readonly profile: string;
-  readonly mcpActions = new Map<string, string>();
   private readonly makeGateway: () => NativeGateway;
 
   constructor(profile: string, resume: string | null, makeGateway = () => new NativeGateway()) {
@@ -45,7 +44,7 @@ export class NativeSession {
 
   select = (storedId: string | null) => {
     if (storedId && (storedId === this.state.storedId || storedId === this.target)) return;
-    this.target = storedId; this.uncertainSubmit = false; this.mcpActions.clear();
+    this.target = storedId; this.uncertainSubmit = false;
     this.set(initial()); this.retries = 0;
     if (!this.stopped) void this.connect();
   };
@@ -167,6 +166,13 @@ export class NativeSession {
   }
 
   isCurrent = (r: NativeInteraction) => !this.stopped && this.state.ready && r.generation === this.generation && r.runtimeId === this.state.runtimeId && this.state.interactions[r.key]?.generation === r.generation && activeInteraction(this.state.interactions[r.key]);
+  rememberMcpOperation = (r: NativeInteraction, value: unknown) => {
+    const operation = readMcpOperation(value);
+    const current = this.state.interactions[r.key];
+    if (!operation || !this.isCurrent(r) || current.kind !== "mcp.setup" || operation.kind !== current.action || (current.operation && current.operation.id !== operation.id)) return;
+    if (current.operation && current.operation.state !== "starting" && operation.state === "starting") return;
+    this.set({ ...this.state, interactions: { ...this.state.interactions, [r.key]: { ...current, operation } } });
+  };
   private phase(r: NativeInteraction, phase: NativeInteraction["phase"], error?: string) {
     if (!this.isCurrent(r)) return;
     const current = this.state.interactions[r.key];

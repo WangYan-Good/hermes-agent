@@ -998,6 +998,9 @@ PLATFORM_HINTS = {
     ),
     "webui": (
         "You are in the Hermes WebUI, a browser-based chat interface. "
+        "To add, enable, or authorize an MCP server, use setup_mcp if available "
+        "so the user can consent through the inline setup card. Do not hand-edit "
+        "mcp_servers config to bypass that consent flow. "
         "Full Markdown rendering is supported — headings, bold, italic, code "
         "blocks, tables, math (LaTeX), and Mermaid diagrams all render natively. "
         "To display local or remote media/files inline, include "

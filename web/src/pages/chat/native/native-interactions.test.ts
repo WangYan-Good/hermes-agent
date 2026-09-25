@@ -52,3 +52,12 @@ it("subagent completion is terminal even when stale progress arrives", () => {
   expect(state.subagents.child).toMatchObject({ status: "failed", complete: true, activity: "Failed" });
   expect(reduceControl(state, event("subagent.progress", { subagent_id: "child", text: "old" }))).toBe(state);
 });
+
+it("buffered original MCP requests cannot erase accepted operation metadata", () => {
+  const operation = { kind: "install", id: "action-a", state: "running", profile: "work", env: "MCP-PRIVATE-SENTINEL" };
+  const payload = { request_id: "a", server: "test", action: "install", operation };
+  let state = recoverInteractions({ session_id: "s", pending_interactions: [{ type: "mcp.setup.request", payload }] }, 1);
+  state = reduceInteractions(state, event("mcp.setup.request", { request_id: "a", server: "test", action: "install" }), 1);
+  expect(state["mcp.setup:a"]).toMatchObject({ operation: { id: "action-a" } });
+  expect(JSON.stringify(state)).not.toContain("MCP-PRIVATE-SENTINEL");
+});
