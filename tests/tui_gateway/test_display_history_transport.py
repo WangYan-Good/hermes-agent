@@ -72,7 +72,8 @@ def test_compression_resume_rest_failure_retry_and_cross_segment_tool(tmp_path, 
 
 
 @pytest.mark.parametrize("branched", [False, True])
-def test_old_id_binds_runtime_and_rest_to_same_compression_tip(tmp_path, monkeypatch, branched):
+@pytest.mark.parametrize("omit_messages", [False, True])
+def test_old_id_binds_runtime_and_rest_to_same_compression_tip(tmp_path, monkeypatch, branched, omit_messages):
     import hermes_state
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
@@ -101,14 +102,17 @@ def test_old_id_binds_runtime_and_rest_to_same_compression_tip(tmp_path, monkeyp
             parent = name
     with TestClient(web_server.app, base_url="http://127.0.0.1", client=("127.0.0.1", 43210)) as client:
         with client.websocket_connect("ws://127.0.0.1/api/ws?token=fork-transport") as ws:
-            ws.send_json({"jsonrpc": "2.0", "id": 1, "method": "session.resume", "params": {"session_id": "A", "omit_messages": True}})
+            ws.send_json({"jsonrpc": "2.0", "id": 1, "method": "session.resume", "params": {"session_id": "A", "omit_messages": omit_messages}})
             while (response := ws.receive_json()).get("id") != 1:
                 pass
             assert "result" in response, response
             resumed = response["result"]
             try:
                 assert resumed["session_key"] == "C"
-                assert resumed.get("messages", []) == []
+                if omit_messages:
+                    assert resumed["messages"] == []
+                else:
+                    assert [m["text"] for m in resumed["messages"]] == ["Visible A", "Visible B", "Visible C"]
                 runtime = server._sessions[resumed["session_id"]]
                 assert runtime["session_key"] == "C"
                 url = "/api/sessions/A/messages?view=display&order=latest&include_compacted=true"

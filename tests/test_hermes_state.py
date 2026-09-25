@@ -4248,6 +4248,7 @@ class TestGetMessagesPagination:
             "root",
             [{"role": "user", "content": f"root-{i}"} for i in range(3)],
         )
+        db.end_session("root", "compression")
         db.create_session(
             session_id="tip",
             source="compression",

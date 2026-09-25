@@ -10272,9 +10272,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     _DISPLAY_COPY_KEY = ("role", "content", "timestamp", "tool_call_id", "tool_calls", "tool_name")
 
-    def _display_session_ids(self, session_id: str) -> List[str]:
+    def _compression_conversation_session_ids(self, session_id: str) -> List[str]:
         """Compression-only suffix of the canonical root-to-tip parent walk.
 
+        Shared by display projections, ancestor prefixes and resume safety so
+        each consumer owns exactly the same durable conversation segments.
         Parent links also encode forks/delegates/resets. Use the existing
         compression/fork discriminator, including inherited fork markers on a
         continuation, and stop at the conversation boundary. Never walk forward
@@ -10313,7 +10315,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             raise ValueError("before_id requires latest order and a positive row ID")
         if not limit:
             return []
-        session_ids = self._display_session_ids(session_id)
+        session_ids = self._compression_conversation_session_ids(session_id)
         placeholders = ",".join("?" for _ in session_ids)
 
         def canonical(alias):
@@ -10527,8 +10529,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         verbatim.
         """
         session_ids = [session_id]
-        if include_ancestors and not self._is_explicit_branch_session(session_id):
-            session_ids = self._session_lineage_root_to_tip(session_id)
+        if include_ancestors:
+            session_ids = self._compression_conversation_session_ids(session_id)
 
         active_clause = "" if include_inactive else " AND active = 1"
         with self._read_ctx() as conn:
@@ -10710,21 +10712,16 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
           (the live-replay working conversation). Equivalent to
           ``get_messages_as_conversation(session_id, repair_alternation=True)``.
         - ``display_history`` — the full compression lineage (ancestors → tip),
-          verbatim, with replayed-user dedup. Explicit ``/branch`` sessions are
-          excluded from this lineage because their own rows already contain the
-          copied transcript; including the live parent's rows would let messages
-          written to the original after the fork leak into the branch.
+          verbatim, with replayed-user dedup. A branch owns its copied transcript
+          and subsequent compression segments; the original parent's rows are
+          excluded. Delegate, reset and tool boundaries follow the same rule.
 
         The display fetch already reads a superset of the model fetch (the tip
         rows are part of the lineage), so serving both from one lineage SELECT
         halves the resume's DB work versus two separate calls, with byte-identical
         output (see test_get_resume_conversations_matches_separate_reads).
         """
-        session_ids = (
-            [session_id]
-            if self._is_explicit_branch_session(session_id)
-            else self._session_lineage_root_to_tip(session_id)
-        )
+        session_ids = self._compression_conversation_session_ids(session_id)
         with self._read_ctx() as conn:
             placeholders = ",".join("?" for _ in session_ids)
             rows = conn.execute(
@@ -10758,7 +10755,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
     def get_resume_message_count(self, session_id: str) -> int:
         """Count active rows that a full resume would materialize."""
-        session_ids = self._session_lineage_root_to_tip(session_id)
+        session_ids = self._compression_conversation_session_ids(session_id)
         placeholders = ",".join("?" for _ in session_ids)
         with self._read_ctx() as conn:
             row = conn.execute(
@@ -10789,7 +10786,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # return value, and an unbounded lineage COUNT here would do the
             # exact pathological work the disable exists to avoid.
             return 0
-        session_ids = self._session_lineage_root_to_tip(session_id)
+        session_ids = self._compression_conversation_session_ids(session_id)
         placeholders = ",".join("?" for _ in session_ids)
         with self._read_ctx() as conn:
             row = conn.execute(
@@ -10860,10 +10857,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         returns ONLY the genuine ancestor messages, identified by
         ``session_id != tip_session_id``. (#65919)
         """
-        if self._is_explicit_branch_session(session_id):
-            return []
-
-        session_ids = self._session_lineage_root_to_tip(session_id)
+        session_ids = self._compression_conversation_session_ids(session_id)
         if len(session_ids) <= 1:
             return []
         with self._read_ctx() as conn:
@@ -10883,33 +10877,6 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             include_ancestors=True,
             repair_alternation=False,
         )
-
-    def _is_explicit_branch_session(self, session_id: str) -> bool:
-        """Return whether *session_id* is a copied user-facing branch.
-
-        Branches and compression continuations both use ``parent_session_id``,
-        but they have different history semantics: a branch owns a copied
-        transcript, while a compression continuation needs its ended parent's
-        archived rows for display. The durable ``_branched_from`` marker is the
-        existing discriminator written by all branch creation paths.
-        """
-        if not session_id:
-            return False
-        with self._read_ctx() as conn:
-            row = conn.execute(
-                "SELECT model_config FROM sessions WHERE id = ?",
-                (session_id,),
-            ).fetchone()
-        if row is None:
-            return False
-        raw_config = row["model_config"] if hasattr(row, "keys") else row[0]
-        if not raw_config:
-            return False
-        try:
-            config = json.loads(raw_config) if isinstance(raw_config, str) else raw_config
-        except (json.JSONDecodeError, TypeError):
-            return False
-        return isinstance(config, dict) and bool(config.get("_branched_from"))
 
     def get_conversation_root(self, session_id: str) -> str:
         """Return the ROOT id of *session_id*'s lineage chain.
