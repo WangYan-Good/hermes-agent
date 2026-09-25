@@ -144,6 +144,7 @@ vi.mock("@/lib/dashboard-auth-reload", () => ({
 }));
 vi.mock("@/lib/api", () => ({
   HERMES_BASE_PATH: "",
+  authedFetch: vi.fn(),
   api: apiMocks,
   buildWsUrl: apiMocks.buildWsUrl,
 }));

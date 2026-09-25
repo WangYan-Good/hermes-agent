@@ -1,0 +1,17 @@
+@import 'katex/dist/katex.min.css';
+.hermes-rich-markdown { line-height: 1.7; overflow-wrap: anywhere; }
+.hermes-rich-markdown :is(p, ul, ol, blockquote, pre, table, section) { margin-block: .75em; }
+.hermes-rich-markdown :is(ul, ol) { padding-inline-start: 1.5em; }
+.hermes-rich-markdown ul { list-style: disc; }
+.hermes-rich-markdown ol { list-style: decimal; }
+.hermes-rich-markdown table { display: block; overflow-x: auto; border-collapse: collapse; }
+.hermes-rich-markdown :is(td, th) { border: 1px solid color-mix(in srgb, currentColor 20%, transparent); padding: .4em .7em; }
+.hermes-rich-markdown pre { overflow: auto; max-height: 40vh; padding: .75em; border-radius: .5em; background: color-mix(in srgb, currentColor 5%, transparent); }
+.hermes-rich-markdown a { text-decoration: underline; }
+.hermes-rich-markdown blockquote { padding-inline-start: 1em; border-inline-start: 3px solid currentColor; opacity: .8; }
+.hermes-rich-markdown :is(h1, h2, h3, h4) { font-weight: 600; margin-block: 1em .5em; }
+.hermes-rich-markdown h1 { font-size: 1.5em; }
+.hermes-rich-markdown h2 { font-size: 1.25em; }
+.hermes-rich-markdown section { border: 1px solid color-mix(in srgb, currentColor 20%, transparent); border-radius: .5em; padding: .75em; }
+.hermes-rich-markdown button, .hermes-output button { text-decoration: underline; margin-inline-end: .5em; }
+.hermes-rich-markdown summary { cursor: pointer; }

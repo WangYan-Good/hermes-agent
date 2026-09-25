@@ -10,7 +10,7 @@ import { NativeThread } from "./NativeThread";
 import { ThreadPrimitive } from "@assistant-ui/react";
 
 const api = vi.hoisted(() => ({ getMcpCatalog: vi.fn(), getMcpServers: vi.fn(), installMcpCatalogEntry: vi.fn(), setMcpServerEnabled: vi.fn(), authMcpServer: vi.fn(), getMcpOAuthFlow: vi.fn(), cancelMcpOAuthFlow: vi.fn(), getActionStatus: vi.fn(), getMcpSetupOperation: vi.fn() }));
-vi.mock("@/lib/api", () => ({ api, buildWsUrl: async () => "ws://localhost/api/ws" }));
+vi.mock("@/lib/api", () => ({ authedFetch: vi.fn(), fetchJSON: vi.fn().mockRejectedValue(new Error("Legacy history fixture")), api, buildWsUrl: async () => "ws://localhost/api/ws" }));
 vi.mock("@/lib/dashboard-auth-reload", () => ({ clearDashboardTokenReloadAttempt: vi.fn(), maybeReloadForLoopbackWsAuthFailure: vi.fn() }));
 let root: Root, container: HTMLDivElement, session: NativeSession;
 function Harness() {

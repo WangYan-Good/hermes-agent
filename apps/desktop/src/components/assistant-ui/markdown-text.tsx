@@ -7,7 +7,7 @@ import {
   type SyntaxHighlighterProps,
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
-import type { code as streamdownCode } from '@streamdown/code'
+import { useCodePlugin } from '@hermes/chat-ui/code-plugin'
 import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
@@ -59,34 +59,7 @@ const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 // table when it lands; until then fenced code renders through the
 // `SyntaxHighlighter` override's plain path (same output Shiki's own
 // `delay` fallback shows), so nothing flashes or reflows unexpectedly.
-type CodePlugin = typeof streamdownCode
-let codePluginCache: CodePlugin | null = null
 
-function useCodePlugin(): CodePlugin | null {
-  const [plugin, setPlugin] = useState(codePluginCache)
-
-  useEffect(() => {
-    if (plugin) {
-      return
-    }
-
-    let cancelled = false
-
-    void import('@streamdown/code').then(({ code }) => {
-      codePluginCache = code
-
-      if (!cancelled) {
-        setPlugin(code)
-      }
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [plugin])
-
-  return plugin
-}
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair. Must stay module-scope so the prop

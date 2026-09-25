@@ -606,7 +606,10 @@ async def get_session_messages(
     offset: int = Query(0, ge=0),
     order: Optional[str] = Query(None),
     include_compacted: bool = Query(False),
+    before_id: Optional[int] = Query(None, gt=0),
 ):
+    if before_id is not None and (offset or order != "latest"):
+        raise HTTPException(status_code=400, detail="before_id requires latest order without offset")
     if order not in (None, "oldest", "latest"):
         raise HTTPException(
             status_code=400,
@@ -634,6 +637,7 @@ async def get_session_messages(
                 offset=offset,
                 latest=latest_page,
                 include_compacted=include_compacted,
+                **({"before_id": before_id} if before_id is not None else {}),
             )
         finally:
             db.close()

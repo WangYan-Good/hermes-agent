@@ -1,3 +1,4 @@
+import { readToolPresentation } from '@hermes/chat-ui';
 import type { GatewayEvent } from "@hermes/shared";
 import { emptyConversation, record, reduceNativeEvent, string } from "./native-events";
 import type { NativeConversationState, NativeHistoryMessage, NativeMessage, NativeSessionResponse } from "./native-types";
@@ -20,38 +21,61 @@ function reasoningText(row: Record<string, unknown>): string {
   return "";
 }
 
+export function durableRowsToHistory(rows: Record<string, unknown>[]): NativeHistoryMessage[] {
+  return rows.map(row => ({
+    ...row, role: row.role as NativeHistoryMessage["role"], row_id: Number(row.id),
+    text: typeof row.content === "string" ? row.content : Array.isArray(row.content) ? row.content.map(p => string(record(p).text)).filter(Boolean).join("\n") : "",
+    name: string(row.tool_name), result: row.role === "tool" ? parseResult(row.content) : undefined,
+  }));
+}
+function parseResult(value: unknown): unknown { if (typeof value !== "string") return value; try { return JSON.parse(value); } catch { return value; } }
+export function hydrateDurableHistory(rows: Record<string, unknown>[]): NativeConversationState {
+  return hydrateNativeHistory({ session_id: "", messages: durableRowsToHistory(rows) });
+}
 export function hydrateNativeHistory(response: NativeSessionResponse): NativeConversationState {
   const messages: NativeMessage[] = [];
+  let turnId: string | undefined;
   for (const [index, row] of (response.messages ?? []).entries()) {
     // Provider role is not display attribution. MVP omits system timeline
     // entries using the gateway's structured contract, never a text heuristic.
     if (row.role === "system" || row.display_kind === "hidden" || isSyntheticDisplayRow(row)) continue;
+    if (row.role === "user" || row.display_metadata?.turn_id) turnId = string(row.display_metadata?.turn_id) || undefined;
     let message = messages.at(-1);
     if (row.role === "user" || !message || message.role !== "assistant") {
-      message = { id: `history-${row.row_id ?? index}-${row.role}`, role: row.role === "user" ? "user" : "assistant", parts: [] };
+      message = { id: `history-${row.row_id ?? index}-${row.role}`, role: row.role === "user" ? "user" : "assistant", turnId, parts: [] };
       messages.push(message);
     }
     if (row.role === "tool") {
-      message.parts.push({ type: "tool", id: `history-tool-${index}`, name: row.name || "tool", status: "complete", text: (row.context ?? "").slice(0, 180) });
+      const id = row.tool_call_id || `history-tool-${row.row_id ?? index}`;
+      const target = messages.find(m => m.parts.some(p => p.type === "tool" && p.id === id)) || message;
+      const existing = target.parts.findIndex(p => p.type === "tool" && p.id === id);
+      const hidden = row.display_metadata?.sensitive || row.display_metadata?.redacted;
+      const failed = record(row.result).error || record(row.result).success === false;
+      const part = { ...target.parts[existing], type: "tool" as const, id, name: row.name || target.parts[existing]?.name || "tool", status: failed ? "error" as const : "complete" as const, text: (row.context ?? "").slice(0, 180), result: hidden ? undefined : row.result ?? row.text, presentation: hidden ? undefined : readToolPresentation(row.display_metadata?.presentation, id) };
+      if (existing >= 0) target.parts[existing] = part; else target.parts.push(part);
     } else {
       const reasoning = reasoningText(row as unknown as Record<string, unknown>);
       if (reasoning) message.parts.push({ type: "reasoning", text: reasoning, sealed: true });
-      if (row.text) message.parts.push({ type: "text", text: row.text, sealed: true });
+      if (row.text) message.parts.push({ type: "text", text: row.text, sealed: true, sourceId: string(row.display_metadata?.content_source) || (row.row_id ? `row:${row.row_id}:content:0` : undefined) });
+      for (const raw of row.tool_calls ?? []) {
+        const call = record(raw); const fn = record(call.function); const id = string(call.id);
+        if (id && !message.parts.some(p => p.id === id)) message.parts.push({ type: "tool", id, name: string(fn.name) || "tool", text: "", args: record(parseResult(fn.arguments)), status: "running" });
+      }
     }
   }
   const inflight = response.inflight;
   if (inflight) {
     const lastUser = messages.findLastIndex(m => m.role === "user");
-    if (lastUser < 0 || messages[lastUser].parts[0]?.text !== inflight.user) {
-      messages.push({ id: "inflight-user", role: "user", parts: [{ type: "text", text: inflight.user }] });
+    if (lastUser < 0 || (inflight.turn_id ? messages[lastUser].turnId !== inflight.turn_id : messages[lastUser].parts[0]?.text !== inflight.user)) {
+      messages.push({ id: "inflight-user", role: "user", turnId: inflight.turn_id, parts: [{ type: "text", text: inflight.user }] });
     }
     const last = messages.at(-1);
     // The live snapshot may overlap an already-persisted assistant row.
-    if (last?.role === "assistant" && last.parts.filter(p => p.type === "text").map(p => p.text).join("") === inflight.assistant) {
+    if (last?.role === "assistant" && (!inflight.turn_id || last.turnId === inflight.turn_id) && last.parts.filter(p => p.type === "text").map(p => p.text).join("") === inflight.assistant) {
       last.pending = inflight.streaming;
       last.error = inflight.error;
     } else {
-      messages.push({ id: "inflight-assistant", role: "assistant", parts: inflight.assistant ? [{ type: "text", text: inflight.assistant }] : [], pending: inflight.streaming, error: inflight.error });
+      messages.push({ id: "inflight-assistant", role: "assistant", turnId: inflight.turn_id, parts: inflight.assistant ? [{ type: "text", text: inflight.assistant }] : [], pending: inflight.streaming, error: inflight.error });
     }
   }
   return {
@@ -65,14 +89,14 @@ export function hydrateNativeHistory(response: NativeSessionResponse): NativeCon
 /** A resume snapshot and events can cross on the wire. Reconcile their shared
  * text boundary instead of appending the snapshot to the existing transcript. */
 export function reconcileNativeResume(response: NativeSessionResponse, buffered: GatewayEvent[], previous: NativeConversationState): NativeConversationState {
-  let state = hydrateNativeHistory(response);
+  let state = hydrateNativeHistory(response.durable_rows ? { ...response, messages: durableRowsToHistory(response.durable_rows) } : response);
   const events = buffered.filter(e => e.session_id === response.session_id);
   const final = events.findLast(e => e.type === "message.complete" || e.type === "error");
   // If history already contains this terminal frame, its tool/commentary
   // projection is authoritative too; replaying those buffered events would
   // duplicate tools because history's compact tool rows have no live tool_id.
   if (final?.type === "message.complete" && !response.running && !response.inflight &&
-      state.messages.at(-1)?.parts.some(p => p.type === "text" && p.text === string(record(final.payload).text))) {
+      (string(record(final.payload).turn_id) ? state.messages.at(-1)?.turnId === string(record(final.payload).turn_id) : state.messages.at(-1)?.parts.some(p => p.type === "text" && p.text === string(record(final.payload).text)))) {
     if (record(final.payload).status === "error") state = reduceNativeEvent({ ...state, running: true }, final);
     return state;
   }
@@ -80,7 +104,7 @@ export function reconcileNativeResume(response: NativeSessionResponse, buffered:
   const tail = state.messages.at(-1);
   // In-process reconnect keeps observed reasoning/tools, which inflight cannot
   // represent. Never carry them from another session (controller resets it).
-  if (response.inflight && tail?.role === "assistant" && oldTail?.role === "assistant") {
+  if (response.inflight && tail?.role === "assistant" && oldTail?.role === "assistant" && (!response.inflight.turn_id || oldTail.turnId === response.inflight.turn_id)) {
     const oldText = oldTail.parts.filter(p => p.type === "text").map(p => p.text).join("");
     const snapshotText = response.inflight.assistant;
     let parts = [...oldTail.parts];
@@ -104,12 +128,12 @@ export function reconcileNativeResume(response: NativeSessionResponse, buffered:
       const text = string(record(event.payload).text);
       const skip = Math.min(overlap, text.length);
       overlap -= skip;
-      if (skip < text.length) state = reduceNativeEvent(state, { ...event, payload: { text: text.slice(skip) } });
+      if (skip < text.length) state = reduceNativeEvent(state, { ...event, payload: { ...record(event.payload), text: text.slice(skip) } });
     } else if (event.type === "message.complete") {
       const finalText = string(record(event.payload).text);
       const current = state.messages.at(-1);
       // A completed history projection already contains the final answer.
-      if (!response.inflight && !response.running && current?.parts.some(p => p.type === "text" && p.text === finalText)) {
+      if (!response.inflight && !response.running && (string(record(event.payload).turn_id) ? current?.turnId === string(record(event.payload).turn_id) : current?.parts.some(p => p.type === "text" && p.text === finalText))) {
         state = { ...state, running: false };
       } else state = reduceNativeEvent({ ...state, running: true }, event);
     } else if (event.type !== "message.start" || !state.activeId) state = reduceNativeEvent(state, event);

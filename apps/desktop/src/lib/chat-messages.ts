@@ -1,4 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
+import { readToolPresentation } from '@hermes/chat-ui/contracts'
 import { type BillingBlock, skillInvocationText } from '@hermes/shared'
 
 import { extractImageRefs } from '@/lib/embedded-images'
@@ -65,6 +66,7 @@ export type GatewayEventPayload = {
   summary?: string
   error?: string | boolean
   inline_diff?: string
+  presentation?: unknown
   duration_s?: number
   todos?: unknown
   model?: string
@@ -727,9 +729,17 @@ function toolResult(
 ): Record<string, unknown> {
   const parsedResult = parseMaybeJsonObject(payload?.result)
 
+  const presentation = readToolPresentation(
+    payload?.presentation,
+    payload?.tool_id || payload?.tool_call_id || payload?.id || ''
+  )
+
+  const sharedDiff = presentation?.changes?.map(change => change.diff).join('\n')
+
   return {
     ...parsedResult,
-    ...(payload?.inline_diff ? { inline_diff: payload.inline_diff } : {}),
+    ...(sharedDiff || payload?.inline_diff ? { inline_diff: sharedDiff || payload?.inline_diff } : {}),
+    ...(presentation ? { presentation } : {}),
     ...(payload?.summary ? { summary: payload.summary } : {}),
     ...(payload?.message ? { message: payload.message } : {}),
     ...(payload?.preview ? { preview: payload.preview } : {}),
@@ -922,6 +932,23 @@ function toolPartFromStoredCall(call: unknown, fallbackIndex: number, timestamp?
   }
 }
 
+function storedPresentationResult(content: unknown, message: SessionMessage) {
+  const result = parseStoredToolResult(content)
+
+  const presentation = readToolPresentation(
+    parseDisplayMetadata(message.display_metadata)?.presentation,
+    message.tool_call_id || ''
+  )
+
+  if (!presentation) {
+    return result
+  }
+
+  const diff = presentation.changes?.map(change => change.diff).join('\n')
+
+  return { ...parseMaybeJsonObject(result), presentation, ...(diff ? { inline_diff: diff } : {}) }
+}
+
 function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMessage): boolean {
   const toolCallId = toolMessage.tool_call_id || undefined
   const toolName = toolMessage.tool_name || toolMessage.name || 'tool'
@@ -949,7 +976,7 @@ function applyStoredToolResult(messages: ChatMessage[], toolMessage: SessionMess
     parts[partIndex] = {
       ...existing,
       completedAt: toolMessage.timestamp,
-      result: parseStoredToolResult(content),
+      result: storedPresentationResult(content, toolMessage),
       isError: false
     } as ChatMessagePart
     messages[i] = { ...message, parts }
@@ -980,7 +1007,7 @@ function applyStoredToolResultToParts(parts: ChatMessagePart[], toolMessage: Ses
   next[partIndex] = {
     ...existing,
     completedAt: toolMessage.timestamp,
-    result: parseStoredToolResult(content),
+    result: storedPresentationResult(content, toolMessage),
     isError: false
   } as ChatMessagePart
 
@@ -1005,7 +1032,10 @@ function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex: numbe
     argsText: Object.keys(args).length ? JSON.stringify(args) : '',
     timestamp: toolMessage.timestamp,
     completedAt: toolMessage.timestamp,
-    result: context ? { context } : {},
+    result: storedPresentationResult(
+      toolMessage.content || toolMessage.text || (context ? { context } : {}),
+      toolMessage
+    ),
     isError: false
   }
 }

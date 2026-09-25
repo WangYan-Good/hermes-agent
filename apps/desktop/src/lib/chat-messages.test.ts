@@ -1330,3 +1330,28 @@ describe('sealOpenToolParts', () => {
     expect(sealOpenToolParts(messages)).toBe(messages)
   })
 })
+
+it('preserves authoritative tool presentation when history starts with a result row', () => {
+  const presentation = {
+    version: 1,
+    tool_call_id: 'durable-tool',
+    changes: [{ path: '/example.txt', diff: '@@ -1 +1 @@\n-old\n+new', operation: 'modify', added: 1, removed: 1 }]
+  }
+
+  const messages = toChatMessages([
+    {
+      role: 'tool',
+      tool_call_id: 'durable-tool',
+      tool_name: 'patch',
+      content: '{"success":true}',
+      display_metadata: JSON.stringify({ presentation }),
+      timestamp: 1
+    }
+  ])
+
+  const part = messages.flatMap(message => message.parts).find(part => part.type === 'tool-call')
+  expect(part).toMatchObject({
+    toolCallId: 'durable-tool',
+    result: { success: true, presentation: { tool_call_id: 'durable-tool' }, inline_diff: presentation.changes[0].diff }
+  })
+})

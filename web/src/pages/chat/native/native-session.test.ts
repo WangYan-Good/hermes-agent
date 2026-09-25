@@ -3,7 +3,7 @@ import { NativeSession } from "./native-session";
 import { FakeNativeSocket, flushNative } from "./fake-websocket.test-support";
 
 const buildWsUrl = vi.hoisted(() => vi.fn(async () => "ws://localhost/api/ws?ticket=fresh"));
-vi.mock("@/lib/api", () => ({ buildWsUrl }));
+vi.mock("@/lib/api", () => ({ authedFetch: vi.fn(), fetchJSON: vi.fn().mockRejectedValue(new Error("Legacy history fixture")), buildWsUrl }));
 vi.mock("@/lib/dashboard-auth-reload", () => ({ clearDashboardTokenReloadAttempt: vi.fn(), maybeReloadForLoopbackWsAuthFailure: vi.fn() }));
 let session: NativeSession;
 beforeEach(() => { vi.useFakeTimers(); FakeNativeSocket.reset(); vi.stubGlobal("WebSocket", FakeNativeSocket); buildWsUrl.mockClear(); session = new NativeSession("work", null); });
@@ -30,7 +30,7 @@ describe("native session over shared JSON-RPC client", () => {
   it("resumes from URL durable identity and then continues streaming", async () => {
     session = new NativeSession("work", "saved-id");
     await start();
-    expect(requests("session.resume")[0].params).toEqual({ session_id: "saved-id", profile: "work" });
+    expect(requests("session.resume")[0].params).toEqual({ session_id: "saved-id", profile: "work", omit_messages: true });
     expect(requests("session.create")).toHaveLength(0);
     await session.submit("next");
     FakeNativeSocket.instances[0].event("message.delta", { text: "next reply" });
@@ -80,9 +80,9 @@ describe("native session over shared JSON-RPC client", () => {
     await vi.advanceTimersByTimeAsync(1000); await flushNative();
     expect(requests("prompt.submit")).toHaveLength(1);
     expect(requests("session.resume")).toHaveLength(1);
-    expect(requests("session.resume")[0].params).toEqual({ session_id: "stored", profile: "work" });
+    expect(requests("session.resume")[0].params).toEqual({ session_id: "stored", profile: "work", omit_messages: true });
     expect(requests("session.activate")).toHaveLength(1);
-    expect(requests("session.activate")[0].params).toEqual({ session_id: "runtime" });
+    expect(requests("session.activate")[0].params).toEqual({ session_id: "runtime", omit_messages: true });
     expect(requests("session.create")).toHaveLength(1);
     const recovered = session.getSnapshot();
     expect(recovered).toMatchObject({ ready: true, connection: "open", durable: false, runtimeId: "runtime", storedId: "stored" });

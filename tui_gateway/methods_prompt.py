@@ -355,12 +355,19 @@ def _(rid, params: dict) -> dict:
         text = _expand_skill_invocation_for_replay(
             text, str(session.get("session_key") or "")
         )
+    rich_ids = params.get("attachment_ids")
+    rich_images = None
+    rich_metadata = None
+    if rich_ids is not None and (has_truncation or params.get("queued")):
+        return _err(rid, 4093, "Attachments require a new idle turn")
     isolation_cfg = _load_dashboard_process_isolation_config()
     turn_isolation = _session_uses_compute_host(session, isolation_cfg)
     while True:
         busy_transport = None
         with session["history_lock"]:
             if session.get("running"):
+                if rich_ids is not None:
+                    return _err(rid, 4093, "Wait for the current turn before sending attachments")
                 # Don't reject a mid-turn prompt — queue it (and, by default,
                 # interrupt the live turn) so it runs as the next turn. The
                 # provider interrupt itself must happen after this lock is
@@ -719,14 +726,44 @@ def _(rid, params: dict) -> dict:
                     _message_row_id(truncated[i])
                     for i in _history_user_indices(truncated)
                 ]
+        if rich_ids is not None:
+            if session.get("running"):
+                return _err(rid, 4093, "Wait for the current turn before sending attachments")
+            from .attachments import store as attachment_store
+            from .methods_attachments import profile_key
+            try:
+                draft = attachment_store.authorize(params.get("draft_id"), params.get("draft_token"), sid, profile_key(sys.modules[__name__], session), t)
+                attachment_turn_id = uuid.uuid4().hex
+                if not isinstance(rich_ids, list) or not rich_ids or any(not isinstance(i, str) for i in rich_ids):
+                    raise ValueError("Invalid attachment selection")
+                claimed = [attachment_store.item(draft, i) for i in rich_ids]
+                if any(a.path is None for a in claimed):
+                    raise ValueError("Attachment unavailable")
+                rich_images = [str(a.path) for a in claimed if a.mime.startswith("image/") and a.mime != "image/svg+xml"]
+                refs = ["@file:" + _format_ref_value(_attachment_ref_path(session, a.path)) for a in claimed if str(a.path) not in rich_images]
+                text = "\n".join([text, *refs]).strip()
+                rich_metadata = {"attachments": [{**a.public(), "state": "submitted", "turn_id": attachment_turn_id, "ref": "@image:" + _format_ref_value(str(a.path)) if str(a.path) in rich_images else "@file:" + _format_ref_value(_attachment_ref_path(session, a.path))} for a in claimed]}
+                with attachment_store.lock:
+                    if session.get("transport") is not t:
+                        raise PermissionError("Attachment owner changed")
+                    attachment_store.authorize(params.get("draft_id"), params.get("draft_token"), sid, profile_key(sys.modules[__name__], session), t)
+                    attachment_store.claim(draft, rich_ids, attachment_turn_id)
+            except (ValueError, PermissionError):
+                return _err(rid, 4032, "Attachment selection rejected")
+        session["_attachment_display_metadata"] = rich_metadata
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
+        if rich_ids is not None:
+            session["_display_turn_id"] = attachment_turn_id
+            session["inflight_turn"]["turn_id"] = attachment_turn_id
 
     if turn_isolation:
-        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
+        isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text, image_paths=rich_images)
         if not isolated_response.get("error"):
+            if rich_ids is not None:
+                isolated_response["result"].update({"turn_id": attachment_turn_id, **rich_metadata})
             if survivor_user_row_ids is not None:
                 # The truncation already happened inline above (memory + DB),
                 # before compute-host dispatch — the rebind payload applies to
@@ -753,6 +790,8 @@ def _(rid, params: dict) -> dict:
         from hermes_state import is_disk_full_error
 
         with session["history_lock"]:
+            if rich_ids is not None:
+                attachment_store.reject_claim(draft, rich_ids, attachment_turn_id)
             session["running"] = False
             session["last_active"] = time.time()
             _clear_inflight_turn(session)
@@ -811,7 +850,10 @@ def _(rid, params: dict) -> dict:
                     },
                 )
                 return
-        _run_prompt_submit(rid, sid, session, text)
+        if rich_ids is not None:
+            _run_prompt_submit(rid, sid, session, text, image_paths=rich_images, display_metadata=rich_metadata)
+        else:
+            _run_prompt_submit(rid, sid, session, text)
 
     run_thread = threading.Thread(target=run_after_agent_ready, daemon=True)
     # Keep a handle so session.interrupt can tell a live turn from a stuck
@@ -822,6 +864,7 @@ def _(rid, params: dict) -> dict:
         rid,
         {
             "status": "streaming",
+            **({"turn_id": attachment_turn_id, **rich_metadata} if rich_ids is not None else {}),
             **(
                 {"survivor_user_row_ids": survivor_user_row_ids}
                 if survivor_user_row_ids is not None

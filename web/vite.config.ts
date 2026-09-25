@@ -124,6 +124,11 @@ export default defineConfig({
               test: /node_modules[\\/]@nous-research[\\/]ui([\\/]|$)/,
             },
             {
+              name: "syntax-highlighting",
+              includeDependenciesRecursively: false,
+              test: /node_modules[\\/](shiki|@shikijs|react-shiki|@streamdown[\\/]code)([\\/]|$)/,
+            },
+            {
               name: "vendor",
               test: /node_modules[\\/]/,
             },

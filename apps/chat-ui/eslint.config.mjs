@@ -18,7 +18,7 @@ export default [
         selector: 'MemberExpression[property.name="hermesDesktop"], MemberExpression[property.value="hermesDesktop"]',
         message: 'The Desktop bridge belongs to the host, not shared chat UI.'
       }, {
-        selector: 'ImportExpression, CallExpression[callee.name="require"]',
+        selector: 'ImportExpression:not([source.value="@streamdown/code"]):not([source.value="./shiki-block"]), CallExpression[callee.name="require"]',
         message: 'Use static imports so the chat UI portability boundary can be checked.'
       }]
     }

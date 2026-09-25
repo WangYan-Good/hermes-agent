@@ -12,7 +12,7 @@ import { ThreadPrimitive } from "@assistant-ui/react";
 
 const profile = vi.hoisted(() => ({ profile: "" }));
 vi.mock("@/contexts/useProfileScope", () => ({ useProfileScope: () => profile }));
-vi.mock("@/lib/api", () => ({ HERMES_BASE_PATH: "", buildWsUrl: vi.fn(async () => "ws://localhost/api/ws?ticket=fresh") }));
+vi.mock("@/lib/api", () => ({ authedFetch: vi.fn(), fetchJSON: vi.fn().mockRejectedValue(new Error("Legacy history fixture")), HERMES_BASE_PATH: "", buildWsUrl: vi.fn(async () => "ws://localhost/api/ws?ticket=fresh") }));
 vi.mock("@/lib/dashboard-auth-reload", () => ({ clearDashboardTokenReloadAttempt: vi.fn(), maybeReloadForLoopbackWsAuthFailure: vi.fn() }));
 let container: HTMLDivElement;
 let root: Root;
@@ -57,8 +57,11 @@ it("renders a real shared runtime with text, separate reasoning, tools, and Stop
     socket.event("tool.start", { tool_id: "t", name: "terminal", context: "pwd" });
     socket.event("message.delta", { text: "Working directory" });
   });
-  expect(container.querySelector("details")?.textContent).toContain("Considering the request");
-  expect(container.querySelector("details")?.open).toBe(false);
+  const reasoning = container.querySelector("details")!;
+  expect(reasoning.open).toBe(false);
+  expect(reasoning.textContent).not.toContain("Considering the request");
+  await act(async () => { reasoning.open = true; reasoning.dispatchEvent(new Event("toggle")); });
+  expect(reasoning.textContent).toContain("Considering the request");
   expect(container.textContent).toContain("terminal");
   expect(container.textContent).toContain("Running…");
   expect(container.textContent).toContain("Working directory");

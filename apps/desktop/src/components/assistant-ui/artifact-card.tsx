@@ -8,9 +8,10 @@ import { CodeCardIcon } from '@/components/chat/code-card'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { useI18n } from '@/i18n'
 import type { ArtifactDetection } from '@/lib/artifact-detect'
+import { createDesktopChatHost } from '@/lib/chat-host'
 import { codiconForLanguage } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
-import { $artifactRegistry, artifactsForSession, openArtifact, upsertArtifact } from '@/store/artifacts'
+import { $artifactRegistry, artifactsForSession, upsertArtifact } from '@/store/artifacts'
 
 interface ArtifactCardProps {
   code: string
@@ -79,19 +80,9 @@ export function ArtifactCard({ code, detection, streaming = false }: ArtifactCar
       return
     }
 
-    // Ensure the registry row exists even if the completion effect hasn't
-    // fired yet (e.g. clicked in the same frame the stream sealed).
-    const result = upsertArtifact(sessionId, detection, trimmed)
-
-    if (!result) {
-      return
-    }
-
-    // An older card opens at ITS version, not silently the newest — the user
-    // clicked this specific iteration.
-    const versionIndex = result.record.versions.findIndex(version => version.content === trimmed)
-
-    openArtifact(result.artifactId, versionIndex === -1 ? undefined : versionIndex)
+    void createDesktopChatHost(sessionId).previewArtifact({
+      id: `${sessionId}:artifact`, ...detection, text: trimmed
+    })
   }
 
   return (

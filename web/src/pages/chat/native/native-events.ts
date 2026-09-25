@@ -1,3 +1,4 @@
+import { readToolPresentation } from '@hermes/chat-ui';
 import type { GatewayEvent } from "@hermes/shared";
 import type { NativeConversationState, NativeMessage, NativePart } from "./native-types";
 
@@ -60,8 +61,14 @@ export function reduceNativeEvent(state: NativeConversationState, event: Gateway
     if (current?.parts.some(part => part.final && part.text === text) && !p.error) return state;
   }
   if (event.type.startsWith("tool.") && !string(p.tool_id) && !string(p.tool_call_id) && !string(p.id)) return state;
+  const correlatedId = string(p.tool_id) || string(p.tool_call_id) || string(p.id);
+  const existing = event.type.startsWith("tool.") ? state.messages.find(m => m.parts.some(part => part.type === "tool" && part.id === correlatedId)) : undefined;
+  if (existing?.parts.some(part => part.type === "tool" && part.id === correlatedId && part.status !== "running")) return state;
+  const background = existing && existing.id !== state.activeId;
   let message: NativeMessage;
-  [state, message] = assistant(state);
+  if (existing) message = existing;
+  else [state, message] = assistant(state);
+  if (string(p.turn_id)) message = { ...message, turnId: string(p.turn_id) };
   let parts = [...message.parts];
   let running = true;
   let error: string | undefined;
@@ -87,6 +94,15 @@ export function reduceNativeEvent(state: NativeConversationState, event: Gateway
       parts = parts.filter(part => part.type !== "text" || (part.sealed && !part.final));
       if (text) parts.push({ type: "text", text, sealed: true, final: true });
     }
+    if (Array.isArray(p.content_sources)) {
+      const sources = p.content_sources.filter((source): source is string => typeof source === 'string');
+      // Persisted assistant row order supplies identity, including identical text.
+      const textIndices = parts.flatMap((part, index) => part.type === 'text' ? [index] : []);
+      for (let i = 1; i <= Math.min(sources.length, textIndices.length); i++) {
+        const index = textIndices[textIndices.length - i];
+        parts[index] = { ...parts[index], sourceId: sources[sources.length - i] };
+      }
+    }
     const reasoning = string(p.reasoning);
     if (reasoning && !parts.some(part => part.type === "reasoning" && part.text === reasoning)) {
       const i = parts.findLastIndex(part => part.type === "reasoning");
@@ -103,6 +119,9 @@ export function reduceNativeEvent(state: NativeConversationState, event: Gateway
     if (i >= 0 && parts[i].status !== "running") return state;
     const result = record(p.result);
     const tool: NativePart = {
+      args: p.sensitive || p.redacted ? undefined : p.args ? record(p.args) : parts[i]?.args,
+      result: event.type === "tool.complete" ? (p.sensitive || p.redacted ? undefined : result.error ? { error: true } : p.result) : parts[i]?.result,
+      presentation: p.sensitive || p.redacted ? undefined : readToolPresentation(p.presentation, id) || parts[i]?.presentation,
       type: "tool", id: id || parts[i]?.id || `tool-${state.nextId}-${parts.length}`, name: string(p.name) || parts[i]?.name || name,
       status: event.type === "tool.complete" ? (p.error || result.error || result.success === false ? "error" : "complete") : "running",
       text: (string(p.summary) || string(p.preview) || string(p.context) || parts[i]?.text || "").slice(0, 180),
@@ -110,5 +129,6 @@ export function reduceNativeEvent(state: NativeConversationState, event: Gateway
     if (i >= 0) parts[i] = tool;
     else parts.push(tool);
   }
+  if (background) return update(state, { ...message, parts });
   return update({ ...state, running, error: error ?? null, status: running ? state.status : "" }, { ...message, parts, pending: running, error });
 }

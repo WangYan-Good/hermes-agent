@@ -1727,8 +1727,21 @@ def _event_frame(event: str, sid: str, payload: dict | None = None) -> dict:
 
 
 def _emit(event: str, sid: str, payload: dict | None = None):
-    frame = _event_frame(event, sid, payload)
     session = _sessions.get(sid)
+    if session and session.get("_display_turn_id") and event.startswith(("message.", "reasoning.", "tool.")):
+        payload = {**(payload or {}), "turn_id": session["_display_turn_id"]}
+    if event == "message.complete" and session and session.get("_display_turn_id"):
+        try:
+            from .presentation import finalize_turn_presentation
+            with _session_db(session) as db:
+                if db is not None:
+                    key = getattr(session.get("agent"), "session_id", None) or session.get("session_key")
+                    sources = finalize_turn_presentation(db, key, session["_display_turn_id"])
+                    if sources:
+                        payload = {**(payload or {}), "content_sources": sources}
+        except Exception:
+            logger.debug("Turn display identity could not be persisted", exc_info=True)
+    frame = _event_frame(event, sid, payload)
     if (
         session is None
         or classify_session_event(event) != "output"
@@ -1870,6 +1883,8 @@ def _compute_host_turn_frame(
         )
     return {
         "type": "turn.start",
+        "display_turn_id": session.get("_display_turn_id"),
+        "display_metadata": session.get("_attachment_display_metadata"),
         "sid": sid,
         "request_id": rid,
         "session_key": session.get("session_key") or sid,
@@ -6021,7 +6036,26 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
             payload["inline_diff"] = "\n".join(rendered)
     except Exception:
         pass
-    if _tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name):
+    try:
+        from agent.display import extract_edit_diff
+        from .presentation import tool_presentation, persist_tool_presentation
+        diff = extract_edit_diff(name, result, function_args=args, snapshot=snapshot)
+        if diff:
+            from agent.redact import redact_sensitive_text
+            diff = redact_sensitive_text(diff, force=True)
+        presentation = tool_presentation(tool_call_id, name, args, payload.get("result"), diff)
+        if presentation:
+            payload["presentation"] = presentation
+            if session is not None:
+                with _session_db(session) as db:
+                    if db is not None:
+                        key = getattr(session.get("agent"), "session_id", None) or session.get("session_key")
+                        row_id = persist_tool_presentation(db, key, tool_call_id, presentation)
+                        if row_id is not None:
+                            payload["row_id"] = row_id
+    except Exception:
+        logger.debug("Tool presentation could not be persisted", exc_info=True)
+    if _tool_progress_enabled(sid) or payload.get("inline_diff") or payload.get("presentation") or _tool_lifecycle_required_for_ui(name):
         _emit("tool.complete", sid, payload)
 
 
@@ -7780,9 +7814,11 @@ def _inflight_text(value: Any) -> str:
 
 def _start_inflight_turn(session: dict, text: Any) -> None:
     now = time.time()
+    session["_display_turn_id"] = uuid.uuid4().hex
     session["inflight_turn"] = {
         "assistant": "",
         "started_at": now,
+        "turn_id": session["_display_turn_id"],
         "streaming": True,
         "updated_at": now,
         "user": _inflight_text(text),
@@ -8432,6 +8468,7 @@ def _inflight_snapshot(session: dict) -> dict | None:
     if not user and not assistant and not streaming and not error:
         return None
     snapshot = {
+        "turn_id": turn.get("turn_id"),
         "assistant": assistant,
         "streaming": streaming,
         "user": user,
@@ -11173,9 +11210,11 @@ def _run_prompt_submit(
                 _run_params = {}
             if "task_id" in _run_params:
                 run_kwargs["task_id"] = session["session_key"]
+            if "persist_user_display_metadata" in _run_params:
+                run_kwargs["persist_user_display_metadata"] = {**(display_metadata or {}), "turn_id": session.get("_display_turn_id")}
             if display_kind and "persist_user_display_kind" in _run_params:
                 run_kwargs["persist_user_display_kind"] = display_kind
-                run_kwargs["persist_user_display_metadata"] = display_metadata
+                run_kwargs["persist_user_display_metadata"] = {**(display_metadata or {}), "turn_id": session.get("_display_turn_id")}
             # Auto-titling now fires inside the turn prologue (shared by every
             # surface). Hand the agent this session's live-rename hook so the
             # sidebar repaints the moment a title lands, rather than waiting
@@ -15687,6 +15726,7 @@ from . import (  # noqa: E402
     methods_complete as _methods_complete,
     methods_config as _methods_config,
     methods_images as _methods_images,
+    methods_attachments as _methods_attachments,
     methods_profiles as _methods_profiles,
     methods_prompt as _methods_prompt,
     methods_session as _methods_session,
@@ -15701,6 +15741,7 @@ for _m in (
     _methods_tools,
     _methods_profiles,
     _methods_images,
+    _methods_attachments,
 ):
     _m.register(sys.modules[__name__])
 del _m
