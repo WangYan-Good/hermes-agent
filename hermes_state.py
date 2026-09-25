@@ -10227,14 +10227,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 # them verbatim, so identical tool messages across generations
                 # still collapse, while distinct tool calls that happen to
                 # share role/content/timestamp are never merged.
-                key = (
-                    row["role"],
-                    row["content"],
-                    row["timestamp"],
-                    row["tool_call_id"],
-                    row["tool_calls"],
-                    row["tool_name"],
-                )
+                key = tuple(row[column] for column in self._DISPLAY_COPY_KEY)
                 cur = seen.get(key)
                 if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                     seen[key] = row
@@ -10256,6 +10249,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 rows = cursor.fetchall()
             if latest:
                 rows.reverse()
+        return self._decode_message_rows(rows)
+
+    def _decode_message_rows(self, rows) -> List[Dict[str, Any]]:
+        """Decode raw durable rows without dropping rich display/API sidecars."""
         result = []
         for row in rows:
             msg = dict(row)
@@ -10271,6 +10268,117 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 msg["display_metadata"] = self._decode_display_metadata(msg["display_metadata"])
             result.append(msg)
         return result
+
+    _DISPLAY_COPY_KEY = ("role", "content", "timestamp", "tool_call_id", "tool_calls", "tool_name")
+
+    def _display_session_ids(self, session_id: str) -> List[str]:
+        """Compression-only suffix of the canonical root-to-tip parent walk.
+
+        Parent links also encode forks/delegates/resets. Use the existing
+        compression/fork discriminator, including inherited fork markers on a
+        continuation, and stop at the conversation boundary. Never walk forward
+        into a sibling: the caller has already resolved the authoritative tip.
+        """
+        chain = self._session_lineage_root_to_tip(session_id)
+        start = len(chain) - 1
+        while start > 0:
+            child = self.get_session(chain[start])
+            if not child or not self._is_compression_child_row(child):
+                break
+            config = child.get("model_config") or {}
+            if isinstance(config, str):
+                try:
+                    config = json.loads(config)
+                except (TypeError, ValueError):
+                    break
+            if isinstance(config, dict) and config.get("_reset_from") == child.get("parent_session_id"):
+                break
+            start -= 1
+        return chain[start:]
+
+    def get_display_messages(
+        self, session_id: str, *, limit: int = 100, latest: bool = True,
+        before_id: Optional[int] = None, include_compacted: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Bounded raw compression display history, addressed by durable row ID.
+
+        Apply the existing compaction-copy preference (live, then newest) and
+        resume's replayed-user rule BEFORE the cursor/limit. Correlated existence
+        checks avoid fetching/materializing the full transcript to serve a page;
+        only the selected raw rows are decoded in Python. Compaction copies are
+        compared within their owning session, never by text alone across turns.
+        """
+        if not 0 <= limit <= 500:
+            raise ValueError("display history limit must be between 0 and 500")
+        if before_id is not None and (before_id <= 0 or not latest):
+            raise ValueError("before_id requires latest order and a positive row ID")
+        if not limit:
+            return []
+        session_ids = self._display_session_ids(session_id)
+        placeholders = ",".join("?" for _ in session_ids)
+
+        def canonical(alias):
+            if not include_compacted:
+                return f"{alias}.active = 1"
+            # Same null-safe key and preference as get_messages' display read.
+            equality = " AND ".join(f"copy.{c} IS {alias}.{c}" for c in self._DISPLAY_COPY_KEY)
+            return (
+                f"({alias}.active = 1 OR {alias}.compacted = 1) AND NOT EXISTS ("
+                "SELECT 1 FROM messages copy "
+                f"WHERE copy.session_id = {alias}.session_id "
+                f"AND (copy.active = 1 OR copy.compacted = 1) AND {equality} "
+                f"AND (copy.active > {alias}.active OR (copy.active = {alias}.active AND copy.id > {alias}.id)))"
+            )
+
+        def replay_key(content):
+            content = self._decode_content(content)
+            return (sanitize_context(content).strip() or None) if isinstance(content, str) else None
+
+        def assistant_boundary(content, tool_calls):
+            content = self._decode_content(content)
+            if isinstance(content, str):
+                content = sanitize_context(content).strip()
+            try:
+                calls = json.loads(tool_calls) if tool_calls else None
+            except (TypeError, ValueError):
+                calls = None
+            return bool(content or calls)
+
+        # _is_duplicate_replayed_user_message searches back to the last
+        # nonempty assistant. Use the same rule across arbitrary page boundaries,
+        # including sanitized string equality, without a browser text heuristic.
+        sql = f"""
+            SELECT m.* FROM messages m
+            WHERE m.session_id IN ({placeholders}) AND {canonical('m')}
+              AND NOT (m.role = 'user' AND hermes_display_replay_key(m.content) IS NOT NULL
+                AND EXISTS (
+                  SELECT 1 FROM messages previous
+                  WHERE previous.session_id IN ({placeholders}) AND previous.id < m.id
+                    AND previous.role = 'user' AND {canonical('previous')}
+                    AND hermes_display_replay_key(previous.content) = hermes_display_replay_key(m.content)
+                    AND previous.id > COALESCE((
+                      SELECT boundary.id FROM messages boundary
+                      WHERE boundary.session_id IN ({placeholders})
+                        AND boundary.id < m.id
+                        AND boundary.role = 'assistant' AND {canonical('boundary')}
+                        AND hermes_display_assistant_boundary(boundary.content, boundary.tool_calls)
+                      ORDER BY boundary.id DESC LIMIT 1
+                    ), 0)
+                ))
+              {"AND m.id < ?" if before_id is not None else ""}
+            ORDER BY m.id {"DESC" if latest else "ASC"} LIMIT ?
+        """
+        params = [*session_ids, *session_ids, *session_ids]
+        if before_id is not None:
+            params.append(before_id)
+        params.append(limit)
+        with self._read_ctx() as conn:
+            conn.create_function("hermes_display_replay_key", 1, replay_key, deterministic=True)
+            conn.create_function("hermes_display_assistant_boundary", 2, assistant_boundary, deterministic=True)
+            rows = conn.execute(sql, params).fetchall()
+        if latest:
+            rows.reverse()
+        return self._decode_message_rows(rows)
 
     def find_pr_url_messages(self, session_ids: List[str]) -> List[Dict[str, Any]]:
         """Tool results in these sessions that mention a GitHub PR url.

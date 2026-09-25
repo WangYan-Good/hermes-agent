@@ -303,7 +303,7 @@ turns also receive content source IDs from their durable assistant rows; these
 are returned in completion events and retained across partial history pages.
 
 Native session activation/resume still restores runtime state. Transcript rows
-come from authenticated `GET /api/sessions/{id}/messages?order=latest&limit=100`;
+come from authenticated `GET /api/sessions/{id}/messages?view=display&include_compacted=true&order=latest&limit=100`;
 `before_id` provides stable backward pagination without offset races. During
 hydration, WS events are buffered, then reconciled with durable rows using row,
 turn and real tool-call IDs. Complete-before-start and repeated completion
@@ -311,6 +311,25 @@ update the same tool. Profile, runtime, stored ID, connection generation and
 request version invalidate stale reads. The backend's resolved stored ID is
 adopted after session compaction. Attachment history uses persisted references;
 unavailable resources stay unavailable instead of being uploaded again.
+
+The opt-in `view=display` selects the backend's compression-only ancestor chain
+through the resolved tip. It uses the existing parent walk and compression/fork
+discriminators; branches own their copied history, and delegate/tool/reset links
+do not pull unrelated parent messages into the display. A branch's compression
+continuation can include its branch segment without crossing the original fork.
+The legacy REST view still returns one resolved segment. Runtime resume/activate
+and model history are unchanged; Native continues to omit the WS transcript.
+
+Display pages retain raw row IDs, source session IDs, tool calls/results,
+reasoning and display/API sidecars. SQL applies the existing per-session
+compaction-copy preference (live row, then newest generation) and replayed-user
+dedupe before the keyset predicate and LIMIT. Only the selected rows are fetched
+and decoded, with a server cap of 500; no full-lineage conversation projection
+is materialized for a page. `include_compacted` controls preserved in-place rows
+independently of ancestor selection. Rows return in insertion-ID order, and
+`before_id` crosses segment boundaries without duplicates or OFFSET races with
+new appends. The display view rejects nonzero OFFSET. The client never infers
+lineage or deduplicates turns by matching their text.
 
 Backward paging is enabled only after the latest page for the current stored
 session has hydrated successfully. A transient reconnect history failure keeps

@@ -30,7 +30,7 @@ it('discards a prior generation history response after switching sessions', asyn
   history.mockImplementationOnce(() => new Promise(resolve => { stale = resolve; })).mockResolvedValue(page([{ id: 9, role: 'user', content: 'Current' }]));
   session.start(); await flushNative();
   session.select('other'); await flushNative();
-  stale(page([{ id: 1, role: 'user', content: 'STALE' }])); await flushNative();
+  stale(page([{ id: 1, session_id: 'ancestor', role: 'user', content: 'STALE ancestor' }, { id: 2, session_id: 'tip', role: 'assistant', content: 'STALE tip' }])); await flushNative();
   expect(JSON.stringify(session.getSnapshot().conversation)).not.toContain('STALE');
   expect(JSON.stringify(session.getSnapshot().conversation)).toContain('Current');
 });
@@ -131,4 +131,20 @@ it('fetches latest when an older-page response reports a rotated stored identity
   await session.loadOlder();
   expect(history.mock.calls[2]?.slice(0, 3)).toEqual(['work', 'rotated', undefined]);
   expect(visibleText()).toContain('Current');
+});
+
+it('retains a hydrated compression lineage on reconnect failure and rebuilds it once on latest retry', async () => {
+  const lineage = [...turn(1, 'Ancestor A').map(row => ({ ...row, session_id: 'A' })),
+    ...turn(3, 'Ancestor B').map(row => ({ ...row, session_id: 'B' })),
+    ...turn(5, 'Tip C').map(row => ({ ...row, session_id: 'C' }))];
+  FakeNativeSocket.responder = (request, socket) => socket.reply(request, { session_id: 'runtime', session_key: 'C', running: false, messages: [] });
+  history.mockResolvedValueOnce({ ...page(lineage), session_id: 'C' }).mockRejectedValueOnce(new Error('503'));
+  session.start(); await flushNative();
+  FakeNativeSocket.instances[0].close(1006); session.retry(); await flushNative();
+  for (const text of ['Ancestor A', 'Ancestor B', 'Tip C']) expect(visibleText().filter(t => t === text)).toHaveLength(1);
+  history.mockResolvedValueOnce({ ...page(lineage), session_id: 'C' });
+  await session.loadOlder();
+  expect(history.mock.calls.at(-1)?.slice(0, 3)).toEqual(['work', 'C', undefined]);
+  for (const text of ['Ancestor A', 'Ancestor B', 'Tip C']) expect(visibleText().filter(t => t === text)).toHaveLength(1);
+  expect(FakeNativeSocket.requests.filter(r => r.method === 'prompt.submit')).toHaveLength(0);
 });
