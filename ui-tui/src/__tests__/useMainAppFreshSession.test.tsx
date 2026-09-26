@@ -24,7 +24,6 @@ vi.mock('../config/env.js', async importActual => {
 
   return {
     ...actual,
-    DASHBOARD_TUI_MODE: true,
     INLINE_MODE: false,
     NO_CONFIRM_DESTRUCTIVE: true,
     STARTUP_IMAGE: '',
@@ -141,7 +140,6 @@ function MainAppHarness({ expose, gw }: { expose: React.MutableRefObject<MainApp
       <AppLayout
         actions={model.appActions}
         composer={model.appComposer}
-        dashboardMode
         mouseTracking={mouseTracking}
         progress={model.appProgress}
         status={model.appStatus}
@@ -151,14 +149,14 @@ function MainAppHarness({ expose, gw }: { expose: React.MutableRefObject<MainApp
   )
 }
 
-describe('Dashboard fresh-session rendering', () => {
+describe('Standalone TUI fresh-session rendering', () => {
   beforeEach(() => {
     resetOutputStreams()
     resetOverlayState()
     resetTurnState()
     resetUiState()
     turnController.fullReset()
-    patchUiState({ mouseTracking: 'wheel' })
+    patchUiState({ mouseTracking: 'all' })
   })
 
   it('uses the mounted alternate screen for fresh sessions without destructive terminal recovery', async () => {

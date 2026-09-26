@@ -12,6 +12,24 @@ async function start() { session.start(); await flushNative(); }
 const requests = (method: string) => FakeNativeSocket.requests.filter(r => r.method === method);
 
 describe("native session over shared JSON-RPC client", () => {
+  it("refreshes settled queue metadata from normal session.info after a completion", async () => {
+    await start();
+    let settled = false;
+    FakeNativeSocket.responder = (request, socket) => request.method === "session.activate"
+      ? socket.reply(request, { session_id: "runtime", running: !settled, queued: settled ? undefined : { user: "next queued turn" } })
+      : FakeNativeSocket.defaultResponse(request, socket);
+    const socket = FakeNativeSocket.instances[0];
+    socket.event("message.start"); await flushNative();
+    expect(session.getSnapshot().control.queued).toBe("next queued turn");
+    socket.event("message.complete", { text: "done" }); await flushNative();
+    expect(session.getSnapshot().control.queued).toBe("next queued turn");
+    settled = true;
+    socket.event("session.info", { running: false }); await flushNative();
+    expect(session.getSnapshot().control.queued).toBeNull();
+    expect(session.getSnapshot().conversation.running).toBe(false);
+    expect(requests("prompt.submit")).toHaveLength(0);
+  });
+
   it("creates a profile-scoped draft without claiming its ID is durable", async () => {
     await start();
     expect(requests("session.create")[0].params).toMatchObject({ profile: "work", source: "webui" });

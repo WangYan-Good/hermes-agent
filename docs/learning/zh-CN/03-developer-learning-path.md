@@ -46,7 +46,7 @@ uv run python -c "from run_agent import AIAgent; print(AIAgent.__name__)"
 
 ### 核心原理
 
-Hermes 采用多入口、单核心：入口层解决协议、UI、权限和 Session Origin；`AIAgent` 解决 Prompt、模型、工具循环和预算。复用核心不等于所有 UI 相同：Dashboard 通过 PTY 嵌入 TUI，Desktop 通过 WebSocket JSON-RPC 使用独立 React 聊天面。
+Hermes 采用多入口、单核心：入口层解决协议、UI、权限和 Session Origin；`AIAgent` 解决 Prompt、模型、工具循环和预算。复用核心不等于所有 UI 相同：Dashboard Native Chat 与 Desktop 分别使用独立 React 聊天面，并通过 WebSocket JSON-RPC 复用 `tui_gateway`。
 
 阅读时先区分三类边界：
 

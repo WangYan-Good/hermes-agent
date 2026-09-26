@@ -2,35 +2,17 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
-import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import * as ClipboardModule from '../lib/clipboard.js'
 import * as Osc52Module from '../lib/osc52.js'
 import * as TerminalSetupModule from '../lib/terminalSetup.js'
-
-// DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
-// so toggling process.env in a test body can't move it. Mock just that one
-// export (everything else stays real) and flip the holder per test.
-const envState = { dashboardTuiMode: false }
-vi.mock('../config/env.js', async importActual => {
-  const actual = await importActual<typeof EnvModule>()
-
-  return {
-    ...actual,
-    get DASHBOARD_TUI_MODE() {
-      return envState.dashboardTuiMode
-    }
-  }
-})
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
     vi.restoreAllMocks()
     resetOverlayState()
     resetUiState()
-    envState.dashboardTuiMode = false
   })
 
   it('opens the unified sessions overlay for /resume', () => {
@@ -122,18 +104,7 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
-  it('keeps hosted dashboard chat alive for /exit', () => {
-    envState.dashboardTuiMode = true
-    const ctx = buildCtx()
-
-    expect(createSlashHandler(ctx)('/exit')).toBe(true)
-    expect(ctx.session.die).not.toHaveBeenCalled()
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_EXIT_DISABLED_MESSAGE)
-  })
-
   it('keeps /quit available outside hosted dashboard chat', () => {
-    envState.dashboardTuiMode = false
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/quit')).toBe(true)
@@ -155,36 +126,6 @@ describe('createSlashHandler', () => {
     vi.useRealTimers()
   })
 
-  it('refuses /update in hosted dashboard chat instead of killing the PTY', () => {
-    vi.useFakeTimers()
-    envState.dashboardTuiMode = true
-    const ctx = buildCtx()
-
-    expect(createSlashHandler(ctx)('/update')).toBe(true)
-    expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
-    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_UPDATE_DISABLED_MESSAGE)
-
-    vi.advanceTimersByTime(150)
-    expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
-
-    vi.useRealTimers()
-  })
-
-  it.each(['/mouse', '/mouse on', '/mouse wheel', '/mouse off', '/mouse all', '/mouse buttons', '/mouse toggle'])(
-    'keeps Dashboard wheel tracking managed for %s',
-    command => {
-      envState.dashboardTuiMode = true
-      patchUiState({ mouseTracking: 'wheel' })
-      const ctx = buildCtx()
-
-      expect(createSlashHandler(ctx)(command)).toBe(true)
-      expect(getUiState().mouseTracking).toBe('wheel')
-      expect(ctx.gateway.rpc).not.toHaveBeenCalled()
-      expect(ctx.transcript.sys).toHaveBeenCalledWith(expect.stringMatching(/dashboard.*wheel/i))
-    }
-  )
-
   it.each([
     ['/mouse on', 'all'],
     ['/mouse off', 'off'],
@@ -193,7 +134,6 @@ describe('createSlashHandler', () => {
     ['/mouse all', 'all'],
     ['/mouse toggle', 'off']
   ] as const)('keeps standalone mouse configuration behavior for %s', (command, expected) => {
-    envState.dashboardTuiMode = false
     patchUiState({ mouseTracking: 'wheel' })
     const ctx = buildCtx()
 

@@ -85,19 +85,17 @@ it('restores unfinished uploads as requiring file reselection', async () => {
   expect(() => client.submitPayload()).toThrow();
 });
 
-it('holds handoff while cancellation is in flight and after a lost cancellation ACK', async () => {
+it('recovers attachment authority after a lost cancellation ACK without submitting', async () => {
   const { client, rpc } = harness();
   await client.add([new File(['bytes'], 'cancel.txt')]);
   let fail!: (reason: Error) => void;
   rpc.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
   const removal = client.remove(client.getSnapshot().items[0].occurrence_id);
-  expect(client.pendingOperations).toBe(true);
-  await expect(client.discardForHandoff()).rejects.toThrow();
   fail(new Error('ACK lost')); await removal;
   expect(client.getSnapshot().uncertain).toBe(true);
-  await expect(client.discardForHandoff()).rejects.toThrow();
   await client.recover();
   expect(client.getSnapshot().uncertain).toBe(false);
-  await expect(client.discardForHandoff()).resolves.toBeUndefined();
+  expect(client.getSnapshot().items[0].state).toBe('cancelled');
+  expect(client.submitPayload().attachment_ids).toBeUndefined();
   expect(rpc.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(false);
 });

@@ -464,7 +464,6 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
 
   const refs = useMemo(
     () => ({
-      inputRef,
       historyDraftRef,
       historyRef,
       queueEditRef,

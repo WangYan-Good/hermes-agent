@@ -48,8 +48,8 @@ _mcp_discovery_enabled = False
 def _install_sidecar_publisher() -> None:
     """Mirror every dispatcher emit to the dashboard sidebar via WS.
 
-    Activated by `HERMES_TUI_SIDECAR_URL`, set by the dashboard's
-    ``/api/pty`` endpoint when a chat tab passes a ``channel`` query param.
+    Activated by an explicitly configured `HERMES_TUI_SIDECAR_URL`.
+    The Dashboard Native surface does not require this optional event mirror.
     Best-effort: connect failure or runtime drop falls back to stdio-only.
     """
     url = os.environ.get("HERMES_TUI_SIDECAR_URL")

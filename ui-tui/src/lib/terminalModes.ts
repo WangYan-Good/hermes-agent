@@ -25,18 +25,8 @@ type ResettableStream = Pick<NodeJS.WriteStream, 'isTTY' | 'write'> & {
   fd?: number
 }
 
-/**
- * Initial bytes written before Ink mounts.
- *
- * Dashboard initialization belongs to AlternateScreen, so clearing here
- * would briefly wipe xterm's primary buffer before the alternate buffer is
- * ready. Standalone desktop and Termux behavior remains unchanged.
- */
-export function startupScreenSequence(termuxMode: boolean, dashboardMode: boolean): string {
-  if (dashboardMode) {
-    return ''
-  }
-
+/** Initial bytes written before Ink mounts. */
+export function startupScreenSequence(termuxMode: boolean): string {
   return termuxMode ? '\n' : '\x1b[2J\x1b[H\x1b[3J'
 }
 

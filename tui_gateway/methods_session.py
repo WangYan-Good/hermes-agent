@@ -3210,13 +3210,6 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5011, str(e))
 
 
-@method("session.handoff")
-def _(rid, params: dict) -> dict:
-    from tui_gateway import server
-    from tui_gateway.chat_handoff import handle
-    return handle(server, rid, params)
-
-
 @method("session.close")
 def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")

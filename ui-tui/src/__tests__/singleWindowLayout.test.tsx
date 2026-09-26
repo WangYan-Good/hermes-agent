@@ -55,7 +55,6 @@ const props: AppLayoutProps = {
     updateInput: () => {},
     voiceRecordKey: DEFAULT_VOICE_RECORD_KEY
   },
-  dashboardMode: true,
   mouseTracking: 'off',
   progress: { showProgressArea: false },
   status: {
@@ -78,7 +77,7 @@ const props: AppLayoutProps = {
   }
 }
 
-const renderDashboard = () => {
+const renderTui = () => {
   const stdout = new PassThrough()
   const stdin = new PassThrough()
   const stderr = new PassThrough()
@@ -122,7 +121,7 @@ beforeEach(() => {
   patchUiState({ sessionTitle: 'Alpha', sid: 'sid-a', status: 'working' })
 })
 
-describe('single-window dashboard layout', () => {
+describe('single-window TUI layout', () => {
   it('does not show a concurrent-output window when another session streams', () => {
     syncOutputSessions(
       [
@@ -137,7 +136,7 @@ describe('single-window dashboard layout', () => {
       now: 2
     })
 
-    const output = renderDashboard()
+    const output = renderTui()
 
     expect(output).toContain('ACTIVETRANSCRIPT')
     expect(output).not.toContain('concurrentoutput')

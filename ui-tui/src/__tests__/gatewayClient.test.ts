@@ -263,7 +263,7 @@ describe('GatewayClient websocket attach mode', () => {
     gw.kill()
   })
 
-  it('publishes local dashboard-control events to the sidecar websocket', async () => {
+  it('publishes local session events to the sidecar websocket', async () => {
     process.env.HERMES_TUI_GATEWAY_URL = 'ws://gateway.test/api/ws?token=abc'
     process.env.HERMES_TUI_SIDECAR_URL = 'ws://gateway.test/api/pub?token=abc&channel=demo'
 
@@ -286,19 +286,19 @@ describe('GatewayClient websocket attach mode', () => {
     await Promise.resolve()
 
     gw.publishLocalEvent({
-      payload: { reason: 'idle_exit_hotkey' },
+      payload: { running: false },
       session_id: 'sid-old',
-      type: 'dashboard.new_session_requested'
+      type: 'session.info'
     })
 
-    expect(seen).toContain('dashboard.new_session_requested')
+    expect(seen).toContain('session.info')
     expect(JSON.parse(sidecarSocket.sent.at(-1) ?? '{}')).toEqual({
       jsonrpc: '2.0',
       method: 'event',
       params: {
-        payload: { reason: 'idle_exit_hotkey' },
+        payload: { running: false },
         session_id: 'sid-old',
-        type: 'dashboard.new_session_requested'
+        type: 'session.info'
       }
     })
 

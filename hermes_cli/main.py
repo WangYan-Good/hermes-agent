@@ -11303,9 +11303,9 @@ def cmd_dashboard(args):
     # fail-closed SystemExit unchanged.
     _maybe_setup_dashboard_auth_interactively(args)
 
-    # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
+    # The in-browser Chat tab (Native Chat over WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
-    # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
+    # the `/api/ws` sockets, so there is no reason to gate them.
     start_server(
         host=args.host,
         port=args.port,

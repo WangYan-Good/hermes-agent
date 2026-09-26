@@ -1,6 +1,6 @@
 /**
  * ChatSessionList — a ChatGPT-style conversation switcher that sits beside
- * the embedded TUI on the dashboard Chat tab.
+ * Native Chat on the dashboard Chat tab.
  *
  * It lists the most recent sessions for the active management profile and
  * lets the user swap between them without leaving the Chat page. Selecting

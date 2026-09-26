@@ -10,7 +10,7 @@ Usage examples::
     hermes logs -f                 # follow agent.log in real time
     hermes logs errors             # last 50 lines of errors.log
     hermes logs gateway -n 100    # last 100 lines of gateway.log
-    hermes logs gui -f            # follow gui.log (dashboard/pty/ws)
+    hermes logs gui -f            # follow gui.log (dashboard/gateway/ws)
     hermes logs desktop -f        # follow desktop.log (Electron app boot/backend)
     hermes logs --level WARNING    # only WARNING+ lines
     hermes logs --session abc123   # filter by session ID substring

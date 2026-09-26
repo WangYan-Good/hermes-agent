@@ -10,14 +10,9 @@ import {
 } from '../lib/terminalModes.js'
 
 describe('terminal startup screen', () => {
-  it('lets AlternateScreen initialize Dashboard without clearing the primary screen first', () => {
-    expect(startupScreenSequence(false, true)).toBe('')
-    expect(startupScreenSequence(true, true)).toBe('')
-  })
-
   it('preserves standalone desktop and Termux startup behavior', () => {
-    expect(startupScreenSequence(false, false)).toBe('\x1b[2J\x1b[H\x1b[3J')
-    expect(startupScreenSequence(true, false)).toBe('\n')
+    expect(startupScreenSequence(false)).toBe('\x1b[2J\x1b[H\x1b[3J')
+    expect(startupScreenSequence(true)).toBe('\n')
   })
 })
 

@@ -38,17 +38,17 @@ hermes dashboard --no-open
 
 ## 前置条件
 
-默认的 `hermes-agent` 安装不包含 HTTP 栈或 PTY 辅助工具——这些是可选扩展。**Web Dashboard** 需要 FastAPI 和 Uvicorn（`web` 扩展）。**Chat** 标签页还需要 `ptyprocess` 来在伪终端（pseudo-terminal）后面启动嵌入式 TUI（POSIX 上的 `pty` 扩展）。使用以下命令同时安装：
+Web Dashboard 和 Native Chat 需要 FastAPI 与 Uvicorn（`web` 扩展）：
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"
 ```
 
-`web` 扩展会引入 FastAPI/Uvicorn；`pty` 扩展会引入 `ptyprocess`（POSIX）或 `pywinpty`（原生 Windows——注意嵌入式 TUI 本身仍需要 WSL）。`cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"` 包含两个扩展，如果你还需要消息/语音等功能，这是最简便的方式。
+terminal 工具仍保留核心依赖 `ptyprocess`/`pywinpty`，`pty` 扩展作为兼容别名保留；Native Chat 不启动 PTY。`all` 扩展还包含消息、语音等可选功能。
 
 在没有依赖项的情况下运行 `hermes dashboard` 时，它会告诉你需要安装什么。如果前端尚未构建且 `npm` 可用，则会在首次启动时自动构建。
 
-Chat 标签页是每次 `hermes dashboard` 启动的一部分——内嵌的浏览器聊天面板（通过 PTY/WebSocket 运行 TUI）始终可用，无需任何额外参数。
+Chat 标签页是每次 `hermes dashboard` 启动的一部分——通过鉴权 JSON-RPC WebSocket 连接的 Native Chat 始终可用，无需任何额外参数。
 
 ## 页面
 
@@ -65,25 +65,25 @@ Chat 标签页是每次 `hermes dashboard` 启动的一部分——内嵌的浏�
 
 ### Chat（聊天）
 
-**Chat** 标签页将完整的 Hermes TUI（与 `hermes --tui` 相同的界面）直接嵌入浏览器。你在终端 TUI 中能做的一切——斜杠命令、模型选择器、工具调用卡片、Markdown 流式输出、clarify/sudo/approval 提示、皮肤主题——在这里都完全一致，因为 Dashboard 运行的是真实的 TUI 二进制文件，并通过 [xterm.js](https://xtermjs.org/) 的 WebGL 渲染器以像素级精度渲染其 ANSI 输出。
+**Chat** 标签页使用 Native Chat，这是 Dashboard 唯一的内置聊天界面。
+浏览器通过经认证的 `/api/ws` 连接 `tui_gateway`、AIAgent 和 SessionDB，
+直接展示流式回复、工具、推理、交互提示、附件与持久历史。
 
-**工作原理：**
+在 **Sessions** 中打开会话，或访问 `/chat?resume=<id>` 即可恢复。
+旧 Terminal 界面创建的会话仍是普通 SessionDB 会话，无需转换或复制；
+压缩后的会话 ID 仍按现有规则解析。
 
-- `/api/pty` 打开一个经 Dashboard 会话 token 认证的 WebSocket
-- 服务器在 POSIX 伪终端后面启动 `hermes --tui`
-- 按键传输到 PTY；ANSI 输出流式返回浏览器
-- xterm.js 的 WebGL 渲染器将每个单元格绘制到整数像素网格；鼠标追踪（SGR 1006）、宽字符（Unicode 11）和方框绘制字形均原生渲染
-- 调整浏览器窗口大小会通过 `@xterm/addon-fit` 插件调整 TUI 大小
+旧浏览器键 `hermes.dashboard.chat.mode`、原始 YAML 中的
+`dashboard.chat.default_mode` 和 URL 的 `chat_mode` 参数均不再选择界面。
+Native 就绪后尽力清理浏览器键和 URL 参数，保留 `resume`、其他参数与 hash。
+存储访问失败不影响聊天，读取配置不改写 YAML。Chat 和 Settings 不再提供界面选择器。
 
-**恢复已有会话：** 在 **Sessions** 标签页中，点击任意会话旁的播放图标（▶）。这会跳转到 `/chat?resume=<id>` 并以 `--resume` 参数启动 TUI，加载完整历史记录。
+`/api/pty` 已移除；升级后旧 Terminal 标签页重连会被拒绝，不启动 TUI、
+不执行提示词，刷新后进入 Native。Agent terminal 工具及其执行后端、
+独立 `hermes --tui`、普通 CLI、Desktop terminal 和独立 Hermes Console 均保留。
 
-**前置条件：**
-
-- Node.js（与 `hermes --tui` 相同的要求；TUI 包在首次启动时构建）
-- `ptyprocess`——由 `pty` 扩展安装（`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`，或 `[all]` 同时包含两者）
-- POSIX 内核（Linux、macOS 或 WSL2）。`/chat` 终端面板特别需要 POSIX PTY——原生 Windows Python 没有等效实现，因此在原生 Windows 安装上，Dashboard 的其余部分（sessions、jobs、metrics、config editor）可以正常工作，但 `/chat` 标签页会显示提示，告知你需要使用 WSL2 才能使用该功能。
-
-关闭浏览器标签页后，PTY 会在服务器端被干净地回收。重新打开会启动一个新会话。
+切换 Dashboard 标签页不会重建 Native 会话；刷新和重连恢复历史而不重发提示词。
+`/chat?learn=<text>` 只填入未发送草稿；已有草稿时需明确选择追加或忽略。
 
 ### Config（配置）
 

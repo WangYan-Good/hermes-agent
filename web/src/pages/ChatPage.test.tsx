@@ -1,761 +1,119 @@
 // @vitest-environment jsdom
-import { StrictMode, act, type ReactNode } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import {
-  MemoryRouter,
-  useLocation,
-  useNavigate,
-} from "react-router";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { StrictMode, act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import ChatPage from './ChatPage';
+import { FakeNativeSocket, flushNative } from './chat/native/fake-websocket.test-support';
 
-import { FakeNativeSocket, flushNative } from "./chat/native/fake-websocket.test-support";
-
-import { PTY_TICKET_TIMEOUT_MS } from "@/lib/pty-reconnect";
-
-class FakeFitAddon {
-  fit() {}
-}
-
-class FakeWebglAddon {
-  onContextLoss() {
-    return { dispose() {} };
-  }
-}
-
-class FakeTerminal {
-  static instances: FakeTerminal[] = [];
-
-  dataHandler: ((data: string) => void) | null = null;
-  options: Record<string, unknown>;
-  rows = 24;
-  cols = 80;
-  parser = {
-    registerOscHandler: vi.fn(),
-  };
-  unicode = { activeVersion: "" };
-  wheelHandler: ((event: WheelEvent) => boolean) | null = null;
-
-  constructor(options: Record<string, unknown>) {
-    this.options = options;
-    FakeTerminal.instances.push(this);
-  }
-
-  attachCustomKeyEventHandler() {
-    return true;
-  }
-
-  attachCustomWheelEventHandler(handler: (event: WheelEvent) => boolean) {
-    this.wheelHandler = handler;
-    return true;
-  }
-
-  clearSelection() {}
-
-  dispose() {}
-
-  focus() {}
-
-  getSelection() {
-    return "";
-  }
-
-  loadAddon() {}
-
-  onData(handler: (data: string) => void) {
-    this.dataHandler = handler;
-    return { dispose() {} };
-  }
-
-  onResize() {
-    return { dispose() {} };
-  }
-
-  onScroll() {
-    return { dispose() {} };
-  }
-
-  get buffer() {
-    // Minimal active-buffer surface for the resume follow-scroll pin
-    // (isViewportPinnedToBottom reads viewportY/baseY).
-    return { active: { baseY: 0, viewportY: 0 } };
-  }
-
-  scrollToBottom() {}
-
-  open() {}
-
-  paste() {}
-
-  refresh() {}
-
-  scrollLines() {}
-
-  write = vi.fn();
-}
-
-const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
-const apiMocks = vi.hoisted(() => ({
-  buildWsUrl: vi.fn(async () => "ws://localhost/api/pty?channel=chat-1"),
-  getConfig: vi.fn<() => Promise<Record<string, unknown>>>(async () => ({})),
-  getSessionDetail: vi.fn(async () => ({ title: "Resumed chat" })),
-  getSessionLatestDescendant: vi.fn(async () => ({ session_id: null })),
-}));
-
-const profileScope = vi.hoisted(() => ({ profile: "" }));
-
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: FakeFitAddon }));
-vi.mock("@xterm/addon-unicode11", () => ({ Unicode11Addon: class {} }));
-vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class {} }));
-vi.mock("@xterm/addon-webgl", () => ({ WebglAddon: FakeWebglAddon }));
-vi.mock("@xterm/xterm", () => ({ Terminal: FakeTerminal }));
-vi.mock("@/components/ChatSidebar", () => ({
-  ChatSidebar: () => null,
-}));
-vi.mock("@/components/ChatSessionList", () => ({
-  ChatSessionList: () => null,
-}));
-vi.mock("@/components/Backdrop", () => ({ Backdrop: () => null }));
-vi.mock("@/plugins", () => ({
-  PluginSlot: () => null,
-}));
-vi.mock("@/contexts/usePageHeader", () => ({
-  usePageHeader: () => ({ setEnd: vi.fn(), setTitle: vi.fn() }),
-}));
-vi.mock("@/contexts/useProfileScope", () => ({
-  useProfileScope: () => profileScope,
-}));
-vi.mock("@/themes", () => ({
-  useTheme: () => ({ theme: { terminalBackground: "#000000" } }),
-}));
-vi.mock("@/i18n", () => ({
-  useI18n: () => ({
-    t: {
-      app: {
-        closeModelTools: "Close model tools",
-        modelToolsSheetSubtitle: "Tools",
-        modelToolsSheetTitle: "Model",
-      },
-    },
-  }),
-}));
-vi.mock("@/lib/dashboard-auth-reload", () => ({
-  maybeReloadForLoopbackWsAuthFailure,
-  clearDashboardTokenReloadAttempt: vi.fn(),
-}));
-vi.mock("@/lib/api", () => ({
-  HERMES_BASE_PATH: "",
-  authedFetch: vi.fn(),
-  api: apiMocks,
-  buildWsUrl: apiMocks.buildWsUrl,
-}));
-
-class FakeWebSocket {
-  static instances: FakeWebSocket[] = [];
-  static OPEN = 1;
-
-  binaryType = "blob";
-  onclose: ((event: CloseEventLike) => void) | null = null;
-  onmessage: ((event: { data: ArrayBuffer | string }) => void) | null = null;
-  onopen: (() => void) | null = null;
-  readyState = FakeWebSocket.OPEN;
-  send = vi.fn();
-  url: string;
-
-  constructor(url: string) {
-    this.url = url;
-    FakeWebSocket.instances.push(this);
-  }
-
-  close() {
-    this.readyState = 3;
-  }
-
-}
-
-type CloseEventLike = {
-  code: number;
-  reason: string;
-  wasClean: boolean;
-};
-
+const profile = vi.hoisted(() => ({ profile: '' }));
+vi.mock('@/contexts/useProfileScope', () => ({ useProfileScope: () => profile }));
+vi.mock('@/lib/api', () => ({ authedFetch: vi.fn(), fetchJSON: vi.fn().mockRejectedValue(new Error('history unavailable')), HERMES_BASE_PATH: '', buildWsUrl: vi.fn(async () => 'ws://localhost/api/ws?ticket=fresh') }));
+vi.mock('@/lib/dashboard-auth-reload', () => ({ clearDashboardTokenReloadAttempt: vi.fn(), maybeReloadForLoopbackWsAuthFailure: vi.fn() }));
 let container: HTMLDivElement;
 let root: Root;
-
-// jsdom runs without an origin here (per-file @vitest-environment jsdom on a
-// node-default config), so localStorage is undefined. Stub it so components
-// that persist UI state (side panel collapse) can be exercised.
-const localStorageMock = (() => {
-  let store: Record<string, string> = {};
-  return {
-    getItem: (key: string) => store[key] ?? null,
-    setItem: (key: string, value: string) => {
-      store[key] = String(value);
-    },
-    removeItem: (key: string) => {
-      delete store[key];
-    },
-    clear: () => {
-      store = {};
-    },
-  };
-})();
-
-// React only routes updates through act() when this flag is set; without it
-// the isActive re-renders in the keyboard-inset gate test warn.
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
-
-function NavigationHarness({ children }: { children: ReactNode }) {
-  const navigate = useNavigate();
-  return (
-    <>
-      {children}
-      <button
-        data-testid="navigate-to-learn"
-        onClick={() => navigate("/chat?learn=debugging")}
-        type="button"
-      />
-    </>
-  );
+function Harness() {
+  const location = useLocation(); const navigate = useNavigate();
+  return <><ChatPage isActive={location.pathname === '/chat'} />
+    <button data-nav="away" onClick={() => navigate('/sessions?learn=hidden')} />
+    <button data-nav="back" onClick={() => navigate('/chat')} />
+    <button data-nav="learn" onClick={() => navigate('/chat?learn=debugging&chat_mode=terminal&other=keep#anchor')} />
+    <button data-nav="history" onClick={() => navigate(-1)} />
+    <output>{location.pathname}{location.search}{location.hash}</output></>;
 }
-
-function RouteAwareChatHarness({ ChatPage }: { ChatPage: typeof import("./chat/TerminalChatPage").default }) {
-  const location = useLocation();
-  const navigate = useNavigate();
-  return (
-    <>
-      <ChatPage isActive={location.pathname === "/chat"} />
-      <button data-testid="sessions" onClick={() => navigate("/sessions")} />
-      <button data-testid="chat" onClick={() => navigate("/chat")} />
-      <button data-testid="resume" onClick={() => navigate("/chat?resume=session-a")} />
-      <button
-        data-testid="navigate-to-hidden-learn"
-        onClick={() => navigate("/skills?learn=hidden")}
-        type="button"
-      />
-      <output data-testid="location">
-        {location.pathname}
-        {location.search}
-      </output>
-    </>
-  );
-}
-
-async function render(ui: ReactNode) {
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-  await act(async () => root.render(ui));
-}
-
 beforeEach(() => {
-  FakeTerminal.instances = [];
-  FakeWebSocket.instances = [];
-  profileScope.profile = "";
-  apiMocks.getConfig.mockReset().mockResolvedValue({});
-  maybeReloadForLoopbackWsAuthFailure.mockClear();
-  apiMocks.buildWsUrl.mockReset();
-  apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/pty?channel=chat-1");
-  vi.stubGlobal("WebSocket", FakeWebSocket);
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      disconnect() {}
-      observe() {}
-      unobserve() {}
-    },
-  );
-  vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
-    cb(0);
-    return 1;
+  const values = new Map<string, string>();
+  vi.stubGlobal('localStorage', {
+    getItem: vi.fn((key: string) => values.get(key) ?? null),
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: vi.fn((key: string) => values.delete(key)),
+    clear: () => values.clear(),
   });
-  vi.stubGlobal("cancelAnimationFrame", () => {});
-  vi.stubGlobal("matchMedia", () => ({
-    addEventListener() {},
-    matches: false,
-    media: "",
-    removeEventListener() {},
-  }));
-  vi.stubGlobal("crypto", {
-    getRandomValues: (values: Uint8Array) => {
-      values.fill(7);
-      return values;
-    },
-    randomUUID: () => "chat-test-id",
-  });
-
-  Object.defineProperty(window, "visualViewport", {
-    configurable: true,
-    value: { addEventListener() {}, removeEventListener() {}, width: 1280 },
-  });
-  Object.defineProperty(window, "__HERMES_SESSION_TOKEN__", {
-    configurable: true,
-    value: "stale-token",
-    writable: true,
-  });
-  Object.defineProperty(window, "__HERMES_AUTH_REQUIRED__", {
-    configurable: true,
-    value: false,
-    writable: true,
-  });
-  Object.defineProperty(window.navigator, "clipboard", {
-    configurable: true,
-    value: {
-      readText: vi.fn(async () => ""),
-      writeText: vi.fn(async () => {}),
-    },
-  });
-  sessionStorage.clear();
-  vi.stubGlobal("localStorage", localStorageMock);
-  localStorageMock.clear();
-});
-
-afterEach(async () => {
-  await act(async () => root?.unmount());
-  container?.remove();
-  vi.unstubAllGlobals();
-});
-
-describe("ChatPage", () => {
-  it("latches activation and preserves Terminal/PTY through /chat → /sessions → /chat", async () => {
-    const { default: ChatPage } = await import("./chat/TerminalChatPage");
-    await render(
-      <MemoryRouter initialEntries={["/sessions"]}>
-        <RouteAwareChatHarness ChatPage={ChatPage} />
-      </MemoryRouter>,
-    );
-    expect(FakeTerminal.instances).toHaveLength(0);
-    expect(FakeWebSocket.instances).toHaveLength(0);
-    const navigate = async (id: string) => act(async () => {
-      container.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)!.click();
-    });
-    await navigate("chat");
-    const terminal = FakeTerminal.instances[0];
-    const socket = FakeWebSocket.instances[0];
-    await act(async () => socket.onopen?.());
-    const params = apiMocks.buildWsUrl.mock.calls[0];
-    await navigate("sessions");
-    expect(container.querySelector("output")?.textContent).toBe("/sessions");
-    expect(socket.readyState).toBe(FakeWebSocket.OPEN);
-    await navigate("chat");
-    expect(container.querySelector("output")?.textContent).toBe("/chat");
-    expect(FakeTerminal.instances).toEqual([terminal]);
-    expect(FakeWebSocket.instances).toEqual([socket]);
-    expect(apiMocks.buildWsUrl.mock.calls).toEqual([params]);
-    await act(async () => terminal.dataHandler?.("hello"));
-    expect(socket.send).toHaveBeenCalledWith("hello");
-  });
-
-  it("keeps resume/profile identity changes inside Terminal", async () => {
-    let seed = 0;
-    vi.spyOn(crypto, "getRandomValues").mockImplementation((values) => {
-      (values as Uint8Array).fill(++seed);
-      return values;
-    });
-    const { default: ChatPage } = await import("./chat/TerminalChatPage");
-    const ui = () => <MemoryRouter initialEntries={["/chat"]}><RouteAwareChatHarness ChatPage={ChatPage} /></MemoryRouter>;
-    await render(ui());
-    const firstSocket = FakeWebSocket.instances[0];
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="resume"]')!.click());
-    expect(firstSocket.readyState).toBe(3);
-    expect(apiMocks.buildWsUrl).toHaveBeenLastCalledWith("/api/pty", expect.objectContaining({ resume: "session-a" }));
-    const resumedSocket = FakeWebSocket.instances[1];
-    profileScope.profile = "work";
-    await act(async () => root.render(ui()));
-    expect(resumedSocket.readyState).toBe(3);
-    expect(apiMocks.buildWsUrl).toHaveBeenLastCalledWith("/api/pty", expect.objectContaining({ resume: "session-a", profile: "work" }));
-    expect(FakeTerminal.instances).toHaveLength(3);
-    expect(FakeWebSocket.instances).toHaveLength(3);
-  });
-
-  it("keeps PTY identity across refresh but isolates independent tabs", async () => {
-    const { ptyAttachToken, ptyEventChannel } = await import(
-      "@/lib/pty-attach-token"
-    );
-    let seed = 0;
-    vi.spyOn(crypto, "getRandomValues").mockImplementation((values) => {
-      (values as Uint8Array).fill(++seed);
-      return values;
-    });
-    const tabA = new Map<string, string>();
-    const tabB = new Map<string, string>();
-    const storage = (values: Map<string, string>): Storage => ({
-      get length() {
-        return values.size;
-      },
-      clear: () => values.clear(),
-      getItem: (key: string) => values.get(key) ?? null,
-      key: (index: number) => [...values.keys()][index] ?? null,
-      removeItem: (key: string) => void values.delete(key),
-      setItem: (key: string, value: string) => void values.set(key, value),
-    });
-
-    localStorageMock.setItem(
-      "hermes.pty.token.chat",
-      "legacy-cross-tab-token",
-    );
-    const defaultTabToken = ptyAttachToken();
-
-    expect(defaultTabToken).not.toBe("legacy-cross-tab-token");
-    expect(sessionStorage.getItem("hermes.pty.token.chat")).toBe(
-      defaultTabToken,
-    );
-
-    const a1 = ptyAttachToken(false, storage(tabA));
-    const aRefresh = ptyAttachToken(false, storage(tabA));
-    const b1 = ptyAttachToken(false, storage(tabB));
-    const aFresh = ptyAttachToken(true, storage(tabA));
-    const channelA = ptyEventChannel("default", storage(tabA));
-    const channelARefresh = ptyEventChannel("default", storage(tabA));
-    const channelB = ptyEventChannel("default", storage(tabB));
-    const channelAResume = ptyEventChannel("resume:stored-a", storage(tabA));
-
-    expect(aRefresh).toBe(a1);
-    expect(b1).not.toBe(a1);
-    expect(aFresh).not.toBe(a1);
-    expect(ptyAttachToken(false, storage(tabB))).toBe(b1);
-    expect(channelARefresh).toBe(channelA);
-    expect(channelB).not.toBe(channelA);
-    expect(channelAResume).not.toBe(channelA);
-  });
-
-  it("lets xterm encode wheel events and forwards only SGR wheel reports", async () => {
-    const { default: ChatPage } = await import("./chat/TerminalChatPage");
-
-    await render(
-      <MemoryRouter initialEntries={["/chat"]}>
-        <ChatPage isActive />
-      </MemoryRouter>,
-    );
-
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-    const socket = FakeWebSocket.instances[0];
-    const terminal = FakeTerminal.instances[0];
-
-    await act(async () => socket.onopen?.());
-    socket.send.mockClear();
-
-    const wheelEvent = {
-      deltaY: 100,
-      preventDefault: vi.fn(),
-      stopPropagation: vi.fn(),
-    } as unknown as WheelEvent;
-
-    expect(terminal.wheelHandler?.(wheelEvent)).toBe(true);
-    expect(wheelEvent.preventDefault).not.toHaveBeenCalled();
-    expect(wheelEvent.stopPropagation).not.toHaveBeenCalled();
-
-    terminal.dataHandler?.("\x1b[<64;12;8M");
-    terminal.dataHandler?.("\x1b[<0;12;8M");
-
-    expect(socket.send).toHaveBeenCalledTimes(1);
-    expect(socket.send).toHaveBeenCalledWith("\x1b[<64;12;8M");
-
-    socket.readyState = 3;
-    socket.send.mockClear();
-    terminal.write.mockClear();
-    terminal.dataHandler?.("\x1b[<65;12;8M");
-
-    expect(socket.send).not.toHaveBeenCalled();
-    expect(terminal.write).not.toHaveBeenCalled();
-  });
-
-  it("treats loopback 4401 closes as stale-token reload candidates", async () => {
-    const { default: ChatPage } = await import("./chat/TerminalChatPage");
-
-    await render(
-      <MemoryRouter initialEntries={["/chat"]}>
-        <ChatPage isActive />
-      </MemoryRouter>,
-    );
-
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-
-    FakeWebSocket.instances[0].onclose?.({
-      code: 4401,
-      reason: "auth: token_mismatch",
-      wasClean: true,
-    });
-
-    expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
-  });
-
-  it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
-    // NS-434 follow-up: ChatPage stays mounted (hidden) on every dashboard
-    // route. The keyboard-inset/scroll-pin listeners must only be live while
-    // /chat is the active tab, or the scroll pin fires when a soft keyboard
-    // opens on Settings etc.
-    const addEventListener = vi.fn();
-    const removeEventListener = vi.fn();
-    Object.defineProperty(window, "visualViewport", {
-      configurable: true,
-      value: { addEventListener, removeEventListener, width: 1280 },
-    });
-    const { default: ChatPage } = await import("./chat/TerminalChatPage");
-
-    await render(
-      <MemoryRouter initialEntries={["/chat"]}>
-        <ChatPage isActive={false} />
-      </MemoryRouter>,
-    );
-    expect(addEventListener).not.toHaveBeenCalled();
-
-    await act(async () =>
-      root.render(
-        <MemoryRouter initialEntries={["/chat"]}>
-          <ChatPage isActive />
-        </MemoryRouter>,
-      ),
-    );
-    expect(addEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
-      "resize",
-      "scroll",
-    ]);
-    expect(removeEventListener).not.toHaveBeenCalled();
-
-    await act(async () =>
-      root.render(
-        <MemoryRouter initialEntries={["/chat"]}>
-          <ChatPage isActive={false} />
-        </MemoryRouter>,
-      ),
-    );
-    expect(removeEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
-      "resize",
-      "scroll",
-    ]);
-  });
-
-  it("hands a learn route to an already-open persistent PTY", async () => {
-    const { default: ChatPage } = await import("./chat/TerminalChatPage");
-
-    await render(
-      <MemoryRouter initialEntries={["/chat"]}>
-        <NavigationHarness>
-          <ChatPage isActive />
-        </NavigationHarness>
-      </MemoryRouter>,
-    );
-
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-    const socket = FakeWebSocket.instances[0];
-    socket.onopen?.();
-    socket.send.mockClear();
-
-    await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>("[data-testid='navigate-to-learn']")
-        ?.click();
-    });
-
-    await vi.waitFor(
-      () => expect(socket.send).toHaveBeenCalledWith("/learn debugging\r"),
-      { timeout: 1_500 },
-    );
-    expect(socket.send).toHaveBeenCalledTimes(1);
-    expect(FakeWebSocket.instances).toHaveLength(1);
-  });
-
-  it("leaves learn parameters untouched while the persistent chat is hidden", async () => {
-    const { default: ChatPage } = await import("./chat/TerminalChatPage");
-
-    await render(
-      <MemoryRouter initialEntries={["/chat"]}>
-        <RouteAwareChatHarness ChatPage={ChatPage} />
-      </MemoryRouter>,
-    );
-
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-    const socket = FakeWebSocket.instances[0];
-    socket.onopen?.();
-    socket.send.mockClear();
-
-    await act(async () => {
-      container
-        .querySelector<HTMLButtonElement>(
-          "[data-testid='navigate-to-hidden-learn']",
-        )
-        ?.click();
-    });
-
-    expect(
-      container.querySelector("[data-testid='location']")?.textContent,
-    ).toBe("/skills?learn=hidden");
-    expect(socket.send).not.toHaveBeenCalledWith("/learn hidden\r");
-  });
-});
-
-describe("ChatPage side panel collapse", () => {
-  async function renderChat() {
-    const { default: ChatPage } = await import("./chat/TerminalChatPage");
-    await render(
-      <MemoryRouter initialEntries={["/chat"]}>
-        <ChatPage isActive />
-      </MemoryRouter>,
-    );
-  }
-
-  it("collapses the desktop side panel and persists the choice", async () => {
-    localStorage.clear();
-    await renderChat();
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-
-    const collapseButton = container.querySelector(
-      '[aria-label="Collapse chat side panel"]',
-    );
-    expect(collapseButton).not.toBeNull();
-
-    await act(async () => {
-      collapseButton!.dispatchEvent(
-        new MouseEvent("click", { bubbles: true }),
-      );
-    });
-
-    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("1");
-    expect(
-      container.querySelector('[aria-label="Collapse chat side panel"]'),
-    ).toBeNull();
-    expect(
-      container.querySelector('[aria-label="Show chat side panel"]'),
-    ).not.toBeNull();
-
-    // Reopening restores the panel and clears the persisted flag.
-    await act(async () => {
-      container
-        .querySelector('[aria-label="Show chat side panel"]')!
-        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-
-    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("0");
-    expect(
-      container.querySelector('[aria-label="Collapse chat side panel"]'),
-    ).not.toBeNull();
-  });
-});
-
-// The gated-mode ticket request runs before any socket exists, so a rejection
-// or a hang emits no `close` event and never arms PTY_CONNECTING_TIMEOUT_MS
-// (that timer is set after `new WebSocket`). Without its own deadline the tab
-// strands on "connecting" with no retry. Mirrors the ChatSidebar events-feed
-// coverage in src/components/ChatSidebar.test.tsx.
-describe("ChatPage PTY ticket connect deadline", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  async function renderChat() {
-    const { default: ChatPage } = await import("./chat/TerminalChatPage");
-    await render(
-      <MemoryRouter initialEntries={["/chat"]}>
-        <ChatPage isActive />
-      </MemoryRouter>,
-    );
-  }
-
-  /** Advance timers and flush the async connect that fires on the tick. */
-  async function advance(ms: number) {
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(ms);
-    });
-  }
-
-  it("retries when the ticket request rejects", async () => {
-    apiMocks.buildWsUrl.mockRejectedValueOnce(
-      new Error("ticket endpoint unavailable"),
-    );
-
-    await renderChat();
-    await advance(0);
-    expect(FakeWebSocket.instances).toHaveLength(0);
-
-    // First backoff step is 250ms; the retry must mint a fresh ticket.
-    await advance(250);
-    expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(2);
-    expect(FakeWebSocket.instances).toHaveLength(1);
-  });
-
-  it("times out a stalled ticket request and retries", async () => {
-    let resolveStalledRequest!: (url: string) => void;
-    apiMocks.buildWsUrl.mockImplementationOnce(
-      () =>
-        new Promise<string>((resolve) => {
-          resolveStalledRequest = resolve;
-        }),
-    );
-
-    await renderChat();
-    await advance(0);
-    expect(FakeWebSocket.instances).toHaveLength(0);
-
-    await advance(PTY_TICKET_TIMEOUT_MS);
-    expect(FakeWebSocket.instances).toHaveLength(0);
-
-    // A late ticket from the timed-out attempt must not open a socket behind
-    // the replacement the deadline scheduled.
-    await act(async () => {
-      resolveStalledRequest("ws://localhost/api/pty?channel=stale");
-      await Promise.resolve();
-    });
-    expect(FakeWebSocket.instances).toHaveLength(0);
-
-    await advance(250);
-    expect(FakeWebSocket.instances).toHaveLength(1);
-    expect(FakeWebSocket.instances[0].url).not.toContain("channel=stale");
-  });
-
-  it("leaves a settled ticket's socket to the CONNECTING timer", async () => {
-    await renderChat();
-    await advance(0);
-    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
-
-    // NS-591 regression: once the socket exists the ticket deadline is
-    // disarmed, so PTY_CONNECTING_TIMEOUT_MS stays the only thing that may
-    // force-close a wedged handshake — the two must not both fire.
-    await advance(PTY_TICKET_TIMEOUT_MS);
-    expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(1);
-  });
-});
-
-
-it("explicit native creates one gateway and zero PTYs even after late native config and route navigation", async () => {
-  FakeNativeSocket.reset();
-  vi.stubGlobal("WebSocket", FakeNativeSocket);
-  apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/ws?ticket=fresh");
+  profile.profile = ''; FakeNativeSocket.reset(); localStorage.clear(); sessionStorage.clear();
+  vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
+  vi.stubGlobal('WebSocket', FakeNativeSocket);
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   Element.prototype.scrollTo = vi.fn();
-  let resolveConfig!: (value: Record<string, unknown>) => void;
-  apiMocks.getConfig.mockImplementation(() => new Promise(resolve => { resolveConfig = resolve; }));
-  const { default: ChatPage } = await import("./ChatPage");
-  // Load the lazy chunk before act so Suspense's timer does not obscure lifecycle assertions.
-  await import("./chat/native/NativeChatPage");
-  await render(<StrictMode><MemoryRouter initialEntries={["/chat?chat_mode=native"]}><RouteAwareChatHarness ChatPage={ChatPage} /></MemoryRouter></StrictMode>);
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)); await flushNative(); });
-  await act(async () => resolveConfig({ dashboard: { chat: { default_mode: "native" } } }));
-  expect(FakeTerminal.instances).toHaveLength(0);
+  container = document.createElement('div'); document.body.append(container); root = createRoot(container);
+});
+afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+async function render(path = '/chat') {
+  await act(async () => { root.render(<StrictMode><MemoryRouter initialEntries={[path]}><Harness /></MemoryRouter></StrictMode>); await flushNative(); });
+}
+async function click(selector: string) { await act(async () => { (container.querySelector(selector) as HTMLElement).click(); await flushNative(); }); }
+async function draft(text: string) {
+  await act(async () => {
+    const input = container.querySelector('textarea')!;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, text);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+}
+function expectNativeOnly() {
+  expect(container.querySelector('[aria-label="Native Chat"]')).not.toBeNull();
+  expect(container.querySelector('.xterm')).toBeNull();
+  expect(container.textContent).not.toContain('Chat Interface');
   expect(FakeNativeSocket.instances).toHaveLength(1);
-  expect(apiMocks.buildWsUrl).toHaveBeenCalledWith("/api/ws");
-  expect(apiMocks.buildWsUrl).not.toHaveBeenCalledWith("/api/pty", expect.anything());
-  await act(async () => (container.querySelector('[data-testid="sessions"]') as HTMLElement).click());
-  await act(async () => (container.querySelector('[data-testid="chat"]') as HTMLElement).click());
-  expect(FakeNativeSocket.instances).toHaveLength(1);
-  expect(FakeTerminal.instances).toHaveLength(0);
+  expect(FakeNativeSocket.instances[0].url).toContain('/api/ws');
+  expect(FakeNativeSocket.requests.filter(r => r.method === 'prompt.submit')).toHaveLength(0);
+}
+it.each(['terminal', 'native', 'garbage'])('ignores obsolete browser and URL value %s and cleans only the obsolete key', async value => {
+  localStorage.setItem('hermes.dashboard.chat.mode', value); localStorage.setItem('unrelated', 'keep');
+  const remove = vi.spyOn(localStorage, 'removeItem');
+  await render(`/chat?chat_mode=${value}&chat_mode=terminal&other=keep#anchor`);
+  expectNativeOnly();
+  expect(localStorage.getItem('hermes.dashboard.chat.mode')).toBeNull();
+  expect(localStorage.getItem('unrelated')).toBe('keep');
+  expect(remove.mock.calls.filter(([key]) => key === 'hermes.dashboard.chat.mode')).toHaveLength(1);
+  expect(container.querySelector('output')?.textContent).toBe('/chat?other=keep#anchor');
+  await click('[data-nav="away"]'); await click('[data-nav="back"]');
+  expectNativeOnly();
+  expect(remove.mock.calls.filter(([key]) => key === 'hermes.dashboard.chat.mode')).toHaveLength(1);
+});
+it('starts without reading profile preferences and tolerates blocked localStorage', async () => {
+  vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+  await render(); expectNativeOnly();
+});
+it('tolerates a failed obsolete-key removal', async () => {
+  vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('blocked'); });
+  await render('/chat?chat_mode=terminal'); expectNativeOnly();
+});
+it('does not clean the key or URL when initialization fails', async () => {
+  localStorage.setItem('hermes.dashboard.chat.mode', 'terminal');
+  FakeNativeSocket.responder = (_request, socket) => socket.close(4401);
+  await render('/chat?chat_mode=terminal');
+  expect(localStorage.getItem('hermes.dashboard.chat.mode')).toBe('terminal');
+  expect(container.querySelector('output')?.textContent).toContain('chat_mode=terminal');
+  expect(FakeNativeSocket.requests.some(r => r.method === 'prompt.submit')).toBe(false);
+});
+it('preserves durable resume and seeds learn as an unsent draft', async () => {
+  await render('/chat?resume=saved&learn=debugging&chat_mode=terminal&other=keep#anchor');
+  expectNativeOnly();
+  expect(FakeNativeSocket.requests[0]).toMatchObject({ method: 'session.resume', params: { session_id: 'saved', allow_auto_continue: false } });
+  expect(container.querySelector('textarea')?.value).toBe('/learn debugging');
+  expect(container.querySelector('output')?.textContent).toBe('/chat?resume=stored&other=keep#anchor');
+  await click('[data-nav="away"]'); await click('[data-nav="back"]'); await click('[data-nav="history"]');
+  expectNativeOnly(); expect(container.querySelector('textarea')?.value).toBe('/learn debugging');
+});
+it.each([true, false])('preserves an existing draft until an explicit learn decision (append=%s)', async append => {
+  await render(); await draft('unsent'); await click('[data-nav="learn"]');
+  expect(container.querySelector('textarea')?.value).toBe('unsent');
+  expect(container.textContent).toContain('A learning request is waiting');
+  const button = [...container.querySelectorAll('button')].find(b => b.textContent === (append ? 'Append to draft' : 'Ignore'))!;
+  await act(async () => { button.click(); await flushNative(); });
+  expect(container.querySelector('textarea')?.value).toBe(append ? 'unsent\n/learn debugging' : 'unsent');
+  expect(container.querySelector('output')?.textContent).toBe('/chat?other=keep#anchor');
+  expectNativeOnly();
 });
 
-it("new users wait for profile config and open Native without an experimental URL", async () => {
-  FakeNativeSocket.reset(); vi.stubGlobal("WebSocket", FakeNativeSocket);
-  apiMocks.buildWsUrl.mockResolvedValue("ws://localhost/api/ws?ticket=fresh");
-  Element.prototype.scrollTo = vi.fn();
-  let resolveConfig!: (value: Record<string, unknown>) => void;
-  apiMocks.getConfig.mockImplementation(() => new Promise(resolve => { resolveConfig = resolve; }));
-  const { default: ChatPage } = await import("./ChatPage");
-  await render(<MemoryRouter initialEntries={["/chat"]}><ChatPage /></MemoryRouter>);
-  expect(FakeNativeSocket.instances).toHaveLength(0);
-  await act(async () => { resolveConfig({}); await flushNative(); });
-  await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)); await flushNative(); });
-  expect(FakeNativeSocket.instances).toHaveLength(1);
-  expect(FakeTerminal.instances).toHaveLength(0);
-  expect(apiMocks.buildWsUrl).not.toHaveBeenCalledWith("/api/pty", expect.anything());
+it('isolates the Native host and draft across profile switches without resuming an old identity', async () => {
+  await render(); await draft('old profile draft');
+  const previous = FakeNativeSocket.instances[0];
+  profile.profile = 'other';
+  await render();
+  expect(previous.readyState).toBe(3);
+  expect(FakeNativeSocket.instances.filter(socket => socket.readyState === 1)).toHaveLength(1);
+  expect(FakeNativeSocket.requests.filter(request => request.method === 'session.create').map(request => request.params.profile)).toEqual(['', 'other']);
+  expect(FakeNativeSocket.requests.filter(request => request.method === 'session.resume')).toHaveLength(0);
+  expect(FakeNativeSocket.requests.filter(request => request.method === 'prompt.submit')).toHaveLength(0);
+  expect(container.querySelector('textarea')?.value).toBe('');
 });

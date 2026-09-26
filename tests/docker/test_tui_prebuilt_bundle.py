@@ -1,13 +1,13 @@
 """Harness: the image ships a prebuilt TUI bundle, not a runtime npm install.
 
-Regression guard for the hosted-chat failure where the embedded dashboard
-Chat tab died with a 502 / "[session ended]". Root cause: the image installs
+Regression guard originally added for the retired Dashboard Terminal surface.
+The same prebuilt launcher contract still protects standalone TUI startup. Root cause: the image installs
 only a subset of the npm monorepo workspaces (root/web/ui-tui, never apps/*),
 so the actualized node_modules permanently disagrees with the canonical
 package-lock.json. Without HERMES_TUI_DIR set, ``_make_tui_argv`` falls
 through to ``_tui_need_npm_install`` (which returns True forever) and tries a
 runtime ``npm install`` that can never converge and races itself across
-concurrent /api/pty connections → ENOTEMPTY.
+concurrent standalone TUI launches → ENOTEMPTY.
 
 The fix is ``ENV HERMES_TUI_DIR=/opt/hermes/ui-tui`` in the Dockerfile, which
 makes the launcher take the prebuilt-bundle fast path (``node --expose-gc
@@ -29,7 +29,7 @@ def _exec_py(image: str, py: str) -> str:
         f"python3 -c {shlex.quote(py)}"
     )
     # Drop to the hermes user (UID 10000) so we exercise the same path the
-    # dashboard PTY child runs as — not root.
+    # standalone TUI runs as — not root.
     cmd = [
         "docker", "run", "--rm", "--entrypoint", "su", image,
         "hermes", "-s", "/bin/bash", "-c", inner,

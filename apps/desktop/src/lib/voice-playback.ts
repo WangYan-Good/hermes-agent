@@ -118,7 +118,7 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
     url.pathname = url.pathname.replace(/\/api\/ws$/, '/api/audio/speak-stream')
 
     // The backend resolves the TTS provider chain from this profile's
-    // config/.env (same seam as /api/pty?profile=).
+    // config/.env (same profile boundary as /api/ws?profile=).
     if (profile) {
       url.searchParams.set('profile', profile)
     }

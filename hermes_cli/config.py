@@ -3696,7 +3696,7 @@ def apply_terminal_config_to_env(
     """Bridge ``terminal.*`` config into the env vars terminal tools read.
 
     ``tools.terminal_tool`` is intentionally environment-driven because it also
-    runs in child processes (TUI, dashboard PTY, gateway workers).  This helper
+    runs in child processes (TUI, compute hosts, gateway workers).  This helper
     gives those child-process launch paths the same config bridge as classic
     CLI without importing ``cli.py`` and paying for its startup side effects.
 

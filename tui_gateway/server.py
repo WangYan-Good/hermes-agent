@@ -1942,19 +1942,6 @@ def _apply_compute_host_metadata_mirror(session: dict, frame: dict | None) -> No
 
 
 def _on_compute_host_turn_done(rid: str, sid: str, session: dict, frame: dict) -> None:
-    # Match in-process finalization: no handoff between running=False and a
-    # queued successor acquiring the same session.
-    with session["history_lock"]:
-        session["_presentation_workers"] = session.get("_presentation_workers", 0) + 1
-    try:
-        _on_compute_host_turn_done_owned(rid, sid, session, frame)
-    finally:
-        with session["history_lock"]:
-            session["_presentation_workers"] -= 1
-        _emit("session.handoff_status", sid, {})
-
-
-def _on_compute_host_turn_done_owned(rid: str, sid: str, session: dict, frame: dict) -> None:
     is_error = frame.get("type") == "turn.error"
     with session["history_lock"]:
         if frame.get("session_key"):
@@ -10888,22 +10875,7 @@ def _start_usage_ticker(
     return stop, thread
 
 
-def _run_prompt_submit(rid, sid, session, *args, **kwargs):
-    # running=False precedes queued/goal follow-ups. Keep presentation ownership
-    # until the entire worker has settled, including those finalizers.
-    with session["history_lock"]:
-        if session.get("presentation_handoff"):
-            return
-        session["_presentation_workers"] = session.get("_presentation_workers", 0) + 1
-    try:
-        return _run_prompt_submit_owned(rid, sid, session, *args, **kwargs)
-    finally:
-        with session["history_lock"]:
-            session["_presentation_workers"] -= 1
-        _emit("session.handoff_status", sid, {})
-
-
-def _run_prompt_submit_owned(
+def _run_prompt_submit(
     rid,
     sid: str,
     session: dict,

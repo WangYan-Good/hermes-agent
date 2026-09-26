@@ -401,6 +401,20 @@ def test_prompt_submit_fails_open_inline_when_compute_host_dispatch_breaks(monke
     assert session.get("_compute_host_active") is not True
 
 
+@pytest.mark.parametrize("failed, info_emitted", [(False, False), (True, False), (False, True)])
+def test_compute_host_settlement_precedes_queued_successor(monkeypatch, failed, info_emitted):
+    session = _session(running=True, agent=None)
+    observed = []
+    monkeypatch.setattr(server, "_emit", lambda event, sid, payload=None: observed.append((event, session["running"])))
+    monkeypatch.setattr(server, "_session_info", lambda *args: {})
+    monkeypatch.setattr(server, "_drain_queued_prompt", lambda *args: observed.append(("queue.drain", session["running"])))
+    server._on_compute_host_turn_done("turn", "sid", session, {
+        "type": "turn.error" if failed else "turn.end", "session_info_emitted": info_emitted,
+    })
+    expected = (["message.complete"] if failed else []) + ([] if info_emitted else ["session.info"]) + ["queue.drain"]
+    assert observed == [(event, False) for event in expected]
+
+
 def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
     # _session_info embeds get_update_result(), whose value flips whenever the
     # background update-check thread happens to finish. This test compares two
@@ -452,8 +466,8 @@ def test_compute_host_turn_end_updates_metadata_mirror(monkeypatch):
         assert info["usage"]["total"] == 140
         assert "credential_warning" not in info
         assert ("session.info", "iso-sid", info) in emitted
-        assert emitted[-1] == ("session.handoff_status", "iso-sid", {})
-        assert session["_presentation_workers"] == 0
+        assert emitted[-1] == ("session.info", "iso-sid", info)
+        assert session["running"] is False
     finally:
         server._sessions.pop("iso-sid", None)
 
@@ -19838,3 +19852,49 @@ def test_workspace_move_rehomes_running_session(monkeypatch, tmp_path):
     assert captured["row_update"] == (target, str(new_cwd))
     assert live["cwd"] == str(new_cwd)
     assert live.get("explicit_cwd") is True
+
+
+@pytest.mark.parametrize("queued_user", [False, True])
+def test_native_worker_settles_before_queue_and_goal_successors(monkeypatch, queued_user):
+    """Normal events settle Native state; queued users still precede goal continuations."""
+    import hermes_cli.goals as goals
+    order = []
+    prompts = []
+
+    class Agent:
+        def run_conversation(self, prompt, **kwargs):
+            prompts.append(prompt)
+            return {"final_response": "done", "messages": [], "completed": True}
+
+    class Goal:
+        def __init__(self, **kwargs):
+            pass
+
+        def is_active(self):
+            return len(prompts) == 1
+
+        def evaluate_after_turn(self, *args, **kwargs):
+            order.append("goal.evaluate")
+            return {"should_continue": True, "continuation_prompt": "goal next"}
+
+    session = _session(agent=Agent(), session_key="native-order", running=True)
+    monkeypatch.setattr(goals, "GoalManager", Goal)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda event, *args: order.append(event))
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda *args: None)
+    monkeypatch.setattr(server, "_plan_goal_compression_recovery", lambda *args, **kwargs: (None, None))
+
+    def drain(*args):
+        assert session["running"] is False
+        order.append("queue.drain")
+        return queued_user
+
+    monkeypatch.setattr(server, "_drain_queued_prompt", drain)
+    server._run_prompt_submit("turn", "sid", session, "user first")
+    assert prompts == (["user first"] if queued_user else ["user first", "goal next"])
+    assert order.index("message.complete") < order.index("goal.evaluate") < order.index("session.info") < order.index("queue.drain")
+    if not queued_user:
+        assert order.index("queue.drain") < max(i for i, event in enumerate(order) if event == "message.start")
+    assert session["running"] is False
