@@ -54,6 +54,7 @@ const promote = () => {
   if (current() || state.controlQueue.length === 0) {
     return
   }
+
   const [next, ...controlQueue] = state.controlQueue
 
   if (next) {

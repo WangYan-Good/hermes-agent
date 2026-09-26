@@ -326,6 +326,7 @@ describe('atomic live session activation', () => {
     const setHistoryItems = (value: typeof history) => {
       history = value
     }
+
     const snapshot = createLiveSessionTransitionStateAdapter({ getHistoryItems: () => history, setHistoryItems })
     const outputBefore = structuredClone(getOutputStreamsState())
     const turnBefore = structuredClone(getTurnState())

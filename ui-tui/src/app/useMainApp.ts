@@ -1004,6 +1004,7 @@ export function useMainApp(gw: GatewayClient) {
           ) {
             return
           }
+
           patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
           patchUiState({ status: 'running…' })
         }
@@ -1028,6 +1029,7 @@ export function useMainApp(gw: GatewayClient) {
         if (!response || finishControlPrompt('sudo', sudo.requestId, sudo.sessionId, sudo.sessionTitle, response)) {
           return
         }
+
         patchUiState({ status: 'running…' })
       })
     },
@@ -1053,6 +1055,7 @@ export function useMainApp(gw: GatewayClient) {
         ) {
           return
         }
+
         patchUiState({ status: 'running…' })
       })
     },
