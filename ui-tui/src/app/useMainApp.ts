@@ -50,10 +50,7 @@ import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfaces.js'
 import { createOutputLifecycleCoordinator } from './outputLifecycleCoordinator.js'
 import { createOutputStreamRouter } from './outputStreamRouter.js'
-import {
-  captureActiveOutputSnapshot,
-  type SessionTransitionHooks
-} from './outputStreamStore.js'
+import { captureActiveOutputSnapshot, type SessionTransitionHooks } from './outputStreamStore.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -547,22 +544,25 @@ export function useMainApp(gw: GatewayClient) {
   const outputRouter = useMemo(() => createOutputStreamRouter(), [])
   const outputLifecycle = useMemo(() => createOutputLifecycleCoordinator(outputRouter), [outputRouter])
 
-  const transitionHooks = useMemo<SessionTransitionHooks>(() => ({
-    beforeCommit: transition => {
-      outputLifecycle.validateTransition(transition)
+  const transitionHooks = useMemo<SessionTransitionHooks>(
+    () => ({
+      beforeCommit: transition => {
+        outputLifecycle.validateTransition(transition)
 
-      if (transition.previousSessionId && (transition.kind === 'activate-live' || transition.kind === 'new-live')) {
-        captureActiveOutputSnapshot(
-          transition.previousSessionId,
-          getUiState().sessionTitle,
-          getUiState().status,
-          historyItemsRef.current,
-          getTurnState().streaming
-        )
-      }
-    },
-    afterCommit: outputLifecycle.commitTransition
-  }), [outputLifecycle])
+        if (transition.previousSessionId && (transition.kind === 'activate-live' || transition.kind === 'new-live')) {
+          captureActiveOutputSnapshot(
+            transition.previousSessionId,
+            getUiState().sessionTitle,
+            getUiState().status,
+            historyItemsRef.current,
+            getTurnState().streaming
+          )
+        }
+      },
+      afterCommit: outputLifecycle.commitTransition
+    }),
+    [outputLifecycle]
+  )
 
   const session = useSessionLifecycle({
     colsRef,
@@ -696,7 +696,13 @@ export function useMainApp(gw: GatewayClient) {
   }, [rpc, stdout, ui.sid])
 
   const finishControlPrompt = useCallback(
-    (kind: 'approval' | 'clarify' | 'secret' | 'sudo', requestId: string | undefined, sessionId: string, sessionTitle: string, response: { status?: string }) => {
+    (
+      kind: 'approval' | 'clarify' | 'secret' | 'sudo',
+      requestId: string | undefined,
+      sessionId: string,
+      sessionTitle: string,
+      response: { status?: string }
+    ) => {
       completeControlPrompt(kind, requestId, sessionId)
 
       if (response.status === 'expired') {
@@ -709,7 +715,6 @@ export function useMainApp(gw: GatewayClient) {
     },
     [sys]
   )
-
 
   const answerClarify = useCallback(
     (answer: string) => {
@@ -724,7 +729,11 @@ export function useMainApp(gw: GatewayClient) {
       turnController.turnTools = turnController.turnTools.filter(line => !sameToolTrailGroup(label, line))
       patchTurnState({ turnTrail: turnController.turnTools })
 
-      rpc<ClarifyRespondResponse>('clarify.respond', { answer, request_id: clarify.requestId, session_id: clarify.sessionId }).then(r => {
+      rpc<ClarifyRespondResponse>('clarify.respond', {
+        answer,
+        request_id: clarify.requestId,
+        session_id: clarify.sessionId
+      }).then(r => {
         if (!r) {
           return
         }
@@ -752,7 +761,6 @@ export function useMainApp(gw: GatewayClient) {
             text: formatAbandonedClarify(clarify.question, clarify.choices, 'cancelled')
           })
         }
-
       })
     },
     [appendMessage, finishControlPrompt, overlay.clarify, rpc]
@@ -980,18 +988,26 @@ export function useMainApp(gw: GatewayClient) {
 
   slashRef.current = slash
 
-
   const answerApproval = useCallback(
     (choice: string) => {
       const approval = overlay.approval
 
-      if (!approval) {return}
+      if (!approval) {
+        return
+      }
 
-      return rpc<ApprovalRespondResponse>('approval.respond', { choice, session_id: approval.sessionId }).then(response => {
-        if (!response || finishControlPrompt('approval', undefined, approval.sessionId, approval.sessionTitle, response)) {return}
-        patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
-        patchUiState({ status: 'running…' })
-      })
+      return rpc<ApprovalRespondResponse>('approval.respond', { choice, session_id: approval.sessionId }).then(
+        response => {
+          if (
+            !response ||
+            finishControlPrompt('approval', undefined, approval.sessionId, approval.sessionTitle, response)
+          ) {
+            return
+          }
+          patchTurnState({ outcome: choice === 'deny' ? 'denied' : `approved (${choice})` })
+          patchUiState({ status: 'running…' })
+        }
+      )
     },
     [finishControlPrompt, overlay.approval, rpc]
   )
@@ -1000,10 +1016,18 @@ export function useMainApp(gw: GatewayClient) {
     (password: string) => {
       const sudo = overlay.sudo
 
-      if (!sudo) {return}
+      if (!sudo) {
+        return
+      }
 
-      return rpc<SudoRespondResponse>('sudo.respond', { password, request_id: sudo.requestId, session_id: sudo.sessionId }).then(response => {
-        if (!response || finishControlPrompt('sudo', sudo.requestId, sudo.sessionId, sudo.sessionTitle, response)) {return}
+      return rpc<SudoRespondResponse>('sudo.respond', {
+        password,
+        request_id: sudo.requestId,
+        session_id: sudo.sessionId
+      }).then(response => {
+        if (!response || finishControlPrompt('sudo', sudo.requestId, sudo.sessionId, sudo.sessionTitle, response)) {
+          return
+        }
         patchUiState({ status: 'running…' })
       })
     },
@@ -1014,10 +1038,21 @@ export function useMainApp(gw: GatewayClient) {
     (value: string) => {
       const secret = overlay.secret
 
-      if (!secret) {return}
+      if (!secret) {
+        return
+      }
 
-      return rpc<SecretRespondResponse>('secret.respond', { request_id: secret.requestId, session_id: secret.sessionId, value }).then(response => {
-        if (!response || finishControlPrompt('secret', secret.requestId, secret.sessionId, secret.sessionTitle, response)) {return}
+      return rpc<SecretRespondResponse>('secret.respond', {
+        request_id: secret.requestId,
+        session_id: secret.sessionId,
+        value
+      }).then(response => {
+        if (
+          !response ||
+          finishControlPrompt('secret', secret.requestId, secret.sessionId, secret.sessionTitle, response)
+        ) {
+          return
+        }
         patchUiState({ status: 'running…' })
       })
     },

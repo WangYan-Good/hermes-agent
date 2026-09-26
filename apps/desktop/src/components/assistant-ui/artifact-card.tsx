@@ -81,7 +81,9 @@ export function ArtifactCard({ code, detection, streaming = false }: ArtifactCar
     }
 
     void createDesktopChatHost(sessionId).previewArtifact({
-      id: `${sessionId}:artifact`, ...detection, text: trimmed
+      id: `${sessionId}:artifact`,
+      ...detection,
+      text: trimmed
     })
   }
 

@@ -99,7 +99,7 @@ setupGracefulExit({
     recordParentLifecycle(`graceful-exit received signal=${signal} → killing gateway`)
     resetTerminalModes()
     process.stderr.write(`hermes-tui lifecycle: received ${signal}\n`)
-  },
+  }
 })
 
 const stopMemoryMonitor = startMemoryMonitor({

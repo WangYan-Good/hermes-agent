@@ -158,7 +158,6 @@ export class GatewayClient extends EventEmitter {
   }
 
   private publish(ev: GatewayEvent) {
-
     if (ev.type === 'gateway.ready') {
       this.ready = true
 

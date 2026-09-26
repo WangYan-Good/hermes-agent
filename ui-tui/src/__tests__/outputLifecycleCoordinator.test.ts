@@ -18,7 +18,13 @@ describe('single-window output lifecycle coordinator', () => {
   it('commits one active session and synchronizes cached metadata', () => {
     const coordinator = createOutputLifecycleCoordinator(router())
 
-    coordinator.syncActiveSessions([{ id: 'sid-a', title: 'Alpha' }, { id: 'sid-b', title: 'Beta' }], 'sid-a')
+    coordinator.syncActiveSessions(
+      [
+        { id: 'sid-a', title: 'Alpha' },
+        { id: 'sid-b', title: 'Beta' }
+      ],
+      'sid-a'
+    )
     coordinator.commitTransition({ kind: 'activate-live', nextSessionId: 'sid-b', previousSessionId: 'sid-a' })
 
     const state = getOutputStreamsState()

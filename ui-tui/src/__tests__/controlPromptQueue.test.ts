@@ -113,5 +113,4 @@ describe('control prompt queue', () => {
     expect(getOverlayState().approval).toBeNull()
     expect(getOverlayState().secret?.sessionId).toBe('default')
   })
-
 })

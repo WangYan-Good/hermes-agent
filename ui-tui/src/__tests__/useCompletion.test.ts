@@ -5,7 +5,6 @@ import { completionRequestForInput } from '../hooks/useCompletion.js'
 describe('completionRequestForInput', () => {
   it('routes real slash commands to slash completion', () => {
     expect(completionRequestForInput('/help')).toMatchObject({
-
       method: 'complete.slash',
       params: { text: '/help' },
       replaceFrom: 1
