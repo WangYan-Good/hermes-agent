@@ -407,7 +407,7 @@ ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 # disagrees with the canonical lock, _tui_need_npm_install() returns True on
 # every launch, and the runtime `npm install` it triggers (a) can never
 # converge against the partial monorepo and (b) races itself across concurrent
-# embedded-chat (/api/pty) connections → ENOTEMPTY → the chat tab dies with a
+# standalone TUI launches → ENOTEMPTY → the TUI fails with a
 # 502 / "[session ended]". Pointing at the prebuilt bundle sidesteps the whole
 # check. (A separate launcher hardening is tracked independently.)
 ENV HERMES_TUI_DIR=/opt/hermes/ui-tui

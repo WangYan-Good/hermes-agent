@@ -83,7 +83,7 @@ const FRAME_MS = 160
 const POLL_MS = 2500
 
 // Only the standalone TUI owns a real terminal it can splat image escapes into;
-// when piped (or running under the dashboard PTY the gateway resolves to
+// when piped (or running through a remote gateway that resolves to
 // half-blocks anyway) we never ask for graphics.
 const IS_TTY = Boolean(process.stdout?.isTTY)
 

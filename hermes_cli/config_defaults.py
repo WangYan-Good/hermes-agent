@@ -1453,11 +1453,6 @@ DEFAULT_CONFIG = {
 
     # Web dashboard settings
     "dashboard": {
-        # Default for dashboard chat; explicit browser/profile preferences win.
-        # Terminal remains a supported compatibility interface.
-        "chat": {
-            "default_mode": "native",
-        },
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
         # Process-isolation rollout controls. Runtime reads these through the
         # raw config loader, so tui_gateway.server also owns explicit defaults.

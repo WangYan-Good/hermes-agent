@@ -166,21 +166,6 @@ export class NativeAttachments {
       finally { this.cancelling.delete(occurrence); if (this.current(scope, epoch)) this.set({}); }
     }
   };
-  get pendingOperations() { return this.controllers.size > 0 || this.cancelling.size > 0 || this.preparing !== null; }
-  discardForHandoff = async () => {
-    if (this.state.uncertain || this.state.recovering || this.pendingOperations) throw new Error('Wait for attachment operations');
-    const scope = this.scope();
-    for (const item of this.state.items.filter(a => !['submitted', 'cancelled'].includes(a.state))) {
-      if (item.id) {
-        if (!scope || !this.authority) throw new Error('Attachment ownership unavailable');
-        const result = await this.rpc('attachment.cancel', { ...this.params(scope), attachment_id: item.id }) as { attachments?: NativeAttachment[] };
-        if (result.attachments?.find(a => a.id === item.id)?.state !== 'cancelled') throw new Error('Attachment is owned by a turn');
-      }
-      this.update(item.occurrence_id, { state: 'cancelled' });
-      if (item.preview) URL.revokeObjectURL(item.preview);
-      this.sources.delete(item.occurrence_id);
-    }
-  };
   submitPayload(): Partial<DraftAuthority> & { attachment_ids?: string[] } {
     const selected = this.state.items.filter(a => !['cancelled', 'submitted'].includes(a.state));
     if (!selected.length) return {};

@@ -12,7 +12,7 @@ token — so this module provides two credential shapes:
 
 2. **A process-lifetime internal credential** (``internal_ws_credential`` /
    ``consume_internal_credential``). This authenticates *server-spawned*
-   WS clients — specifically the embedded-TUI PTY child, which attaches to
+   WS clients that attach to
    ``/api/ws`` (JSON-RPC gateway) and ``/api/pub`` (event sidecar) over
    loopback. A single-use 30s ticket is the wrong shape for that link: the
    child reads its attach URL once at startup and **reuses it on every
@@ -111,7 +111,7 @@ def internal_ws_credential() -> str:
     """Return the process-lifetime internal WS credential, minting it once.
 
     Used by the server to authenticate WS clients it spawns itself (the
-    embedded-TUI PTY child). The value is stable for the life of the process,
+    trusted internal gateway client). The value is stable for the life of the process,
     multi-use, and never expires — so a server-spawned child can reconnect
     its ``/api/ws`` / ``/api/pub`` sockets indefinitely without re-minting.
 

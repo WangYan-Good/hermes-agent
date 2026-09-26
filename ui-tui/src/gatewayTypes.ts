@@ -626,7 +626,7 @@ export type GatewayEvent =
       type: 'session.owner_lost'
     }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }
-  | { payload: SessionInfo; session_id?: string; type: 'session.handoff_status' | 'session.info' }
+  | { payload: SessionInfo; session_id?: string; type: 'session.info' }
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
   | { payload?: { kind?: string }; session_id?: string; type: 'reaction' }
   | { payload?: undefined; session_id?: string; type: 'message.start' }
@@ -660,7 +660,6 @@ export type GatewayEvent =
       session_id?: string
       type: 'wake.detected'
     }
-  | { payload?: { reason?: string }; session_id?: string; type: 'dashboard.new_session_requested' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
   | {
       payload?: { level?: 'info' | 'warn' | 'error'; message?: string }

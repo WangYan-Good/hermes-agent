@@ -397,7 +397,6 @@ export interface ComposerActions {
 }
 
 export interface ComposerRefs {
-  inputRef: MutableRefObject<string>
   historyDraftRef: MutableRefObject<string>
   historyRef: MutableRefObject<string[]>
   queueEditRef: MutableRefObject<null | number>
@@ -615,7 +614,6 @@ export interface AppLayoutTranscriptProps {
 export interface AppLayoutProps {
   actions: AppLayoutActions
   composer: AppLayoutComposerProps
-  dashboardMode?: boolean
   mouseTracking: MouseTrackingMode
   progress: AppLayoutProgressProps
   status: AppLayoutStatusProps

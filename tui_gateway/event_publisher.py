@@ -1,11 +1,7 @@
-"""Best-effort WebSocket publisher transport for the PTY-side gateway.
+"""Best-effort WebSocket publisher transport for optional gateway event mirrors.
 
-The dashboard's `/api/pty` spawns `hermes --tui` as a child process, which
-spawns its own ``tui_gateway.entry``.  Tool/reasoning/status events fire on
-*that* gateway's transport — three processes removed from the dashboard
-server itself.  To surface them in the dashboard sidebar (`/api/events`),
-the PTY-side gateway opens a back-WS to the dashboard at startup and
-mirrors every emit through this transport.
+A configured gateway can mirror dispatcher events to an authenticated publisher
+endpoint, such as Dashboard `/api/pub`, for `/api/events` subscribers.
 
 Wire protocol: newline-framed JSON dicts (the same shape the dispatcher
 already passes to ``write``).  No JSON-RPC envelope here — the dashboard's

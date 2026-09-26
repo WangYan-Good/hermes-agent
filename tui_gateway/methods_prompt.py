@@ -365,8 +365,6 @@ def _(rid, params: dict) -> dict:
     while True:
         busy_transport = None
         with session["history_lock"]:
-            if session.get("presentation_handoff"):
-                return _err(rid, 4094, "Presentation handoff in progress")
             if session.get("running"):
                 if rich_ids is not None:
                     return _err(rid, 4093, "Wait for the current turn before sending attachments")
@@ -392,8 +390,6 @@ def _(rid, params: dict) -> dict:
     # rowId rebinding (see comment at the assignment site).
     survivor_user_row_ids = None
     with session["history_lock"]:
-        if session.get("presentation_handoff"):
-            return _err(rid, 4094, "Presentation handoff in progress")
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
         # racing the in-flight child on the same stored session (interleaved

@@ -696,7 +696,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): Gate
     // Kick off the config fetch once the gateway is actually ready. If handler
     // construction does this during React render, a startup transport error can
     // report through sys(), mutate transcript state, and trip React's
-    // "too many re-renders" guard in embedded dashboard PTYs.
+    // "too many re-renders" guard in the Ink renderer.
     ensureAgentsNudgeConfig()
 
     // Arm "Hey Hermes" if this surface owns it (server gates on config).

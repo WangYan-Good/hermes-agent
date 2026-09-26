@@ -11,7 +11,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $petBox } from '../app/petFlashStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { usePet } from '../app/usePet.js'
-import { DASHBOARD_TUI_MODE, INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
+import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
 import {
@@ -50,8 +50,8 @@ const MIN_GUTTER_BODY_COLS = 72
 
 export type AppScreenMode = 'alternate' | 'inline'
 
-export const appScreenMode = (inlineMode: boolean, dashboardMode: boolean): AppScreenMode =>
-  inlineMode && !dashboardMode ? 'inline' : 'alternate'
+export const appScreenMode = (inlineMode: boolean): AppScreenMode =>
+  inlineMode ? 'inline' : 'alternate'
 
 // Petdex mascot — a small floating overlay riding the bottom-right corner just
 // above the status bar, with a little top/left breathing room. It reserves no
@@ -528,7 +528,6 @@ const StatusRulePane = memo(function StatusRulePane({
 export const AppLayout = memo(function AppLayout({
   actions,
   composer,
-  dashboardMode = DASHBOARD_TUI_MODE,
   mouseTracking,
   progress,
   status,
@@ -537,12 +536,7 @@ export const AppLayout = memo(function AppLayout({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  // Dashboard transcript requires a viewport-bounded root: its ScrollBox owns
-  // history and clipping, while the alternate screen lets Ink address rows
-  // absolutely. Relative updates in the primary buffer can lose their anchor
-  // while live output grows or wraps and then overwrite settled transcript.
-  // Standalone users may still opt into inline mode for native scrollback.
-  const screenMode = appScreenMode(INLINE_MODE, dashboardMode)
+  const screenMode = appScreenMode(INLINE_MODE)
   const Shell = screenMode === 'inline' ? Fragment : AlternateScreen
   const shellProps = screenMode === 'inline' ? {} : { mouseTracking }
 

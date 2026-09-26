@@ -21,14 +21,14 @@ describe('output stream router', () => {
   afterEach(() => vi.useRealTimers())
 
   it('keeps standalone TUI filtering unchanged', () => {
-    const router = createOutputStreamRouter({ dashboardMode: false })
+    const router = createOutputStreamRouter({ bufferInactive: false })
 
     expect(router.route(delta('sid-b', 'B'), 'sid-a')).toBe('ignored')
     expect(getOutputStreamsState().streams['sid-b']).toBeUndefined()
   })
 
-  it('buffers inactive display events only in dashboard mode', () => {
-    const router = createOutputStreamRouter({ dashboardMode: true })
+  it('buffers inactive display events when explicitly enabled', () => {
+    const router = createOutputStreamRouter({ bufferInactive: true })
 
     expect(router.route(delta('sid-b', 'B'), 'sid-a')).toBe('inactive-output')
     router.flush()
@@ -37,14 +37,14 @@ describe('output stream router', () => {
   })
 
   it('classifies inactive control requests separately', () => {
-    const router = createOutputStreamRouter({ dashboardMode: true })
+    const router = createOutputStreamRouter({ bufferInactive: true })
 
     expect(router.route(clarify('sid-b', 'choose'), 'sid-a')).toBe('inactive-control')
   })
 
   it('coalesces inactive message deltas at the configured batch interval', () => {
     vi.useFakeTimers()
-    const router = createOutputStreamRouter({ batchMs: 20, dashboardMode: true })
+    const router = createOutputStreamRouter({ batchMs: 20, bufferInactive: true })
 
     router.route(delta('sid-b', 'a'), 'sid-a')
     router.route(delta('sid-b', 'b'), 'sid-a')
@@ -57,7 +57,7 @@ describe('output stream router', () => {
   })
 
   it('passes gateway events through and tracks active display metadata without buffering it', () => {
-    const router = createOutputStreamRouter({ dashboardMode: true })
+    const router = createOutputStreamRouter({ bufferInactive: true })
 
     expect(router.route({ payload: { skin: {} }, type: 'gateway.ready' }, 'sid-a')).toBe('active')
     expect(router.route(delta('sid-a', 'A'), 'sid-a')).toBe('active')
@@ -69,7 +69,7 @@ describe('output stream router', () => {
 
   it('discards a pending batch when disposed', () => {
     vi.useFakeTimers()
-    const router = createOutputStreamRouter({ batchMs: 20, dashboardMode: true })
+    const router = createOutputStreamRouter({ batchMs: 20, bufferInactive: true })
 
     router.route(delta('sid-b', 'later'), 'sid-a')
     router.dispose()
@@ -79,7 +79,7 @@ describe('output stream router', () => {
   })
   it('keeps a pending batch across an ordinary gateway ready event', () => {
     vi.useFakeTimers()
-    const router = createOutputStreamRouter({ batchMs: 20, dashboardMode: true })
+    const router = createOutputStreamRouter({ batchMs: 20, bufferInactive: true })
 
     router.route(delta('sid-b', 'still live'), 'sid-a')
     expect(router.route({ payload: {}, type: 'gateway.ready' }, 'sid-a')).toBe('active')
@@ -90,7 +90,7 @@ describe('output stream router', () => {
 
   it('drops disconnected transport deltas on reconnect ready and remains reusable', () => {
     vi.useFakeTimers()
-    const router = createOutputStreamRouter({ batchMs: 20, dashboardMode: true })
+    const router = createOutputStreamRouter({ batchMs: 20, bufferInactive: true })
 
     router.route(delta('sid-b', 'stale'), 'sid-a')
     router.disconnect()
@@ -105,7 +105,7 @@ describe('output stream router', () => {
   })
 
   it('ignores all events after disposal', () => {
-    const router = createOutputStreamRouter({ dashboardMode: true })
+    const router = createOutputStreamRouter({ bufferInactive: true })
 
     router.dispose()
     expect(

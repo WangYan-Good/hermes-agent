@@ -225,7 +225,7 @@ Older configs used a top-level `custom_providers:` list (with `base_url` instead
 
 - **CLI** (`hermes chat`): next `hermes chat` invocation.
 - **Gateway** (Telegram, Discord, Slack, etc.): next *new* session. Existing sessions keep their model. Restart the gateway (`hermes gateway restart`) if you want to force all sessions to pick up the change.
-- **Dashboard chat tab** (`/chat`): next new PTY. The currently-open chat keeps its model — use `/model` inside it to hot-swap.
+- **Dashboard chat tab** (`/chat`): next new Native session. The currently-open chat keeps its model — use `/model` inside it to hot-swap.
 
 Changes never invalidate prompt caches on running sessions. That's deliberate: swapping the main model inside a session requires a cache reset (the system prompt contains model-specific content), and we reserve that for the explicit `/model` slash command inside chat.
 

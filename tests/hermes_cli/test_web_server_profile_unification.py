@@ -635,20 +635,6 @@ class TestProfileScopedTelegramOnboarding:
         assert default_cfg.get("platforms", {}).get("telegram", {}).get("enabled") is not True
 
 
-class TestProfileScopedChatPty:
-    def test_chat_argv_scopes_hermes_home(self, isolated_profiles, monkeypatch):
-        import hermes_cli.web_server as web_server
-
-        monkeypatch.setattr(
-            "hermes_cli.main._make_tui_argv",
-            lambda root, tui_dev=False: (["cat"], None),
-            raising=False,
-        )
-        argv, cwd, env = web_server._resolve_chat_argv(profile="worker_beta")
-        assert env is not None
-        assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
-        # Scoped chat must NOT attach to the dashboard's in-memory gateway.
-        assert "HERMES_TUI_GATEWAY_URL" not in env
 
 
 class TestProfileScopedAudio:

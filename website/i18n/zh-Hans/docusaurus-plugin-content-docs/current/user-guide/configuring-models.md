@@ -125,7 +125,7 @@ auxiliary:
 
 - **CLI**（`hermes chat`）：下次执行 `hermes chat` 时生效。
 - **Gateway**（Telegram、Discord、Slack 等）：下一个*新*会话生效。现有会话保持原有模型。如需强制所有会话使用新配置，重启 gateway（`hermes gateway restart`）。
-- **仪表板聊天标签页**（`/chat`）：下一个新 PTY 生效。当前打开的聊天保持原有模型 — 在聊天内使用 `/model` 进行热切换。
+- **仪表板聊天标签页**（`/chat`）：下一个 Native 会话生效。当前打开的聊天保持原有模型 — 在聊天内使用 `/model` 进行热切换。
 
 更改不会使运行中会话的 prompt 缓存失效。这是有意为之：在会话内切换主模型需要重置缓存（系统 prompt 包含模型特定内容），该操作保留给聊天内的显式 `/model` 斜杠命令。
 

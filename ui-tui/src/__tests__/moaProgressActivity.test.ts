@@ -22,7 +22,7 @@ const buildCtx = (appended: Msg[]) =>
       gw: { request: () => undefined },
       rpc: async () => null
     },
-    outputRouter: createOutputStreamRouter({ dashboardMode: false }),
+    outputRouter: createOutputStreamRouter({ bufferInactive: false }),
     session: {
       STARTUP_RESUME_ID: '',
       colsRef: ref(80),

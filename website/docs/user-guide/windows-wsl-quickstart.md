@@ -10,7 +10,7 @@ sidebar_position: 2
 Hermes Agent now supports **both** native Windows and WSL2.  This page covers the WSL2 path; for the native PowerShell install see the dedicated **[Windows (Native) Guide](./windows-native.md)**.
 
 **When to pick WSL2 over native:**
-- You want to use the dashboard's embedded terminal (`/chat` tab) — that pane requires a POSIX PTY and is WSL2-only.
+- You prefer a Linux environment for terminal tools. Dashboard `/chat` uses Native Chat and does not require WSL2.
 - You're doing POSIX-heavy development work and want your Hermes sessions to share the same filesystem / paths as your dev tools.
 - You already have a WSL2 environment and don't want to maintain a second install.
 

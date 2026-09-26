@@ -13,7 +13,7 @@
 @source '../node_modules/@nous-research/ui/dist';
 
 /* ------------------------------------------------------------------ */
-/* JetBrains Mono — bundled for the embedded TUI (/chat tab).          */
+/* JetBrains Mono — bundled for Dashboard code and terminal views.          */
 /* Gives the terminal a proper monospace font even on systems where    */
 /* the user doesn't have one installed locally; xterm.js picks it up   */
 /* via ChatPage's `fontFamily` option.                                 */

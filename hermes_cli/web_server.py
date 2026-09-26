@@ -265,7 +265,7 @@ def _parent_start_markers_match(actual: str, expected: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
+# Per-channel subscriber registry used by /api/pub (gateway publisher → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
 # drops AND the publisher has disconnected.
@@ -368,13 +368,6 @@ def _eager_reconcile_own_session_db() -> None:
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
-    app.state.pty_active_session_files = {}  # dict[str, Path]
-    # Serializes chat-argv resolution so concurrent /api/pty connections
-    # don't trigger overlapping ``npm install`` / ``npm run build`` work.
-    # On app.state (not a module global) so the Lock binds to the running
-    # event loop during lifespan startup — see _get_event_state's docstring.
-    app.state.chat_argv_lock = asyncio.Lock()
-
     # Bring this profile's state.db schema current BEFORE the first
     # session-list poll (#79531/#80037). Migrations used to run lazily on
     # the first writable open — typically the user's first new session —
@@ -428,9 +421,6 @@ async def _lifespan(app: "FastAPI"):
         )
         cron_thread.start()
 
-    # Reap idle/dead keep-alive PTY sessions in the background (30-min TTL).
-    pty_reaper_task = asyncio.create_task(run_reaper(PTY_REGISTRY))
-
     # Periodic authenticated self-test (feeds the ``dashboard`` component on
     # /api/status).  The loop exits immediately when httpx is unavailable.
     selftest_task = asyncio.create_task(_dashboard_selftest_loop())
@@ -448,10 +438,8 @@ async def _lifespan(app: "FastAPI"):
         if cron_stop is not None:
             cron_stop.set()
         attachment_reaper_task.cancel()
-        pty_reaper_task.cancel()
         selftest_task.cancel()
         auto_archive_task.cancel()
-        await PTY_REGISTRY.close_all()
         if os.getenv("HERMES_DESKTOP") == "1":
             _terminate_desktop_managed_gateway()
 
@@ -471,29 +459,6 @@ def _get_event_state(app: "FastAPI"):
         app.state.event_channels = {}
         app.state.event_lock = asyncio.Lock()
         return app.state.event_channels, app.state.event_lock
-
-
-def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
-    """Return the chat-argv resolution lock from app.state.
-
-    Mirrors :func:`_get_event_state`: prefers the lifespan-initialised Lock
-    (created on the correct event loop) but lazily initialises it for
-    non-``with`` TestClient usages.
-    """
-    try:
-        return app.state.chat_argv_lock
-    except AttributeError:
-        app.state.chat_argv_lock = asyncio.Lock()
-        return app.state.chat_argv_lock
-
-
-def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
-    """Return channel -> active-session-file state for dashboard PTYs."""
-    try:
-        return app.state.pty_active_session_files
-    except AttributeError:
-        app.state.pty_active_session_files = {}
-        return app.state.pty_active_session_files
 
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
@@ -533,9 +498,9 @@ def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
     global _SSH_OWNER_NONCE
     _SSH_OWNER_NONCE = nonce
 
-# In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
+# In-browser Chat tab (/chat, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
-# `/api/ws` + `/api/pty` WebSockets, so the embedded-chat surface is an
+# `/api/ws` WebSockets, so the embedded-chat surface is an
 # unconditional part of the dashboard.  Kept as a module-level constant (rather
 # than inlining ``True`` at every gate) so the WS endpoints and the SPA token
 # injection share a single, testable seam.
@@ -604,7 +569,7 @@ def _has_valid_session_token(request: Request) -> bool:
 
 # Routes that may also authenticate via a ``?token=`` query param, for download
 # links opened by the OS shell or a new browser tab where the session header
-# can't be set. Kept narrow — same query-token tradeoff as the /api/pty WS.
+# can't be set. Kept narrow — same query-token tradeoff as the /api/ws transport.
 _QUERY_TOKEN_API_PATHS: frozenset[str] = frozenset({"/api/files/download"})
 
 
@@ -1039,7 +1004,6 @@ def _timezone_options() -> List[str]:
 
 
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
-    "dashboard.chat.default_mode": {"type": "select", "label": "Chat Interface — profile default", "description": "Native: browser chat. Terminal: classic TUI. Browser overrides take priority.", "options": ["native", "terminal"]},
     "timezone": {
         "type": "select",
         "description": "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
@@ -2523,9 +2487,9 @@ def _decode_chat_image_upload(payload: ChatImageUpload) -> tuple[bytes, str, str
 
 @app.post("/api/chat/image-upload")
 async def upload_chat_image(payload: ChatImageUpload, profile: Optional[str] = None):
-    """Persist a browser-provided chat image where the embedded TUI can read it.
+    """Persist a browser-provided chat image for authenticated chat clients.
 
-    The dashboard /chat page runs Hermes inside an xterm.js PTY. Browser
+    The dashboard /chat page runs Native Hermes chat. Browser
     clipboard image bytes are not visible to the server-side clipboard, so the
     page uploads them here, then drives the TUI's ``/image <path>`` command
     with the returned gateway-visible path. Files land under
@@ -2682,7 +2646,7 @@ async def download_managed_file(request: Request, path: str):
     that live on *this* gateway's disk, not theirs. Auth-gated like every other
     managed-files route — ``auth_middleware`` additionally accepts the session
     token as a ``?token=`` query param here so a shell/browser-opened download
-    (which can't set the session header) still authenticates. See ``/api/pty``
+    (which can't set the session header) still authenticates. See ``/api/ws``
     for the same query-token precedent. Chromium identifies ``<audio>`` and
     ``<video>`` subresource requests through ``Sec-Fetch-Dest``; serve those
     inline for compatibility with Desktop builds that still use this route as
@@ -5241,7 +5205,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
         return
     await ws.accept()
 
-    # Profile via query param, like /api/pty and /api/console: the provider
+    # Profile via query param, like /api/ws and /api/console: the provider
     # chain + API keys must resolve from the requesting profile's config, not
     # the dashboard's own. The streamer captures its config at resolve time,
     # so scoping resolution scopes the whole session.
@@ -6856,7 +6820,7 @@ def get_model_info(profile: Optional[str] = None):
 # ---------------------------------------------------------------------------
 # Model assignment — pick provider+model for main slot or auxiliary slots.
 # Mirrors the model.options JSON-RPC from tui_gateway but uses REST so the
-# Models page (which has no chat PTY open) can drive it.
+# Models page (which has no active chat) can drive it.
 # ---------------------------------------------------------------------------
 
 # Canonical auxiliary task slots. Keep in sync with DEFAULT_CONFIG["auxiliary"]
@@ -7144,7 +7108,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
     """Assign a model to the main slot or an auxiliary task slot.
 
     Writes to ``~/.hermes/config.yaml`` — applies to **new** sessions only.
-    The currently running chat PTY (if any) is not affected; use the
+    The currently running chat session (if any) is not affected; use the
     ``/model`` slash command inside a chat to hot-swap that specific session.
     """
     scope = (body.scope or "").strip().lower()
@@ -15840,152 +15804,7 @@ async def get_models_analytics(
     return await asyncio.to_thread(_get_models_analytics, days, profile)
 
 
-# ---------------------------------------------------------------------------
-# /api/pty — PTY-over-WebSocket bridge for the dashboard "Chat" tab.
-#
-# The endpoint spawns the same ``hermes --tui`` binary the CLI uses, behind
-# a POSIX pseudo-terminal, and forwards bytes + resize escapes across a
-# WebSocket.  The browser renders the ANSI through xterm.js (see
-# web/src/pages/ChatPage.tsx).
-#
-# Auth: ``?token=<session_token>`` query param (browsers can't set
-# Authorization on the WS upgrade).  Same ephemeral ``_SESSION_TOKEN`` as
-# REST.  Localhost-only — we defensively reject non-loopback clients even
-# though uvicorn binds to 127.0.0.1.
-# ---------------------------------------------------------------------------
-
-# PTY bridge: POSIX uses pty_bridge (fcntl/termios/ptyprocess); native Windows
-# uses win_pty_bridge (pywinpty/ConPTY, already a declared dependency).  Both
-# expose the same public surface — spawn/read/write/resize/close/is_available —
-# so the /api/pty WebSocket handler needs no platform guards.
-if sys.platform.startswith("win"):
-    try:
-        from hermes_cli.win_pty_bridge import WinPtyBridge as PtyBridge, PtyUnavailableError
-        _PTY_BRIDGE_AVAILABLE = True
-    except ImportError:  # pragma: no cover - pywinpty missing
-        PtyBridge = None  # type: ignore[assignment]
-        _PTY_BRIDGE_AVAILABLE = False
-
-        class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
-            """Stub when win_pty_bridge cannot be imported."""
-            pass
-else:
-    try:
-        from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
-        _PTY_BRIDGE_AVAILABLE = True
-    except ImportError:  # pragma: no cover - dev env without ptyprocess
-        PtyBridge = None  # type: ignore[assignment]
-        _PTY_BRIDGE_AVAILABLE = False
-
-        class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
-            """Stub on platforms where pty_bridge can't be imported."""
-            pass
-
-_RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
-_PTY_READ_CHUNK_TIMEOUT = 0.2
-# Back-off delay between idle PTY reads so a quiet terminal does not spin
-# the event loop.  A positive sleep lets other coroutines run and keeps
-# dashboard idle CPU low (#42627).
-_PTY_IDLE_BACKOFF = 0.05
-
-# Keep-alive PTY sessions: a terminal connecting with ``?attach=<token>`` is
-# bound to a process that survives disconnect/refresh and is reattachable.
-from hermes_cli.pty_session import PtySessionRegistry, RegistryFull, run_reaper  # noqa: E402
-
-PTY_REGISTRY = PtySessionRegistry(
-    ttl=30 * 60,
-    max_sessions=16,
-    buffer_cap=1 * 1024 * 1024,
-    read_timeout=_PTY_READ_CHUNK_TIMEOUT,
-)
-
-
-async def _legacy_pump(ws: "WebSocket", bridge) -> None:
-    """Original 1:1 socket<->PTY pump: stream until disconnect, then close the
-    bridge. Used when no ``?attach=`` token is supplied (keep-alive opt-in).
-
-    Behavior is identical to the pre-keep-alive ``pty_ws`` body, including the
-    #54028 half-open-socket protection (reader EOF → close the WS so the
-    writer's ``ws.receive()`` unparks) and the #53227 ``to_thread`` offloads
-    for the blocking ``bridge.close()``.
-    """
-    loop = asyncio.get_running_loop()
-
-    # --- reader task: PTY master → WebSocket ----------------------------
-    async def pump_pty_to_ws() -> None:
-        try:
-            while True:
-                chunk = await loop.run_in_executor(
-                    None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
-                )
-                if chunk is None:  # EOF
-                    return
-                if not chunk:  # no data this tick; yield control and retry
-                    await asyncio.sleep(_PTY_IDLE_BACKOFF)
-                    continue
-                try:
-                    await ws.send_bytes(chunk)
-                except Exception:
-                    return
-        finally:
-            # The child has exited (EOF) or the send side broke.  Close the
-            # WebSocket so the writer loop's ``ws.receive()`` returns instead
-            # of blocking forever — otherwise, when the browser's socket is
-            # half-open (no FIN delivered, common on macOS/launchd) the
-            # handler never reaches its ``finally`` and the PTY's fds leak.
-            # With dashboard auto-reconnect (#52962) every dropped socket then
-            # stacks a fresh PTY on top of the orphaned one, exhausting fds.
-            #
-            # Reap the bridge here too (close() is idempotent): on child EOF the
-            # writer loop's ``finally`` is the usual closer, but if the handler
-            # task is cancelled the instant we close the WS, that ``finally``
-            # can be skipped, leaking the PTY. Closing from the EOF path makes
-            # the reap independent of that cancellation race (#54028).
-            try:
-                await asyncio.to_thread(bridge.close)
-            except Exception:
-                pass
-            try:
-                await ws.close()
-            except Exception:
-                pass
-
-    reader_task = asyncio.create_task(pump_pty_to_ws())
-
-    # --- writer loop: WebSocket → PTY master ----------------------------
-    try:
-        while True:
-            try:
-                msg = await ws.receive()
-            except RuntimeError:
-                # Raised when ws.receive() is called after the socket is
-                # already disconnected (e.g. closed by the reader task above).
-                break
-            if msg.get("type") == "websocket.disconnect":
-                break
-            raw = msg.get("bytes")
-            if raw is None:
-                text = msg.get("text")
-                raw = text.encode("utf-8") if isinstance(text, str) else b""
-            if not raw:
-                continue
-            # Resize escape is consumed locally, never written to the PTY.
-            match = _RESIZE_RE.match(raw)
-            if match and match.end() == len(raw):
-                bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
-                continue
-            bridge.write(raw)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        reader_task.cancel()
-        try:
-            await reader_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        await asyncio.to_thread(bridge.close)
-
-
+# Shared WebSocket authentication and channel validation.
 _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # Starlette's TestClient reports the peer as "testclient"; treat it as
 # loopback so tests don't need to rewrite request scope.
@@ -16148,7 +15967,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
       (and native clients) use.
     * ``?internal=<process-credential>`` — the process-lifetime internal
       credential, used only by WS clients the server spawns itself (the
-      embedded-TUI PTY child attaching to ``/api/ws`` and ``/api/pub``). It
+      trusted internal gateway client attaching to ``/api/ws`` and ``/api/pub``). It
       is multi-use and never expires so the child can reconnect, and is never
       injected into the SPA — see ``dashboard_auth.ws_tickets`` for the
       threat model.
@@ -16171,7 +15990,7 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             consume_ticket,
         )
 
-        # Server-spawned children (PTY child → /api/ws, /api/pub) present the
+        # Trusted internal clients (/api/ws, /api/pub) present the
         # multi-use internal credential rather than a single-use ticket, so
         # they survive reconnects and slow cold boots.
         internal = ws.query_params.get("internal", "")
@@ -16218,259 +16037,7 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
     return _ws_auth_reason(ws)[0] is None
 
-# Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
-# and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
-# the chat tab generates on mount; entries auto-evict when the last subscriber
-# drops AND the publisher has disconnected.
-# (Channel state and the chat-argv lock are initialised in _lifespan on app
-# startup — see _get_event_state / _get_chat_argv_lock above.)
-
-
-def _resolve_chat_argv(
-    resume: Optional[str] = None,
-    sidecar_url: Optional[str] = None,
-    profile: Optional[str] = None,
-    active_session_file: Optional[str] = None,
-) -> tuple[list[str], Optional[str], Optional[dict]]:
-    """Resolve the argv + cwd + env for the chat PTY.
-
-    Default: whatever ``hermes --tui`` would run.  Tests monkeypatch this
-    function to inject a tiny fake command (``cat``, ``sh -c 'printf …'``)
-    so nothing has to build Node or the TUI bundle.
-
-    Session resume is propagated via the ``HERMES_TUI_RESUME`` env var —
-    matching what ``hermes_cli.main._launch_tui`` does for the CLI path.
-    Appending ``--resume <id>`` to argv doesn't work because ``ui-tui`` does
-    not parse its argv.
-
-    ``HERMES_TUI_GATEWAY_URL`` is injected so the PTY child can attach to
-    this process's in-memory ``tui_gateway`` instance instead of spawning
-    its own Python gateway subprocess.
-
-    `sidecar_url` (when set) is forwarded as ``HERMES_TUI_SIDECAR_URL`` so
-    the spawned ``tui_gateway.entry`` can mirror dispatcher emits to the
-    dashboard's ``/api/pub`` endpoint (see :func:`pub_ws`).
-
-    `active_session_file` (when set) is forwarded as
-    ``HERMES_TUI_ACTIVE_SESSION_FILE``. The TUI writes the current session id
-    there whenever it creates/resumes/switches sessions, giving the dashboard a
-    small cross-process breadcrumb for reconnecting after an unexpected browser
-    WebSocket close.
-
-    `profile` (when set) scopes the ENTIRE chat to that profile by pointing
-    ``HERMES_HOME`` at the profile dir in the child env. Every spawned
-    process (the TUI and the ``tui_gateway.entry`` it launches) resolves
-    ``get_hermes_home()`` from that env var at its own import, so the child
-    binds the profile's config, skills, memory, and state.db from the start
-    — the same propagation ``hermes -p <name>`` performs. The in-process
-    ``HERMES_TUI_GATEWAY_URL`` attach is SKIPPED for scoped chats: the
-    dashboard's in-memory gateway runs under the dashboard's own profile,
-    so a profile-scoped chat must spawn its own gateway subprocess.
-    """
-    from hermes_cli.main import PROJECT_ROOT, _apply_tui_python_env, _make_tui_argv
-
-    profile_dir: Optional[Path] = None
-    requested = (profile or "").strip()
-    if requested and requested.lower() != "current":
-        profile_dir = _resolve_profile_dir(requested)
-
-    argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
-    # Hermes TUI child: build via the single spawn-env factory (profile-home
-    # contract applied; secrets kept — the spawned agent needs provider creds).
-    # An explicit profile scope below still overrides HERMES_HOME afterwards.
-    from tools.environments.local import build_subprocess_env
-    env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=True)
-    try:
-        from hermes_cli.config import apply_terminal_config_to_env
-        apply_terminal_config_to_env(env=env)
-    except Exception:
-        _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
-    _apply_tui_python_env(env)
-    env.setdefault("NODE_ENV", "production")
-    # Browser chat uses a fixed xterm alternate-screen viewport. Ink owns the
-    # transcript ScrollBox; xterm forwards wheel-only SGR reports through PTY.
-    from hermes_cli.dashboard_tui_env import apply_dashboard_tui_render_env
-    apply_dashboard_tui_render_env(env)
-    # The dashboard terminal is xterm.js, which always renders 24-bit RGB.
-    # But chalk inside the TUI child decides its color depth from the
-    # SERVER process env — and hosted/cloud deploys run the dashboard under
-    # a process manager (container init, systemd) with no COLORTERM, so
-    # chalk downgrades every hex color to the xterm 256 palette. The skin's
-    # bronze border #CD7F32 snaps to palette 173 (#D7875F, salmon-red) and
-    # the banner reads red/yellow instead of gold. Local launches dodge
-    # this only because the operator's interactive terminal leaks
-    # COLORTERM=truecolor into os.environ. Backfill it for the PTY child;
-    # setdefault so an explicit operator value still wins.
-    env.setdefault("COLORTERM", "truecolor")
-    if profile_dir is not None:
-        env["HERMES_HOME"] = str(profile_dir)
-
-    if resume:
-        _resume_db = _open_session_db_for_profile(
-            requested if profile_dir is not None else None,
-            read_only=True,
-        )
-        try:
-            latest_resume, _latest_path = _session_latest_descendant(resume, _resume_db)
-        finally:
-            _resume_db.close()
-        if latest_resume:
-            resume = latest_resume
-        env["HERMES_TUI_RESUME"] = resume
-
-    if sidecar_url:
-        env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
-
-    if active_session_file:
-        env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
-
-    # Profile-scoped chats must NOT attach to the dashboard's in-memory
-    # gateway — it runs under the dashboard's own profile. Without the
-    # attach URL, gatewayClient spawns its own `tui_gateway.entry`, which
-    # inherits the profile HERMES_HOME set above.
-    if profile_dir is None:
-        if gateway_ws_url := _build_gateway_ws_url():
-            env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
-
-    return list(argv), str(cwd) if cwd else None, env
-
-
-# Hosts that mean "listen on every interface" — the server should bind to
-# them, but an in-container client must NOT dial them: dialing 0.0.0.0
-# resolves to "any local interface", which on most platforms routes through
-# the kernel's wildcard stack and behind a forward proxy (HTTPS_PROXY with
-# a NO_PROXY that doesn't list 0.0.0.0) gets MITM'd into a failed handshake
-# (issue #58993).  The fix is to use a loopback address for the client
-# netloc while leaving the bind host alone.
-_WILDCARD_HOSTS = frozenset({"0.0.0.0", "::"})
-
-
-def _resolve_client_ws_host() -> Optional[str]:
-    """Return the host the in-container WS client should dial.
-
-    Resolution order:
-
-    1. Explicit ``HERMES_DASHBOARD_WS_HOST`` env var — wins always. Operators
-       running the dashboard behind a forward proxy can pin a routable host
-       (e.g. ``127.0.0.1``, the container's internal IP, or a sidecar DNS
-       name) and bypass auto-detection entirely.
-    2. The configured bind host — if it's a wildcard (``0.0.0.0`` / ``::``),
-       substitute ``127.0.0.1`` since both the dashboard and its TUI child
-       run in the same container.
-    3. Any other bind host (loopback or LAN IP) — preserved verbatim.
-    """
-    explicit = os.environ.get("HERMES_DASHBOARD_WS_HOST", "").strip()
-    if explicit:
-        return explicit
-
-    host = getattr(app.state, "bound_host", None)
-    if not host:
-        return None
-
-    if host in _WILDCARD_HOSTS:
-        return "127.0.0.1"
-
-    return host
-
-
-def _build_gateway_ws_url() -> Optional[str]:
-    """ws:// URL the PTY child should attach to for JSON-RPC gateway traffic.
-
-    Loopback / ``--insecure``: ``?token=<_SESSION_TOKEN>``.
-
-    Gated mode: the legacy token path is rejected by ``_ws_auth_ok``, so the
-    server-spawned PTY child authenticates with the process-lifetime internal
-    credential (``?internal=``). It must NOT use a single-use browser ticket:
-    the child reads this URL once at startup and reuses it on every reconnect,
-    and a 30s-TTL ticket can expire before a slow cold boot even dials.
-    """
-    host = _resolve_client_ws_host()
-    port = getattr(app.state, "bound_port", None)
-
-    if not host or not port:
-        return None
-
-    netloc = (
-        f"[{host}]:{port}"
-        if ":" in host and not host.startswith("[")
-        else f"{host}:{port}"
-    )
-
-    if getattr(app.state, "auth_required", False):
-        from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
-
-        qs = urllib.parse.urlencode({"internal": internal_ws_credential()})
-    else:
-        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN})
-
-    return f"ws://{netloc}/api/ws?{qs}"
-
-
-async def _resolve_chat_argv_async(
-    resume: Optional[str] = None,
-    sidecar_url: Optional[str] = None,
-    profile: Optional[str] = None,
-    active_session_file: Optional[str] = None,
-) -> tuple[list[str], Optional[str], Optional[dict]]:
-    """Resolve chat argv without blocking the dashboard event loop.
-
-    ``_resolve_chat_argv`` may run ``npm install`` / ``npm run build`` through
-    ``_make_tui_argv``.  Keep that synchronous work off the WebSocket event
-    loop so reverse proxies and existing dashboard connections can continue
-    to exchange keepalives while the TUI launch command is prepared.  The
-    async lock preserves the previous one-build-at-a-time behavior when
-    multiple browser tabs connect at once without occupying worker threads
-    while queued connections wait.
-    """
-    kwargs = {
-        "resume": resume,
-        "sidecar_url": sidecar_url,
-        "profile": profile,
-    }
-    if active_session_file is not None:
-        kwargs["active_session_file"] = active_session_file
-
-    async with _get_chat_argv_lock(app):
-        return await asyncio.to_thread(
-            _resolve_chat_argv,
-            **kwargs,
-        )
-
-
-def _build_sidecar_url(channel: str) -> Optional[str]:
-    """ws:// URL the PTY child should publish events to, or None when unbound.
-
-    Loopback / ``--insecure``: uses ``?token=<_SESSION_TOKEN>``.
-
-    Gated mode: authenticates with the process-lifetime internal credential
-    (``?internal=``), the same one ``_build_gateway_ws_url`` uses. The PTY
-    child is a server-spawned process we trust; the credential is multi-use
-    and never expires, so the child can reconnect ``/api/pub`` without a new
-    URL. (This previously minted a single-use 30s ticket, which meant the
-    child could not reconnect and could miss the window on a slow cold boot.)
-    Connections authenticated this way are recorded under the
-    ``server-internal`` identity in the audit log.
-    """
-    host = _resolve_client_ws_host()
-    port = getattr(app.state, "bound_port", None)
-
-    if not host or not port:
-        return None
-
-    netloc = f"[{host}]:{port}" if ":" in host and not host.startswith("[") else f"{host}:{port}"
-
-    if getattr(app.state, "auth_required", False):
-        # Gated mode — use the internal credential so the WS upgrade survives
-        # _ws_auth_ok and the child can reconnect.
-        from hermes_cli.dashboard_auth.ws_tickets import internal_ws_credential
-
-        qs = urllib.parse.urlencode(
-            {"internal": internal_ws_credential(), "channel": channel}
-        )
-    else:
-        qs = urllib.parse.urlencode({"token": _SESSION_TOKEN, "channel": channel})
-
-    return f"ws://{netloc}/api/pub?{qs}"
+# Authenticated publisher/subscriber channels shared by Dashboard integrations.
 
 
 async def _broadcast_event(app: Any, channel: str, payload: str) -> None:
@@ -16495,37 +16062,6 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     return channel if _VALID_CHANNEL_RE.match(channel) else None
 
 
-def _active_session_file_for_channel(app: "FastAPI", channel: str) -> Path:
-    """Return the per-channel file where a dashboard TUI writes its active sid."""
-    files = _get_pty_active_session_files(app)
-    existing = files.get(channel)
-    if existing is not None:
-        return existing
-
-    fd, raw_path = tempfile.mkstemp(prefix="hermes-pty-active-", suffix=".json")
-    os.close(fd)
-    path = Path(raw_path)
-    files[channel] = path
-    return path
-
-
-def _read_active_session_file(path: Path) -> Optional[str]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-
-    session_id = str(data.get("session_id") or "").strip()
-    return session_id or None
-
-
-def _forget_active_session_file(path: Path) -> None:
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
 def _ws_close_reason(text: str) -> str:
     """Clamp a WS close reason to the protocol's 123-byte UTF-8 limit.
 
@@ -16542,7 +16078,7 @@ def _ws_close_reason(text: str) -> str:
 # ---------------------------------------------------------------------------
 # /api/console — safe Hermes Console command WebSocket.
 #
-# Unlike /api/pty, this endpoint never spawns a PTY, shell, or full Hermes CLI
+# This endpoint never spawns a PTY, shell, or full Hermes CLI
 # subprocess. It runs the curated console engine in-process and exchanges
 # structured JSON frames with the dashboard xterm overlay.
 # ---------------------------------------------------------------------------
@@ -17104,237 +16640,9 @@ async def console_ws(ws: WebSocket) -> None:
                 pass
 
 
-@app.websocket("/api/pty")
-async def pty_ws(ws: WebSocket) -> None:
-    peer = ws.client.host if ws.client else "?"
-
-    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
-        _log.info("pty refused: embedded chat disabled peer=%s", peer)
-        await ws.close(code=4404, reason="embedded chat disabled")
-        return
-
-    # --- auth + host/origin/peer check (before accept so we can close
-    #     cleanly AND tell the client WHY via the close code + reason).
-    #     Each gate maps to a distinct close code so the log and the
-    #     browser banner agree on the cause:
-    #       4401 bad credential   4403 host/origin mismatch
-    #       4408 peer not allowed  4404 chat disabled
-    auth_reason, cred = _ws_auth_reason(ws)
-    mode = _ws_auth_mode()
-    if auth_reason is not None:
-        _log.warning(
-            "pty auth rejected reason=%s mode=%s cred=%s peer=%s",
-            auth_reason, mode, cred, peer,
-        )
-        await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
-        return
-
-    host_origin_reason = _ws_host_origin_reason(ws)
-    if host_origin_reason is not None:
-        _log.warning("pty refused: %s peer=%s", host_origin_reason, peer)
-        await ws.close(code=4403, reason=_ws_close_reason(host_origin_reason))
-        return
-
-    client_reason = _ws_client_reason(ws)
-    if client_reason is not None:
-        _log.warning("pty refused: %s", client_reason)
-        await ws.close(code=4408, reason=_ws_close_reason(client_reason))
-        return
-
-    from hermes_cli.pty_control import PROTOCOL, PtyControl
-    negotiated = PROTOCOL in ws.headers.get("sec-websocket-protocol", "").split(", ")
-    await ws.accept(subprotocol=PROTOCOL if negotiated else None)
-    _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
-
-    # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
-    # client and close cleanly rather than pretending the feature works.
-    if not _PTY_BRIDGE_AVAILABLE:
-        await ws.send_text(
-            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
-            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
-            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
-            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
-        )
-        await ws.close(code=1011)
-        return
-
-    # --- spawn PTY ------------------------------------------------------
-    raw_resume = ws.query_params.get("resume") or None
-    resume = raw_resume
-    profile = ws.query_params.get("profile") or None
-    channel = _channel_or_close_code(ws)
-    sidecar_url = _build_sidecar_url(channel) if channel else None
-    force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    active_session_file: Optional[Path] = None
-
-    if channel:
-        active_session_file = _active_session_file_for_channel(ws.app, channel)
-        if force_fresh:
-            resume = None
-            _forget_active_session_file(active_session_file)
-        elif not resume:
-            resume = _read_active_session_file(active_session_file)
-
-    resolve_kwargs = {
-        "resume": resume,
-        "sidecar_url": sidecar_url,
-        "profile": profile,
-    }
-    if active_session_file is not None:
-        resolve_kwargs["active_session_file"] = str(active_session_file)
-
-    try:
-        argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
-    except HTTPException as exc:
-        # Unknown/invalid profile from _resolve_profile_dir.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-    except SystemExit as exc:
-        # _make_tui_argv calls sys.exit(1) when node/npm is missing.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-
-
-    attach_token = ws.query_params.get("attach") or None
-    if negotiated and attach_token is None:
-        await ws.close(code=4400, reason="PTY control requires an attach identity")
-        return
-    registry_resume = raw_resume
-    if raw_resume and env:
-        registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
-    if attach_token is not None and (registry_resume or profile):
-        # Key explicit resumes on their canonical target, never the active-session fallback.
-        attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
-
-    control = None
-    if negotiated:
-        existing = PTY_REGISTRY._sessions.get(attach_token)
-        control = getattr(existing, "presentation_control", None) if existing else None
-        if control is None:
-            control = PtyControl(profile or "", abortable=existing is None)
-        control.viewer = ws
-        control.viewer_generation = None
-        env = dict(env or os.environ)
-        env["HERMES_TUI_PRESENTATION_URL"] = (_build_sidecar_url(channel or "chat") or "") + "&presentation=" + control.instance
-
-    def _spawn():
-        return PtyBridge.spawn(argv, cwd=cwd, env=env)
-
-    if attach_token is None:
-        # Legacy path: 1:1 socket<->PTY, killed on disconnect (unchanged).
-        try:
-            bridge = _spawn()
-        except PtyUnavailableError as exc:
-            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-            await ws.close(code=1011)
-            return
-        except (FileNotFoundError, OSError) as exc:
-            await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
-            await ws.close(code=1011)
-            return
-        await _legacy_pump(ws, bridge)
-        return
-
-    # Keep-alive path: the PTY outlives this socket; reattach by token.
-    try:
-        session, _created = await PTY_REGISTRY.attach_or_spawn(
-            attach_token, spawn=_spawn
-        )
-    except PtyUnavailableError as exc:
-        if control:
-            control.forget()
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-    except (FileNotFoundError, OSError, RegistryFull) as exc:
-        if control:
-            control.forget()
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-
-    if control:
-        session.presentation_control = control
-
-    # A fresh xterm cannot reliably reconstruct the TUI from an arbitrary
-    # bounded tail of alternate-screen, differential ANSI output. Reused PTYs
-    # emit a complete frame after replay so reconnects never reopen blank.
-    await session.attach(ws, force_redraw=not _created)
-
-    async def release_presentation():
-        PTY_REGISTRY._sessions.pop(attach_token, None)
-        # Detach before close: no process-exit frame can overtake the release ACK.
-        session.detach(ws)
-        await session.close()
-        if control:
-            control.forget()
-
-    # --- writer loop: WebSocket → PTY master ----------------------------
-    # No reader task here: the session's drain task (spawned once per PTY,
-    # inside the registry) forwards PTY output to whichever socket is
-    # attached and rings-buffers it while detached.  On child EOF the drain
-    # closes the attached socket with 4410, which unparks ``ws.receive()``
-    # below — same half-open-socket protection the legacy pump has (#54028).
-    try:
-        while True:
-            try:
-                msg = await ws.receive()
-            except RuntimeError:
-                # ws.receive() after the socket is already disconnected
-                # (e.g. closed by the drain task on process exit).
-                break
-            if msg.get("type") == "websocket.disconnect":
-                break
-            if control and isinstance(msg.get("text"), str):
-                try:
-                    frame = json.loads(msg["text"])
-                    if isinstance(frame, dict) and frame.get("handoff"):
-                        await control.handle(ws, frame, release_presentation)
-                except (ValueError, TypeError):
-                    pass
-                continue
-            raw = msg.get("bytes")
-            if raw is None:
-                text = msg.get("text")
-                raw = text.encode("utf-8") if isinstance(text, str) else b""
-            if not raw:
-                continue
-
-            # Resize escape is consumed locally, never written to the PTY.
-            match = _RESIZE_RE.match(raw)
-            if match and match.end() == len(raw):
-                session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
-                continue
-
-            if not control or not control.frozen:
-                session.bridge.write(raw)
-                if control:
-                    control.input_bytes += len(raw)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        # Detach only — the PTY keeps running for a reattach; the registry
-        # reaper closes it after the TTL (or immediately on process exit).
-        PTY_REGISTRY.detach(attach_token, ws)
-        if control and control.viewer is ws:
-            control.viewer = None
-
-
 # ---------------------------------------------------------------------------
-# /api/ws — JSON-RPC WebSocket sidecar for the dashboard "Chat" tab.
-#
-# Drives the same `tui_gateway.dispatch` surface Ink uses over stdio, so the
-# dashboard can render structured metadata (model badge, tool-call sidebar,
-# slash launcher, session info) alongside the xterm.js terminal that PTY
-# already paints. Both transports bind to the same session id when one is
-# active, so a tool.start emitted by the agent fans out to both sinks.
+# /api/ws — authenticated JSON-RPC gateway for Native Chat and Desktop.
+# Browser clients use this transport directly; no embedded TUI is spawned.
 # ---------------------------------------------------------------------------
 
 
@@ -17365,12 +16673,8 @@ async def gateway_ws(ws: WebSocket) -> None:
 # ---------------------------------------------------------------------------
 # /api/pub + /api/events — chat-tab event broadcast.
 #
-# The PTY-side ``tui_gateway.entry`` opens /api/pub at startup (driven by
-# HERMES_TUI_SIDECAR_URL set in /api/pty's PTY env) and writes every
-# dispatcher emit through it.  The dashboard fans those frames out to any
-# subscriber that opened /api/events on the same channel id.  This is what
-# gives the React sidebar its tool-call feed without breaking the PTY
-# child's stdio handshake with Ink.
+# Optional authenticated gateway publishers mirror events to /api/events.
+# Native Chat uses /api/ws directly and does not require a publisher sidecar.
 # ---------------------------------------------------------------------------
 
 
@@ -17393,20 +16697,11 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4400)
         return
 
-    await ws.accept()
-
-    instance = ws.query_params.get("presentation")
-    if instance:
-        from hermes_cli.pty_control import CONTROLLERS
-        controller = CONTROLLERS.get(instance)
-        if controller is None:
-            await ws.close(code=4403)
-            return
-        try:
-            await controller.publish(ws)
-        except WebSocketDisconnect:
-            pass
+    if "presentation" in ws.query_params:
+        await ws.close(code=4403)
         return
+
+    await ws.accept()
 
     try:
         while True:
@@ -17593,7 +16888,7 @@ def mount_spa(application: FastAPI):
         the legacy ``_SESSION_TOKEN`` is NOT injected — the SPA reads
         identity from ``/api/auth/me`` over cookie auth instead.  The
         ``__HERMES_AUTH_REQUIRED__`` flag lets the SPA pick the right
-        auth scheme for /api/pty and /api/ws (ticket vs token).
+        auth scheme for /api/ws (ticket vs token).
         """
         try:
             html = _index_path.read_text(encoding="utf-8")

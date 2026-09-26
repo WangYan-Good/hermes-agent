@@ -1,4 +1,3 @@
-import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import type { GatewayEvent } from '../gatewayTypes.js'
 
@@ -9,7 +8,7 @@ export type OutputRoute = 'active' | 'inactive-control' | 'inactive-output' | 'i
 
 export interface OutputStreamRouterOptions {
   batchMs?: number
-  dashboardMode?: boolean
+  bufferInactive?: boolean
   now?: () => number
 }
 
@@ -53,7 +52,7 @@ interface PendingDelta {
 }
 
 export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}): OutputStreamRouter {
-  const dashboardMode = options.dashboardMode ?? DASHBOARD_TUI_MODE
+  const bufferInactive = options.bufferInactive ?? false
   const batchMs = options.batchMs ?? STREAM_BATCH_MS
   const now = options.now ?? Date.now
   const pendingDeltas = new Map<string, PendingDelta>()
@@ -115,7 +114,7 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
     const inactive = Boolean(sessionId && activeSessionId && sessionId !== activeSessionId)
 
     if (inactive) {
-      if (!dashboardMode) {return 'ignored'}
+      if (!bufferInactive) {return 'ignored'}
 
       if (CONTROL_TYPES.has(event.type)) {return 'inactive-control'}
 

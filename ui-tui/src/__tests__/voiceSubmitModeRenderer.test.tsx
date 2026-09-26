@@ -33,7 +33,7 @@ describe('voice.submit_mode live composer rendering', () => {
                 method === 'config.get' ? { config: { voice: { submit_mode: 'draft' } } } : null
               )
             },
-            outputRouter: createOutputStreamRouter({ dashboardMode: false }),
+            outputRouter: createOutputStreamRouter({ bufferInactive: false }),
             session: {
               STARTUP_RESUME_ID: '',
               colsRef: ref(80),

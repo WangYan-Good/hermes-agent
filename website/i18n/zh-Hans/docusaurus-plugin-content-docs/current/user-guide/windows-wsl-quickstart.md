@@ -10,7 +10,7 @@ sidebar_position: 2
 Hermes Agent 现已同时支持原生 Windows 和 WSL2。本页介绍 WSL2 路径；如需原生 PowerShell 安装方式，请参阅专属的 **[Windows（原生）指南](./windows-native.md)**。
 
 **何时选择 WSL2 而非原生：**
-- 你想使用 dashboard 内嵌终端（`/chat` 标签页）—— 该面板需要 POSIX PTY（伪终端），仅 WSL2 支持。
+- 你偏好使用 Linux 环境运行 terminal 工具。Dashboard `/chat` 使用 Native Chat，不要求 WSL2。
 - 你在进行大量 POSIX 相关的开发工作，希望 Hermes 会话与开发工具共享同一文件系统和路径。
 - 你已有 WSL2 环境，不想维护第二套安装。
 

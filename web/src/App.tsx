@@ -411,12 +411,12 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
-  // Defer mounting the persistent chat host (and its xterm chunk) until the
+  // Defer mounting the persistent chat host (and its Native chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
-  // PTY survives later tab switches.
+  // Native session survives later tab switches.
   const [chatHostMounted, setChatHostMounted] = useState(isChatRoute);
   useEffect(() => {
-    // This is a one-way activation latch: unmounting later would destroy PTY state.
+    // This is a one-way activation latch: unmounting later would destroy Native session state.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setChatHostMounted((prev) => latchChatActivation(prev, isChatRoute));
   }, [isChatRoute]);
@@ -442,7 +442,7 @@ export default function App() {
   // in its manifest.  When one does, `buildRoutes` already swaps the route
   // element for <PluginPage /> — but we also have to suppress the
   // persistent ChatPage host below, or the plugin's page and the built-in
-  // terminal would paint on top of each other.  The override is niche
+  // Native chat would paint on top of each other.  The override is niche
   // (nothing ships overriding /chat today) but it's an advertised
   // extension point, so preserve the pre-persistence contract: when a
   // plugin owns /chat, the built-in chat UI is entirely absent.
@@ -450,7 +450,7 @@ export default function App() {
   // Waiting on `pluginsLoading` is load-bearing: manifests arrive
   // asynchronously from /api/dashboard/plugins, so on initial render
   // `chatOverriddenByPlugin` is always false.  Without the loading
-  // gate, the persistent host would mount, spawn a PTY, and THEN get
+  // gate, the persistent host would mount, open an Agent connection, and THEN get
   // yanked out from under the user when the plugin's manifest resolves
   // — killing the session mid-paint.  Delaying host mount by the
   // plugin-load window (typically <50ms, worst case 2s safety timeout)

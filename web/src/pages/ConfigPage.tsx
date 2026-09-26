@@ -1,6 +1,3 @@
-import { ChatInterfaceSettings } from "./chat/ChatInterfaceSettings";
-import { publishProfileMode } from "./chat/chat-preferences";
-import { normalizeChatMode } from "./chat/chat-mode";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import {
@@ -176,7 +173,7 @@ function ProfileConfigPage({ profile }: { profile: string }) {
     const requestGeneration = ++generation.current;
     api
       .getConfig(profile)
-      .then(value => { if (generation.current !== requestGeneration) return; setConfig(value); publishProfileMode(profile, normalizeChatMode(getNestedValue(value, "dashboard.chat.default_mode"))); })
+      .then(value => { if (generation.current !== requestGeneration) return; setConfig(value); })
       .catch(() => {});
     api
       .getSchema()
@@ -303,7 +300,7 @@ function ProfileConfigPage({ profile }: { profile: string }) {
     try {
       await api.saveConfig(config, profile);
       if (generation.current !== requestGeneration) return;
-      publishProfileMode(profile, normalizeChatMode(getNestedValue(config, "dashboard.chat.default_mode")));
+
       showToast(t.config.configSaved, "success");
     } catch {
       showToast(t.config.failedToSave, "error");
@@ -321,7 +318,7 @@ function ProfileConfigPage({ profile }: { profile: string }) {
       showToast(t.config.yamlConfigSaved, "success");
       api
         .getConfig(profile)
-        .then(value => { if (generation.current !== requestGeneration) return; setConfig(value); publishProfileMode(profile, normalizeChatMode(getNestedValue(value, "dashboard.chat.default_mode"))); })
+        .then(value => { if (generation.current !== requestGeneration) return; setConfig(value); })
         .catch(() => {});
     } catch {
       showToast(t.config.failedToSaveYaml, "error");
@@ -458,7 +455,6 @@ function ProfileConfigPage({ profile }: { profile: string }) {
   return (
     <div className="flex flex-col gap-4">
       <PluginSlot name="config:top" />
-      <ChatInterfaceSettings />
       <Toast toast={toast} />
 
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">

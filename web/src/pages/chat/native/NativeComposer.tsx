@@ -14,7 +14,7 @@ export function NativeComposer({ state, session, inputEnabled = true }: NativeCo
   const attachments = useSyncExternalStore(session.attachments.subscribe, session.attachments.getSnapshot);
   const items = attachments.items.filter(a => !["submitted", "cancelled"].includes(a.state));
   const richBlocked = items.length > 0 && (state.conversation.running || items.some(a => a.state !== "uploaded"));
-  const add = (files: File[]) => { if (inputEnabled && !session.inputFrozen && state.ready && !state.control.submitting && !attachments.uncertain) void session.attachments.add(files); };
+  const add = (files: File[]) => { if (inputEnabled && state.ready && !state.control.submitting && !attachments.uncertain) void session.attachments.add(files); };
   const addReference = () => {
     const value = refValue.trim(); if (!value || [...value].some(char => char.charCodeAt(0) < 32) || (refKind === "url" && !safeExternalUrl(value))) return;
     const quote = !value.includes('`') ? '`' : !value.includes('"') ? '"' : !value.includes("'") ? "'" : "";

@@ -180,7 +180,7 @@ Cron 到期时在**新 Session**运行，不能依赖创建任务时聊天里的
 客户端边界：
 
 - Ink TUI 是 Node/Ink + Python JSON-RPC 的终端应用。
-- Dashboard 的主聊天用 xterm.js/PTY 嵌入真实 `hermes --tui`。
+- Dashboard 主聊天采用 Native Chat，经 `/api/ws` 访问 `tui_gateway`、`AIAgent` 与 SessionDB。
 - Electron Desktop 是独立 React 聊天面，通过 WebSocket JSON-RPC 连接 `hermes serve`。
 
 ### 推荐阅读

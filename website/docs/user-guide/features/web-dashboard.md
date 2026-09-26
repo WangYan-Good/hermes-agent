@@ -80,17 +80,17 @@ across profiles with its own filter).
 
 ## Prerequisites
 
-The default `hermes-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal (`pty` extra on POSIX). Install both with:
+The web dashboard and Native Chat need FastAPI and Uvicorn (the `web` extra). Install them with:
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"
 ```
 
-The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"` includes both extras and is the easiest path if you also want messaging/voice/etc.
+Terminal tools retain `ptyprocess`/`pywinpty` as core dependencies; the `pty` extra remains a compatibility alias. Native Chat does not spawn a PTY. The `all` extra includes messaging, voice, and other optional features.
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
 
-The Chat tab is part of every `hermes dashboard` launch — the embedded browser chat pane (running the TUI over PTY/WebSocket) is always available, with no extra flag required.
+The Chat tab is part of every `hermes dashboard` launch — Native Chat over authenticated JSON-RPC WebSocket is always available, with no extra flag required.
 
 ## Pages
 
@@ -127,29 +127,32 @@ it, and a stale heartbeat renders nothing rather than a spurious alert.
 
 ### Chat
 
-The **Chat** tab embeds the full Hermes TUI (the same interface you get from `hermes --tui`) directly in the browser. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.
+The **Chat** tab uses Native Chat, the only built-in Dashboard chat interface.
+It connects over authenticated `/api/ws` to the same Hermes agent and SessionDB.
+Streaming, tools, reasoning, approvals, attachments and durable history are
+rendered directly in the browser.
 
-**How it works:**
+To resume a conversation, open it from **Sessions**, or visit
+`/chat?resume=<id>`. Conversations created in the former Terminal interface can
+be resumed directly, including canonical compression descendants. No conversion
+or copied transcript is needed.
 
-- `/api/pty` opens a WebSocket authenticated with the dashboard's session token
-- The server spawns `hermes --tui` behind a POSIX pseudo-terminal
-- Keystrokes travel to the PTY; ANSI output streams back to the browser
-- xterm.js's WebGL renderer paints each cell to an integer-pixel grid; mouse tracking (SGR 1006), wide characters (Unicode 11), and box-drawing glyphs all render natively
-- Resizing the browser window resizes the TUI via the `@xterm/addon-fit` addon
+Old Native/Terminal browser preferences, `dashboard.chat.default_mode` in raw
+YAML, and `/chat?chat_mode=terminal|native` bookmarks are inert. The obsolete
+browser key and URL parameter are cleaned after Native initializes; storage
+failures are harmless. Configuration reads do not rewrite old YAML. There is no
+Chat Interface selector in Chat or Settings.
 
-**Resume an existing session:** from the **Sessions** tab, click the play icon (▶) next to any session. That jumps to `/chat?resume=<id>` and launches the TUI with `--resume`, loading the full history.
+The Dashboard no longer exposes `/api/pty`. An old Terminal tab's reconnect is
+rejected without launching a TUI or executing a prompt; reload it to open Native.
+The Agent's terminal tool and its execution backends still work. Standalone
+`hermes --tui`, ordinary CLI, Desktop terminal features and the separate Hermes
+Console remain supported.
 
-**Session switcher (right rail):** the Chat tab carries its own ChatGPT-style conversation list in a thin right rail beside the terminal, so you can swap conversations without leaving the page. The rail stacks the model picker on top and the session list directly below it; the terminal takes up most of the screen. The list shows your most recent sessions for the active profile — title (falling back to a message preview), relative last-active time, message count, and the source channel for non-CLI sessions. Click any row to resume it in place (the terminal respawns with that conversation's history); the active session is highlighted. **New chat** starts a fresh session, and a refresh control re-pulls the list. The rail is read-only for switching — delete, rename, export, and bulk cleanup still live on the **Sessions** tab. On narrow screens it folds into a slide-over panel.
-
-**Prerequisites:**
-
-- Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)
-- `ptyprocess` — installed by the `pty` extra (`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`, or `[all]` covers both)
-- POSIX kernel (Linux, macOS, or WSL2).  The `/chat` terminal pane specifically needs a POSIX PTY — native Windows Python has no equivalent, so on a native Windows install the rest of the dashboard (sessions, jobs, metrics, config editor) works but the `/chat` tab will show a banner telling you to use WSL2 for that feature.
-
-Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
-
-To point [Hermes Desktop](#connecting-hermes-desktop-to-a-remote-backend) at a dashboard running on another machine instead of its own bundled backend, see the remote-backend section below.
+Route-away/back preserves the Native host. Refresh and reconnect restore the
+conversation without resending a prompt. `/chat?learn=<text>` fills an unsent
+learning draft; existing drafts require an append/ignore choice. Send remains an
+explicit user action.
 
 ### Connecting Hermes Desktop to a remote backend
 
@@ -159,7 +162,7 @@ Hermes Desktop normally launches its own local backend, but it can also attach t
 The "remote backend" Desktop connects to **is** a `hermes dashboard` process running on the remote machine — the same server this page documents. It has to be up and reachable before any of the steps below matter; Desktop attaches to it, it doesn't start it for you. Keep it running under `systemd`/`tmux`/etc. so it survives logout and reboots. The **gateway** (Telegram/Discord/Slack/etc.) is a *separate* long-running process — start it independently if you rely on messaging channels; it is not the thing the desktop app connects to.
 :::
 
-Desktop's "remote backend is ready" probe only hits `GET /api/status`, which is a public endpoint — it answers as soon as *any* dashboard is running on the host. The live chat connection is a **separate** WebSocket to `/api/ws` (and `/api/pty`), and that socket is gated by two more checks the status probe never touches:
+Desktop's "remote backend is ready" probe only hits `GET /api/status`, which is a public endpoint — it answers as soon as *any* dashboard is running on the host. The live chat connection is a **separate** WebSocket to `/api/ws`, and that socket is gated by two more checks the status probe never touches:
 
 1. **You must be authenticated.** When the dashboard is bound to a non-loopback address it engages its auth gate. Protect it with a username and password (the bundled [username/password provider](#usernamepassword-provider-no-oauth-idp)); Desktop signs in once and reuses the resulting session for the WebSocket via a single-use ticket. Without a configured provider, a non-loopback dashboard **fails closed at startup**.
 2. **The bind host must allow the client and match the Host header.** A loopback bind (`127.0.0.1`) only accepts loopback clients, so a remote machine is rejected at the socket layer regardless of credentials. Bind to a non-loopback address (`--host 0.0.0.0`) so the peer-IP guard lets the remote client through. The remote URL you enter in Desktop must reach the dashboard by the same host it bound to — the DNS-rebinding guard requires the Host header to match.
@@ -436,8 +439,8 @@ The management endpoint families — `/api/config`, `/api/env`, `/api/skills`,
 accept an optional `?profile=<name>` query parameter (or `"profile"` in the
 JSON body for writes) that scopes the read/write to that profile's
 `HERMES_HOME`. Omitted = the dashboard's own profile. Unknown profile names
-return `404`. The `/api/pty` WebSocket accepts the same parameter to spawn
-a chat under the selected profile.
+return `404`. Native chat session RPCs also carry the selected profile, keeping
+chat configuration and durable history isolated.
 :::
 
 ### GET /api/status

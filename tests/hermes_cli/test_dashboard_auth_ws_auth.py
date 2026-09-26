@@ -1,6 +1,6 @@
 """Tests for the WS-upgrade auth helper (Phase 5 task 5.2).
 
-The dashboard's WS endpoints (``/api/pty``, ``/api/console``, ``/api/ws``,
+The dashboard's WS endpoints (``/api/console``, ``/api/ws``,
 ``/api/pub``, ``/api/events``) share an auth gate: ``_ws_auth_ok``. In
 loopback mode it accepts ``?token=<_SESSION_TOKEN>``; in gated mode it accepts
 a single-use ``?ticket=`` minted by ``POST /api/auth/ws-ticket``.
@@ -176,7 +176,7 @@ def insecure_explicit_host_app():
     web_server.app.state.auth_required = prev_required
 
 
-def _fake_ws(*, query: dict, client_host: str = "127.0.0.1", path: str = "/api/pty"):
+def _fake_ws(*, query: dict, client_host: str = "127.0.0.1", path: str = "/api/ws"):
     """Build a stand-in for starlette.WebSocket good enough for _ws_auth_ok."""
 
     class _QP:
@@ -256,7 +256,7 @@ class TestWsRequestIsAllowedGated:
     (intended only for unauthenticated loopback dev) must not also reject
     those upgrades: the OAuth gate + single-use ticket is the auth.
 
-    Regression coverage: every WS endpoint (``/api/pty``, ``/api/console``,
+    Regression coverage: every WS endpoint (``/api/console``,
     ``/api/ws``, ``/api/pub``, ``/api/events``) calls
     ``_ws_request_is_allowed`` after ``_ws_auth_ok``. If the peer-IP check
     rejects gated mode, the chat
@@ -374,56 +374,3 @@ class TestWsHostOriginGuardOrigins:
         # bound host is rejected. Real browser DNS-rebinding defence unchanged.
         ws = self._ws(origin="https://evil.test", host="fly-app.fly.dev")
         assert web_server._ws_host_origin_is_allowed(ws) is False
-
-
-
-class TestSidecarUrl:
-    def test_loopback_uses_session_token(self, loopback_app):
-        url = web_server._build_sidecar_url("ch-1")
-        assert url is not None
-        assert f"token={web_server._SESSION_TOKEN}" in url
-        assert "ticket=" not in url
-
-    def test_gated_uses_internal_credential(self, gated_app):
-        url = web_server._build_sidecar_url("ch-1")
-        assert url is not None
-        assert "token=" not in url
-        assert "ticket=" not in url
-        assert "internal=" in url
-        # The value should be the live process-lifetime internal credential,
-        # multi-use so the child can reconnect /api/pub.
-        cred = url.split("internal=")[1].split("&")[0]
-        info = consume_internal_credential(cred)
-        assert info["user_id"] == "server-internal"
-        assert info["provider"] == "server-internal"
-        # Multi-use: a second consume still succeeds (unlike a ticket).
-        assert consume_internal_credential(cred)["provider"] == "server-internal"
-
-    def test_no_bound_host_returns_none(self, gated_app):
-        web_server.app.state.bound_host = None
-        try:
-            assert web_server._build_sidecar_url("ch") is None
-        finally:
-            web_server.app.state.bound_host = "fly-app.fly.dev"
-
-
-# ---------------------------------------------------------------------------
-# _build_gateway_ws_url — the TUI child's primary JSON-RPC backend WS.
-# Loopback uses ?token=; gated mode uses the multi-use internal credential
-# (NOT a single-use ticket — the child reuses this URL across reconnects).
-# ---------------------------------------------------------------------------
-
-
-class TestGatewayWsUrl:
-
-
-    def test_gated_credential_matches_sidecar(self, gated_app):
-        """Both server-internal builders share one process credential, so a
-        single value authenticates /api/ws and /api/pub alike."""
-        gw = web_server._build_gateway_ws_url()
-        sc = web_server._build_sidecar_url("ch-1")
-        assert gw is not None and sc is not None
-        gw_cred = gw.split("internal=")[1].split("&")[0]
-        sc_cred = sc.split("internal=")[1].split("&")[0]
-        assert gw_cred == sc_cred
-

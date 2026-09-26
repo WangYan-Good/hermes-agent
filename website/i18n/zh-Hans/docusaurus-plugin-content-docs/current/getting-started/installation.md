@@ -63,14 +63,14 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 
 :::note Windows 功能对等性
 
-除基于浏览器的 dashboard 聊天终端外，其余功能均可在 Windows 上原生运行：
+Dashboard Native Chat 等功能均可在 Windows 上原生运行：
 
 - **CLI（`hermes chat`、`hermes setup`、`hermes gateway` 等）** — 原生，使用默认终端
 - **Gateway（Telegram、Discord、Slack 等）** — 原生，作为后台 PowerShell 进程运行
 - **Cron 调度器** — 原生
 - **浏览器工具** — 原生（通过 Node.js 使用 Chromium）
 - **MCP 服务器** — 原生（stdio 和 HTTP 传输均支持）
-- **Dashboard `/chat` 终端面板** — **仅限 WSL2**（使用 POSIX PTY（伪终端），原生 Windows 无等效实现）。Dashboard 的其余部分（会话、任务、指标）可原生运行——仅嵌入式 PTY 终端标签页受限。
+- **Dashboard `/chat` Native Chat** — 使用鉴权 WebSocket，无 POSIX PTY 依赖。
 
 如果遇到编码相关的 bug 并希望回退到旧版 cp1252 stdio 路径（用于问题定位），请在环境中设置 `HERMES_DISABLE_WINDOWS_UTF8=1`。
 :::

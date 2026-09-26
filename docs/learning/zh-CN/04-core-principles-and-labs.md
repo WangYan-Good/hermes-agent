@@ -240,7 +240,7 @@ Tool Schema 越多，每轮请求越贵，模型选择也越困难。这是“�
 |---|---|---|---|
 | Classic CLI | Rich + prompt_toolkit | 进程内调用 | Slash、Spinner、Clipboard、Approval |
 | Ink TUI | Node React/Ink | stdio JSON-RPC → `tui_gateway` | Transcript、Composer、Prompt UI |
-| Dashboard Chat | xterm.js | WebSocket PTY → `hermes --tui` | 浏览器承载真实 TUI |
+| Dashboard Chat | React Native Chat | `/api/ws` → `tui_gateway` | 共享 Agent 与 SessionDB |
 | Electron Desktop | React + assistant-ui | WebSocket JSON-RPC → `hermes serve` | 独立 Chat、Pane、Project、Plugin UI |
 | Gateway Platform | Platform Adapter | Event → Session → `AIAgent` | Pairing、Thread、Media、Delivery |
 | API Server | OpenAI-compatible HTTP | Request → Session → `AIAgent` | 协议映射和鉴权 |
@@ -370,7 +370,7 @@ Hermes 的安全不是一个“Safe Mode”开关，而是多层边界：
 6. **为什么 Tool Handler Import 成功不等于工具可用？** 还要经过自动发现、Toolset、`check_fn` 和当前平台过滤。
 7. **为什么压缩可能保持 Session ID 不变？** 默认 In-place 模式更新活跃视图并软归档旧消息；消费者应观察 Compression Event。
 8. **压缩为什么不能替代审计日志？** 摘要有损；真实消息、事件和 Trajectory 才承担取证。
-9. **Dashboard 与 Desktop 为什么不是同一前端？** Dashboard 主聊天是 PTY 内的 TUI；Desktop 是独立 React/JSON-RPC 客户端。
+9. **Dashboard 与 Desktop 为什么不是同一前端？** Dashboard Native Chat 与 Desktop 是独立的 React/JSON-RPC 客户端，复用同一个 gateway 协议。
 10. **Cron 为什么不继承当前聊天上下文？** 到期任务在新 Session 运行；只有显式 Prompt、Skills 和配置可复现。
 11. **At-least-once 为什么可能产生标记后的重复？** Send 已发出但确认前崩溃时平台状态不可判定；标记重发比静默丢失诚实。
 12. **为什么 Delivery 失败不能重跑 Agent？** Tool 可能有外部副作用；应恢复已生成 Final Reply。

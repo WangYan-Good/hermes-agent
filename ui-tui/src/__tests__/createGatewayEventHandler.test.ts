@@ -23,7 +23,7 @@ vi.mock('../lib/openExternalUrl.js', () => ({
 const ref = <T>(current: T) => ({ current })
 
 const buildCtx = (appended: Msg[]) => {
-  const outputRouter = createOutputStreamRouter({ dashboardMode: false })
+  const outputRouter = createOutputStreamRouter({ bufferInactive: false })
 
   return ({
     composer: {
@@ -108,7 +108,7 @@ describe('createGatewayEventHandler', () => {
   it('routes an inactive dashboard display event to the bounded output stream without mutating the active turn', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)
-    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    ctx.outputRouter = createOutputStreamRouter({ bufferInactive: true })
     patchUiState({ sid: 'sid-a' })
 
     createGatewayEventHandler(ctx)({ payload: { text: 'from B' }, session_id: 'sid-b', type: 'message.delta' })
@@ -120,7 +120,7 @@ describe('createGatewayEventHandler', () => {
 
   it('queues control prompts from every session with their source instead of replacing the active prompt', () => {
     const ctx = buildCtx([])
-    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    ctx.outputRouter = createOutputStreamRouter({ bufferInactive: true })
     patchUiState({ sid: 'sid-focus' })
     const onEvent = createGatewayEventHandler(ctx)
 
@@ -1070,7 +1070,7 @@ describe('createGatewayEventHandler', () => {
 
   it('clears stale output buffers and control prompts when the gateway becomes ready again', () => {
     const ctx = buildCtx([])
-    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    ctx.outputRouter = createOutputStreamRouter({ bufferInactive: true })
     patchUiState({ sid: 'sid-a' })
     const onEvent = createGatewayEventHandler(ctx)
 
@@ -1711,7 +1711,7 @@ describe('createGatewayEventHandler', () => {
   it('isolates identical clarify tool IDs by source session through expiration and completion', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)
-    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    ctx.outputRouter = createOutputStreamRouter({ bufferInactive: true })
     patchUiState({ sid: 'sid-a' })
     const onEvent = createGatewayEventHandler(ctx)
 
@@ -1737,7 +1737,7 @@ describe('createGatewayEventHandler', () => {
   it('expires a queued same-ID clarify without clearing or writing the active session prompt', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)
-    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    ctx.outputRouter = createOutputStreamRouter({ bufferInactive: true })
     patchUiState({ sid: 'sid-a' })
     const onEvent = createGatewayEventHandler(ctx)
 
@@ -1843,7 +1843,7 @@ describe('createGatewayEventHandler', () => {
 
   it('expires only the matching queued clarify and ignores delayed tool completion without request identity', () => {
     const ctx = buildCtx([])
-    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    ctx.outputRouter = createOutputStreamRouter({ bufferInactive: true })
     patchUiState({ sid: 'sid-a' })
     const onEvent = createGatewayEventHandler(ctx)
 
@@ -1860,7 +1860,7 @@ describe('createGatewayEventHandler', () => {
   it('does not clear another session clarify when the active session clarify tool completes', () => {
     const appended: Msg[] = []
     const ctx = buildCtx(appended)
-    ctx.outputRouter = createOutputStreamRouter({ dashboardMode: true })
+    ctx.outputRouter = createOutputStreamRouter({ bufferInactive: true })
     patchUiState({ sid: 'sid-a' })
     const onEvent = createGatewayEventHandler(ctx)
 

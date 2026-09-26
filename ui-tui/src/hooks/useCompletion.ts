@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from 'react'
 import type { CompletionItem } from '../app/interfaces.js'
 import { rankSlashItems } from '../app/slash/fuzzyScore.js'
 import { SLASH_COMMANDS } from '../app/slash/registry.js'
-import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { inlineSlashTrigger, looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
@@ -30,8 +29,7 @@ export function mergeWidgetAppItems(input: string, items: CompletionItem[]): Com
 
 export function mergeLocalTuiCommandItems(
   input: string,
-  items: CompletionItem[],
-  dashboardMode = DASHBOARD_TUI_MODE
+  items: CompletionItem[]
 ): CompletionItem[] {
   if (input.includes(' ')) {
     return items
@@ -39,8 +37,7 @@ export function mergeLocalTuiCommandItems(
 
   const combined = mergeWidgetAppItems(input, items)
 
-  const local = SLASH_COMMANDS.filter(command => !command.dashboardOnly || dashboardMode)
-    .filter(command => `/${command.name}`.startsWith(input.toLowerCase()))
+  const local = SLASH_COMMANDS.filter(command => `/${command.name}`.startsWith(input.toLowerCase()))
     .map(command => ({ display: `/${command.name}`, meta: command.help, text: `/${command.name}` }))
     .filter(item => !combined.some(existing => existing.text === item.text))
 

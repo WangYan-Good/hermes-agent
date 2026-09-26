@@ -96,10 +96,10 @@ iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 | MCP 服务器（stdio 和 HTTP）                                  | ✓                   | ✓                  |
 | 本地 Ollama / LM Studio / llama-server                       | ✓                   | ✓（通过 WSL 网络） |
 | Web dashboard（会话、任务、指标、配置）                      | ✓                   | ✓                  |
-| Dashboard `/chat` 内嵌终端面板                               | ✗（需要 POSIX PTY） | ✓                  |
+| Dashboard `/chat` Native Chat | ✓ | ✓ |
 | 登录时自动启动                                               | ✓（schtasks）       | ✓（systemd）       |
 
-Dashboard 的 `/chat` 标签页通过 POSIX PTY（`ptyprocess`）内嵌了真实终端。原生 Windows 没有等效的原语；Python 的 `pywinpty` / Windows ConPTY 可以实现，但需要单独的实现——视为未来工作。**dashboard 的其余部分均可原生运行**——只有该标签页会显示"请使用 WSL2"的提示横幅。
+Dashboard `/chat` 使用 `/api/ws` 上的 Native Chat，不依赖 POSIX PTY；Agent terminal 工具仍遵循各自的 Windows 后端要求。
 
 ## Hermes 在 Windows 上如何运行 shell 命令
 

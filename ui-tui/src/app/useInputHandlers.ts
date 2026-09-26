@@ -2,7 +2,6 @@ import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
-import { DASHBOARD_TUI_MODE } from '../config/env.js'
 import { DOUBLE_ESC_MS, TYPING_IDLE_MS } from '../config/timing.js'
 import { applyCompletion } from '../domain/slash.js'
 import type {
@@ -21,7 +20,6 @@ import { completeControlPrompt } from './controlPromptQueue.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import {
   type GatewayRpc,
-  type InputHandlerActions,
   type InputHandlerContext,
   type InputHandlerResult,
   type OverlayState
@@ -32,9 +30,6 @@ import { patchTurnState } from './turnStore.js'
 import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
-const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
-
-export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
 export function handleInputSelectionClipboard(
   selection: ReturnType<typeof getInputSelection>,
@@ -47,20 +42,6 @@ export function handleInputSelectionClipboard(
   selection[action]()
 
   return true
-}
-
-export function handleIdleHotkeyExit(
-  actions: Pick<InputHandlerActions, 'die' | 'sys'>,
-  dashboardTuiMode = DASHBOARD_TUI_MODE,
-  requestDashboardNewSession?: () => void
-) {
-  if (!shouldAllowIdleHotkeyExit(dashboardTuiMode)) {
-    requestDashboardNewSession?.()
-
-    return actions.sys(DASHBOARD_NEW_SESSION_MESSAGE)
-  }
-
-  return actions.die()
 }
 
 /**
@@ -643,23 +624,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return cActions.clearIn()
       }
 
-      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
-        gateway.gw.publishLocalEvent({
-          payload: { reason: 'idle_exit_hotkey' },
-          session_id: live.sid ?? undefined,
-          type: 'dashboard.new_session_requested'
-        })
-      })
+      return actions.die()
     }
 
     if (isAction(key, ch, 'd')) {
-      return handleIdleHotkeyExit(actions, DASHBOARD_TUI_MODE, () => {
-        gateway.gw.publishLocalEvent({
-          payload: { reason: 'idle_exit_hotkey' },
-          session_id: live.sid ?? undefined,
-          type: 'dashboard.new_session_requested'
-        })
-      })
+      return actions.die()
     }
 
     if (isRedrawShortcut(key, ch)) {
