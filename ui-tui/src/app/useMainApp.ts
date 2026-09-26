@@ -310,6 +310,9 @@ export function useMainApp(gw: GatewayClient) {
   })
 
   const { actions: composerActions, refs: composerRefs, state: composerState } = composer
+  // Queue mutations publish queuedDisplay even when the input is unchanged.
+  // Token-bearing drafts remain visible in input; token metadata alone is not
+  // a separate draft. Keep refs authoritative when the controller samples it.
   useEffect(() => {
     setPresentationView(() => {
       const state = getUiState()
@@ -321,7 +324,7 @@ export function useMainApp(gw: GatewayClient) {
     const unsubscribeOverlay = $overlayState.listen(presentationChanged)
 
     return () => { unsubscribeOverlay(); setPresentationView(null) }
-  }, [composerRefs, composerState.input, composerState.inputBuf, ui.busy, ui.sid])
+  }, [composerRefs, composerState.input, composerState.inputBuf, composerState.queuedDisplay, ui.busy, ui.sid])
 
   const empty = !historyItems.some(msg => msg.kind !== 'intro')
 

@@ -29,6 +29,8 @@ custom_providers:
     api_key: p6-local
     api_mode: chat_completions
 toolsets: []
+security:
+  allow_lazy_installs: false
 compression:
   enabled: false
 """,

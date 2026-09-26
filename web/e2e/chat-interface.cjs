@@ -14,11 +14,14 @@ if (process.env.CHAT_E2E_BROWSER) launch.executablePath = process.env.CHAT_E2E_B
     const sockets = []; let submits = 0;
     page.on('websocket', ws => {
       const url = new URL(ws.url());
-      const socket = { path: url.pathname, profile: url.searchParams.get('profile'), resume: url.searchParams.get('resume'), closed: false, methods: [] };
+      const socket = { path: url.pathname, profile: url.searchParams.get('profile'), resume: url.searchParams.get('resume'), closed: false, owner: null, methods: [], controls: [], changed: 0 };
       sockets.push(socket);
       ws.on('close', () => socket.closed = true);
       ws.on('framesent', event => {
-        try { const request = JSON.parse(String(event.payload)); if (request.method) socket.methods.push(request.method); if (request.method === 'prompt.submit') submits++; } catch { /* raw PTY bytes */ }
+        try { const request = JSON.parse(String(event.payload)); if (request.method) socket.methods.push(request.method); if (request.method === 'session.create') socket.owner = request.params.source === 'tool' ? 'management' : 'native'; if (request.method === 'session.resume') socket.owner = 'native'; if (request.method === 'prompt.submit') submits++; if (request.handoff) socket.controls.push(request.action); } catch { /* raw PTY bytes */ }
+      });
+      ws.on('framereceived', event => {
+        try { if (JSON.parse(String(event.payload)).changed) socket.changed++; } catch { /* terminal output */ }
       });
     });
     if (terminal) await page.addInitScript(() => localStorage.setItem('hermes.dashboard.chat.mode', 'terminal'));
@@ -116,6 +119,51 @@ if (process.env.CHAT_E2E_BROWSER) launch.executablePath = process.env.CHAT_E2E_B
       assert.equal(run.submits(), 1); assert.equal(run.sockets.filter(s => s.path === '/api/pty' && !s.closed).length, 0);
       evidence.push({ scenario: ambiguous ? 'lost-ack-and-busy-both-directions' : 'busy-both-directions', submits: run.submits(), sockets: run.sockets }); await page.close();
     }
+
+    // Queue through the real slash/composer path while a user-started turn is
+    // running. Selecting it for editing keeps it local when that turn finishes.
+    const queued = await open({ terminal: true });
+    const queuePage = queued.page;
+    // Retry only a reset HTTP keep-alive connection on these read-only evidence
+    // requests; this does not drive lifecycle state or retry a handoff action.
+    await active(queuePage, 'terminal');
+    await queuePage.waitForTimeout(2000); // existing TUI resume paint overlay
+    const terminalInput = queuePage.locator('.xterm-helper-textarea');
+    const submissionsAtStart = (await (await queuePage.request.get('/p6-evidence', { maxRetries: 2 })).json()).submissions.length;
+    await terminalInput.focus();
+    await queuePage.keyboard.type('P6-BUSY-QUEUE-REVIEW', { delay: 40 });
+    await queuePage.waitForTimeout(150); await queuePage.keyboard.press('Enter');
+    await queuePage.waitForFunction(async before => { const e = await (await fetch('/p6-evidence')).json(); return e.submissions.length > before && e.sessions.some(s => s.runtime === e.submissions.at(-1).runtime && s.running); }, submissionsAtStart);
+    const queueRuntime = (await (await queuePage.request.get('/p6-evidence', { maxRetries: 2 })).json()).submissions.at(-1).runtime;
+    await queuePage.keyboard.type('/queue P6-NEVER-SUBMIT', { delay: 40 });
+    await queuePage.waitForTimeout(150); await queuePage.keyboard.press('Enter');
+    await queuePage.keyboard.press('ArrowUp');
+    await queuePage.keyboard.press('Control+u'); // input empty; the selected queue item remains
+    await queuePage.waitForFunction(async runtime => (await (await fetch('/p6-evidence')).json()).sessions.some(s => s.runtime === runtime && !s.running && !s.workers), queueRuntime);
+    const queueBefore = await (await queuePage.request.get('/p6-evidence', { maxRetries: 2 })).json();
+    await choose(queuePage, 'native');
+    await queuePage.getByRole('button', { name: 'Cancel switch', exact: true }).waitFor();
+    assert.equal(queued.sockets.filter(s => s.path === '/api/pty' && !s.closed).length, 1);
+    // Terminal's sidecar explicitly creates source=tool; distinguish it from the Native agent.
+    const agents = () => queued.sockets.filter(s => s.path === '/api/ws' && !s.closed && s.owner === 'native');
+    assert.equal(agents().length, 0);
+    const queuePty = queued.sockets.find(s => s.path === '/api/pty' && !s.closed);
+    assert.equal(queuePty.controls.filter(a => a === 'release').length, 0);
+    const changedBefore = queuePty.changed;
+    await terminalInput.focus(); await queuePage.keyboard.press('Control+x');
+    // No second selection/retry, injected gateway event, or product polling.
+    await active(queuePage, 'native');
+    const queueAfter = await (await queuePage.request.get('/p6-evidence', { maxRetries: 2 })).json();
+    assert.ok(queuePty.changed > changedBefore);
+    assert.equal(queueAfter.submissions.length, queueBefore.submissions.length);
+    assert.equal(queueAfter.submissions.filter(s => s.automatic).length, 0);
+    assert.equal(queued.submits(), 0);
+    assert.equal(queued.sockets.filter(s => s.path === '/api/pty' && !s.closed).length, 0);
+    assert.equal(agents().length, 1);
+    assert.equal(queuePty.controls.filter(a => a === 'prepare').length, 1);
+    assert.equal(queuePty.controls.filter(a => a === 'release').length, 1);
+    evidence.push({ scenario: 'local-queue-removal-wakes-pending-handoff', ptyCount: 0, nativeAgentWsCount: agents().length, prepareCount: 1, releaseCount: 1, promptSubmissionsBefore: queueBefore.submissions.length, promptSubmissionsAfter: queueAfter.submissions.length, automaticSubmissions: 0, sockets: queued.sockets });
+    await queuePage.close();
 
     const control = await browser.newPage({ baseURL });
     await control.request.post('/p6-control', { data: { action: 'history' } });

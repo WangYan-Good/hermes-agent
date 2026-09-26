@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router';
 import { useProfileScope } from '@/contexts/useProfileScope';
 import { useChatMode } from './use-chat-mode';
 import { chatHosts, preferenceNotice, preferenceRevision, requestBrowserPreference, subscribePreferences } from './chat-preferences';
-import { normalizeChatMode } from './chat-mode';
+import { DEFAULT_CHAT_MODE, normalizeChatMode } from './chat-mode';
 
 export function ChatInterfaceSettings() {
   const { profile } = useProfileScope();
@@ -20,7 +20,7 @@ export function ChatInterfaceSettings() {
     <select id="chat-browser-preference" className="rounded border border-border bg-background p-2" value={preference.browserMode ?? ''} onChange={e => choose(normalizeChatMode(e.target.value))}>
       <option value="">Follow profile default</option><option value="native">Native — browser-native Hermes chat</option><option value="terminal">Terminal — classic terminal/TUI interface</option>
     </select>
-    <p className="text-sm text-muted-foreground">Profile default: {preference.serverMode ?? (preference.loaded ? 'native' : 'unavailable')}. Preference source: {host?.source ?? preference.source}. {preference.browserMode ? 'A browser override takes priority over saved profile settings.' : 'Following the profile default.'}</p>
+    <p className="text-sm text-muted-foreground">Profile default: {preference.profileKnown ? preference.serverMode ?? DEFAULT_CHAT_MODE : 'unavailable'}. Preference source: {host?.source ?? preference.source}. {preference.browserMode ? 'A browser override takes priority over saved profile settings.' : 'Following the profile default.'}</p>
     {host?.source === 'url' ? <p>The URL overrides the saved profile default. <button type="button" onClick={() => choose(preference.browserMode)}>Clear URL override</button></p> : null}
     {preference.browserMode ? <button type="button" onClick={() => choose(null)}>Clear browser preference</button> : null}
     {preferenceNotice ? <p role="status">{preferenceNotice}</p> : null}
