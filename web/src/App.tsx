@@ -146,15 +146,14 @@ const CHAT_NAV_ITEM: NavItem = {
 };
 
 /**
- * Built-in routes except /chat.  Chat is rendered persistently (outside
- * <Routes>) when embedded — see the persistent chat host block rendered
- * inline near the bottom of this file — so the PTY child, WebSocket,
- * and xterm instance survive when the user visits another tab and comes
- * back.  A `display:none` toggle hides the terminal without unmounting.
- * The host itself is still deferred until the first /chat visit so the
- * xterm chunk is not downloaded on unrelated pages.  Routing still owns
- * the URL so /chat deep-links, browser back/forward, and nav highlight
- * keep working.
+ * Built-in routes except /chat.  ChatPage wraps NativeChatPage, whose
+ * built-in host stays mounted outside <Routes> after the first /chat visit
+ * when embedded — see the persistent chat host block near the bottom of
+ * this file.  Leaving /chat only hides this Native host without unmounting,
+ * preserving its session, WebSocket, and controller state on return.
+ * The host and Native Chat chunk remain deferred until the first /chat
+ * visit.  Routing still owns the URL so /chat deep-links, browser
+ * back/forward, and nav highlight keep working.
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
