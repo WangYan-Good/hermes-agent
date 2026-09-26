@@ -1,3 +1,7 @@
+import { ChatInterfaceSettings } from "./chat/ChatInterfaceSettings";
+import { publishProfileMode } from "./chat/chat-preferences";
+import { normalizeChatMode } from "./chat/chat-mode";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import {
   Code,
@@ -102,6 +106,12 @@ function CategoryIcon({
 /* ------------------------------------------------------------------ */
 
 export default function ConfigPage() {
+  const { profile } = useProfileScope();
+  return <ProfileConfigPage key={profile} profile={profile} />;
+}
+
+function ProfileConfigPage({ profile }: { profile: string }) {
+  const generation = useRef(0);
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [schema, setSchema] = useState<Record<
     string,
@@ -163,9 +173,10 @@ export default function ConfigPage() {
   }
 
   useEffect(() => {
+    const requestGeneration = ++generation.current;
     api
-      .getConfig()
-      .then(setConfig)
+      .getConfig(profile)
+      .then(value => { if (generation.current !== requestGeneration) return; setConfig(value); publishProfileMode(profile, normalizeChatMode(getNestedValue(value, "dashboard.chat.default_mode"))); })
       .catch(() => {});
     api
       .getSchema()
@@ -192,7 +203,7 @@ export default function ConfigPage() {
     // config_path is machine-global (the dashboard's own profile) — wrong
     // header under the global profile switcher, so it's only a fallback.
     api
-      .getConfigRaw()
+      .getConfigRaw(profile)
       .then((resp) => {
         if (resp.path) setConfigPath(resp.path);
       })
@@ -201,14 +212,15 @@ export default function ConfigPage() {
       .getStatus()
       .then((resp) => setConfigPath((prev) => prev ?? resp.config_path))
       .catch(() => {});
-  }, []);
+    return () => { generation.current = requestGeneration + 1; };
+  }, [profile]);
 
   // Load YAML when switching to YAML mode
   useEffect(() => {
     if (yamlMode) {
       let cancelled = false;
       api
-        .getConfigRaw()
+        .getConfigRaw(profile)
         .then((resp) => {
           if (!cancelled) setYamlText(resp.yaml);
         })
@@ -222,7 +234,7 @@ export default function ConfigPage() {
         cancelled = true;
       };
     }
-  }, [showToast, t.config.failedToLoadRaw, yamlMode]);
+  }, [showToast, t.config.failedToLoadRaw, yamlMode, profile]);
 
   const toggleYamlMode = () => {
     if (!yamlMode) setYamlLoading(true);
@@ -286,28 +298,33 @@ export default function ConfigPage() {
   /* ---- Handlers ---- */
   const handleSave = async () => {
     if (!config) return;
+    const requestGeneration = generation.current;
     setSaving(true);
     try {
-      await api.saveConfig(config);
+      await api.saveConfig(config, profile);
+      if (generation.current !== requestGeneration) return;
+      publishProfileMode(profile, normalizeChatMode(getNestedValue(config, "dashboard.chat.default_mode")));
       showToast(t.config.configSaved, "success");
-    } catch (e) {
-      showToast(`${t.config.failedToSave}: ${e}`, "error");
+    } catch {
+      showToast(t.config.failedToSave, "error");
     } finally {
       setSaving(false);
     }
   };
 
   const handleYamlSave = async () => {
+    const requestGeneration = generation.current;
     setYamlSaving(true);
     try {
-      await api.saveConfigRaw(yamlText);
+      await api.saveConfigRaw(yamlText, profile);
+      if (generation.current !== requestGeneration) return;
       showToast(t.config.yamlConfigSaved, "success");
       api
-        .getConfig()
-        .then(setConfig)
+        .getConfig(profile)
+        .then(value => { if (generation.current !== requestGeneration) return; setConfig(value); publishProfileMode(profile, normalizeChatMode(getNestedValue(value, "dashboard.chat.default_mode"))); })
         .catch(() => {});
-    } catch (e) {
-      showToast(`${t.config.failedToSaveYaml}: ${e}`, "error");
+    } catch {
+      showToast(t.config.failedToSaveYaml, "error");
     } finally {
       setYamlSaving(false);
     }
@@ -441,6 +458,7 @@ export default function ConfigPage() {
   return (
     <div className="flex flex-col gap-4">
       <PluginSlot name="config:top" />
+      <ChatInterfaceSettings />
       <Toast toast={toast} />
 
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">

@@ -39,6 +39,7 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
+import { presentationChanged, setPresentationView } from "../presentationControl.js"
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
@@ -309,6 +310,22 @@ export function useMainApp(gw: GatewayClient) {
   })
 
   const { actions: composerActions, refs: composerRefs, state: composerState } = composer
+  // Queue mutations publish queuedDisplay even when the input is unchanged.
+  // Token-bearing drafts remain visible in input; token metadata alone is not
+  // a separate draft. Keep refs authoritative when the controller samples it.
+  useEffect(() => {
+    setPresentationView(() => {
+      const state = getUiState()
+      const overlays = $overlayState.get()
+
+      return { sid: state.sid, blocked: state.busy || Object.entries(overlays).some(([key, value]) => key !== 'ambient' && key !== 'agentsInitialHistoryIndex' && (Array.isArray(value) ? value.length > 0 : !!value)), draft: !!composerRefs.inputRef.current || composerState.inputBuf.length > 0 || composerRefs.queueRef.current.length > 0 }
+    })
+
+    const unsubscribeOverlay = $overlayState.listen(presentationChanged)
+
+    return () => { unsubscribeOverlay(); setPresentationView(null) }
+  }, [composerRefs, composerState.input, composerState.inputBuf, composerState.queuedDisplay, ui.busy, ui.sid])
+
   const empty = !historyItems.some(msg => msg.kind !== 'intro')
 
   useEffect(() => {

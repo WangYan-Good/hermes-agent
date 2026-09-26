@@ -575,7 +575,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id }).then(
+        gw.request<SessionResumeResponse>('session.resume', { cols: colsRef.current, session_id: id, ...(process.env.HERMES_TUI_PRESENTATION_URL ? { allow_auto_continue: false } : {}) }).then(
           raw => {
             const r = asRpcResult<SessionResumeResponse>(raw)
 

@@ -382,7 +382,7 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
-  const { manifests, loading: pluginsLoading } = usePlugins();
+  const { manifests, loading: pluginsLoading, manifestConfirmed, manifestError, retryManifests } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
@@ -802,9 +802,9 @@ export default function App() {
 
                 {embeddedChat &&
                   !chatOverriddenByPlugin &&
-                  (pluginsLoading ? (
+                  (!manifestConfirmed || pluginsLoading ? (
                     isChatRoute ? (
-                      <RouteFallback label="Loading chat…" />
+                      <div role="status">{manifestError ? <><span>Could not confirm the chat provider. </span><button onClick={retryManifests}>Retry</button></> : <RouteFallback label="Loading chat…" />}</div>
                     ) : null
                   ) : chatHostMounted ? (
                     <div

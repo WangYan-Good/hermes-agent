@@ -560,7 +560,7 @@ def _(rid, params: dict) -> dict:
             if (live := _claim_or_reuse_live(sid, target, record, lease)) is not None:
                 return _ok(rid, _reuse_live_payload(*live))
 
-            _schedule_resume_hydration(sid, target, db, close_db=owns_db)
+            _schedule_resume_hydration(sid, target, db, close_db=owns_db, allow_auto_continue=params.get("allow_auto_continue") is not False)
             # The hydration worker now owns a profile-scoped handle and closes it
             # after the transcript read. The shared launch DB is process-owned.
             if owns_db:
@@ -656,7 +656,7 @@ def _(rid, params: dict) -> dict:
 
             _schedule_agent_build(sid)
             _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
-            auto_continue = _maybe_schedule_auto_continue(sid, record, target)
+            auto_continue = _maybe_schedule_auto_continue(sid, record, target) if params.get("allow_auto_continue") is not False else None
 
             messages = [] if omit_messages else _history_to_messages(display_history)
             payload = {
@@ -888,7 +888,7 @@ def _(rid, params: dict) -> dict:
             with contextlib.suppress(Exception):
                 db.close()
     auto_continue = (
-        _maybe_schedule_auto_continue(sid, session, target) if session else None
+        _maybe_schedule_auto_continue(sid, session, target) if session and params.get("allow_auto_continue") is not False else None
     )
     payload = {
         "session_id": sid,
@@ -3208,6 +3208,13 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"file": str(path)})
     except Exception as e:
         return _err(rid, 5011, str(e))
+
+
+@method("session.handoff")
+def _(rid, params: dict) -> dict:
+    from tui_gateway import server
+    from tui_gateway.chat_handoff import handle
+    return handle(server, rid, params)
 
 
 @method("session.close")

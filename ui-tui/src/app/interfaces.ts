@@ -397,6 +397,7 @@ export interface ComposerActions {
 }
 
 export interface ComposerRefs {
+  inputRef: MutableRefObject<string>
   historyDraftRef: MutableRefObject<string>
   historyRef: MutableRefObject<string[]>
   queueEditRef: MutableRefObject<null | number>

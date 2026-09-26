@@ -1,3 +1,4 @@
+import type { ChatSurfaceLifecycle, SurfaceStatus } from "../chat-switch";
 import { NativeAttachments, readDraftLocator } from "./native-attachments";
 import { readHistory } from "./native-history";
 import { hydrateDurableHistory } from "./native-messages";
@@ -14,6 +15,45 @@ const historyUnavailable = "History is unavailable. Use Load earlier messages to
 
 export class NativeSession {
   private state = initial();
+  draftText = "";
+  private frozen = false;
+  private attachmentsRecovered = false;
+  private handoffTicket: string | null = null;
+  get inputFrozen() { return this.frozen; }
+  setDraft = (text: string) => { if (this.frozen) return; this.draftText = text; this.set({ ...this.state }); };
+  handoffStatus = (): SurfaceStatus => {
+    const a = this.attachments.getSnapshot();
+    const s = this.state;
+    return { ready: s.ready && !this.hydrating && !a.recovering && !a.uncertain && this.attachmentsRecovered && (!this.target || !s.durable || this.historyLatest),
+      error: (this.attachmentsRecovered && a.uncertain) || s.connection === "error" || (!!this.target && !this.historyLatest && s.control.notice === historyUnavailable),
+      blocked: !s.ready || this.uncertainSubmit || a.uncertain || this.attachments.pendingOperations ? "Waiting for authoritative recovery…" : s.conversation.running || s.control.submitting || s.control.queued || hasInteraction(s.interactions) ? "Waiting for the current turn and interactions…" : null,
+      draft: !!this.draftText || a.items.some(item => !["submitted", "cancelled"].includes(item.state)) };
+  };
+  readonly lifecycle: ChatSurfaceLifecycle = {
+    status: () => this.handoffStatus(),
+    subscribe: fn => { const off = this.subscribe(fn); const a = this.attachments.subscribe(fn); return () => { off(); a(); }; },
+    prepare: async () => {
+      if (this.handoffStatus().blocked || this.handoffStatus().draft) return null;
+      this.frozen = true;
+      const result = await this.gateway!.request<{ ready: boolean; ticket: string; stored_id: string | null }>("session.handoff", { session_id: this.state.runtimeId, action: "prepare" });
+      if (!result.ready) { this.frozen = false; return null; }
+      this.handoffTicket = result.ticket;
+      return { storedId: result.stored_id };
+    },
+    cancel: async () => {
+      const status = await this.gateway!.request<{ ticket?: string }>("session.handoff", { session_id: this.state.runtimeId, action: "status" });
+      this.handoffTicket = status.ticket ?? null;
+      if (this.handoffTicket) await this.gateway!.request("session.handoff", { session_id: this.state.runtimeId, action: "cancel", ticket: this.handoffTicket });
+      this.handoffTicket = null; this.frozen = false;
+    },
+    release: async () => {
+      const result = await this.gateway!.request<{ released: boolean }>("session.handoff", { session_id: this.state.runtimeId, action: "release", ticket: this.handoffTicket });
+      if (!result.released) throw new Error("Handoff did not release");
+      this.attachments.reset(); this.stop();
+    },
+    discard: async () => { await this.attachments.discardForHandoff(); this.setDraft(""); },
+    dispose: async () => { this.stop(); },
+  };
   readonly attachments: NativeAttachments;
   private historyAbort?: AbortController;
   private historyRows: Record<string, unknown>[] = [];
@@ -75,6 +115,7 @@ export class NativeSession {
   };
 
   private async connect() {
+    this.attachmentsRecovered = false;
     this.attachments.invalidate(); this.invalidateHistory();
     const generation = ++this.generation;
     clearTimeout(this.timer);
@@ -104,7 +145,7 @@ export class NativeSession {
       let resumed = false;
       if (storedId && (this.state.durable || this.target || this.uncertainSubmit)) {
         try {
-          response = await gateway.request("session.resume", { session_id: storedId, profile: this.profile, omit_messages: true });
+          response = await gateway.request("session.resume", { session_id: storedId, profile: this.profile, omit_messages: true, allow_auto_continue: false });
           resumed = true;
         } catch (error) {
           if (!current()) return;
@@ -153,6 +194,7 @@ export class NativeSession {
       this.set({ runtimeId: response.session_id, storedId: response.stored_session_id || response.session_key || response.info?.stored_session_id || storedId, durable: resumed || this.state.durable, ready: true, connection: "open", conversation, interactions, control });
       this.ackApprovals();
       await this.attachments.recover();
+      if (current()) { this.attachmentsRecovered = true; this.set({ ...this.state }); }
     } catch {
       if (!current()) return;
       // Never surface raw transport/auth URLs or credential-bearing errors.
@@ -182,7 +224,7 @@ export class NativeSession {
     this.set({ ...this.state, storedId: storedId || this.state.storedId, conversation: reduceNativeEvent(this.state.conversation, event), interactions: reduceInteractions(this.state.interactions, event, this.generation), control: reduceControl(this.state.control, event) });
     if (hasInteraction(this.state.interactions) && !this.state.conversation.running) this.set({ ...this.state, conversation: { ...this.state.conversation, running: true } });
     this.ackApprovals();
-    if (event.type === "message.complete") void this.refresh().catch(() => { /* next reconnect restores metadata */ });
+    if (event.type === "message.complete" || event.type === "session.handoff_status") void this.refresh().catch(() => { /* next reconnect restores metadata */ });
   }
 
   private ackApprovals() {
@@ -311,6 +353,7 @@ export class NativeSession {
     try { attachmentPayload = this.attachments.submitPayload(); } catch { return; }
     const rich = Array.isArray(attachmentPayload.attachment_ids);
     if (rich && (queued || this.state.conversation.running)) return;
+    if (this.frozen) return;
     if ((!text.trim() && !rich) || !this.state.ready || this.state.control.submitting || hasInteraction(this.state.interactions) || !this.gateway || !this.state.runtimeId) return;
     const generation = this.generation;
     this.refreshVersion++;
@@ -345,6 +388,7 @@ export class NativeSession {
     }
   };
   steer = async (text: string) => {
+    if (this.frozen) return;
     if (this.attachments.getSnapshot().items.some(a => !["submitted", "cancelled"].includes(a.state))) return;
     if (!text.trim() || !this.gateway || !this.state.runtimeId || !this.state.ready || this.state.control.submitting || hasInteraction(this.state.interactions)) return;
     const generation = this.generation;

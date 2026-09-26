@@ -1,3 +1,5 @@
+import { TerminalLifecycle } from "./terminal-lifecycle";
+import type { ChatPageProps } from "../ChatPage";
 /**
  * TerminalChatPage — embeds `hermes --tui` inside the dashboard.
  *
@@ -135,7 +137,10 @@ function terminalLineHeightForWidth(layoutWidthPx: number): number {
   return layoutWidthPx < 1024 ? 1.02 : 1.15;
 }
 
-export default function TerminalChatPage({ isActive = true }: { isActive?: boolean }) {
+export default function TerminalChatPage({ isActive = true, inputEnabled = true, handoffResume, registerLifecycle }: ChatPageProps) {
+  const [lifecycle] = useState(() => new TerminalLifecycle());
+  useEffect(() => { lifecycle.setInputEnabled(inputEnabled); }, [lifecycle, inputEnabled]);
+  useEffect(() => registerLifecycle?.(lifecycle), [registerLifecycle, lifecycle]);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termWrapRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -161,7 +166,10 @@ export default function TerminalChatPage({ isActive = true }: { isActive?: boole
   // TUI/agent bootstrap (`Installing TUI dependencies…`). Latching keeps the
   // PTY alive across later tab switches (the persistence UX) — once true it
   // stays true.
-  const [hasActivated, setHasActivated] = useState(isActive);
+  // A coordinator mounts a hidden target only after an explicit handoff.
+  const [hasActivated, setHasActivated] = useState(isActive || !!registerLifecycle);
+  const isActiveRef = useRef(isActive);
+  useEffect(() => { isActiveRef.current = isActive; }, [isActive]);
   useEffect(() => {
     // This latch preserves the PTY after the first active render.
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -349,7 +357,12 @@ export default function TerminalChatPage({ isActive = true }: { isActive?: boole
   // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
-  const resumeParam = searchParams.get("resume");
+  const urlResume = searchParams.get("resume");
+  const [resumeScope, setResumeScope] = useState(() => ({ url: urlResume, resume: handoffResume !== undefined ? handoffResume : urlResume }));
+  if (urlResume !== resumeScope.url && isActive && inputEnabled) {
+    setResumeScope({ url: urlResume, resume: urlResume || resumeScope.resume });
+  }
+  const resumeParam = registerLifecycle ? resumeScope.resume : urlResume;
   const learnSeed = searchParams.get("learn");
   // Profile-scoped chat: spawn the PTY under the globally selected
   // management profile. Changing it remounts the terminal (key below /
@@ -392,7 +405,7 @@ export default function TerminalChatPage({ isActive = true }: { isActive?: boole
   }, [isActive, sessionTitle, setTitle]);
 
   useEffect(() => {
-    if (!resumeParam) return;
+    if (!resumeParam || !isActive || !inputEnabled) return;
 
     let cancelled = false;
 
@@ -409,10 +422,10 @@ export default function TerminalChatPage({ isActive = true }: { isActive?: boole
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, scopedProfile, handleSessionTitleChange]);
+  }, [resumeParam, scopedProfile, handleSessionTitleChange, isActive, inputEnabled]);
 
   useEffect(() => {
-    if (!resumeParam) return;
+    if (!resumeParam || !isActive || !inputEnabled) return;
 
     let cancelled = false;
 
@@ -434,7 +447,7 @@ export default function TerminalChatPage({ isActive = true }: { isActive?: boole
     return () => {
       cancelled = true;
     };
-  }, [resumeParam, scopedProfile, searchParams, setSearchParams]);
+  }, [resumeParam, scopedProfile, searchParams, setSearchParams, isActive, inputEnabled]);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -1187,10 +1200,11 @@ export default function TerminalChatPage({ isActive = true }: { isActive?: boole
         failTicketAttempt();
         return;
       }
-      if (unmounting || ticketSuperseded) return;
+      if (unmounting || ticketSuperseded || (registerLifecycle && lifecycle.intentionalClose)) return;
       clearTicketTimer();
 
-      const ws = new WebSocket(url);
+      const ws = new WebSocket(url, registerLifecycle ? "hermes.pty-control.v1" : undefined);
+      if (registerLifecycle) lifecycle.attach(ws);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
       // W2 (NS-591): a mobile socket can wedge in CONNECTING after a radio
@@ -1252,6 +1266,7 @@ export default function TerminalChatPage({ isActive = true }: { isActive?: boole
     }
 
     ws.onmessage = (ev) => {
+      if (registerLifecycle && lifecycle.frame(ev.data)) return;
       const text =
         typeof ev.data === "string"
           ? ev.data
@@ -1278,6 +1293,7 @@ export default function TerminalChatPage({ isActive = true }: { isActive?: boole
     };
 
     ws.onclose = (ev) => {
+      if (registerLifecycle && lifecycle.intentionalClose) return;
       // Drain buffered sanitizer state. A buffered partial escape is dropped
       // (writing an unterminated CSI would wedge xterm's parser); a buffered
       // newline run is emitted collapsed.
@@ -1435,7 +1451,7 @@ export default function TerminalChatPage({ isActive = true }: { isActive?: boole
       });
     })();
 
-    term.focus();
+    if (isActiveRef.current) term.focus();
 
     return () => {
       unmounting = true;

@@ -151,6 +151,8 @@ class PtySession:
         self.last_detached_at = time.monotonic()
 
     async def close(self) -> None:
+        if control := getattr(self, "presentation_control", None):
+            control.forget()
         if self._drain_task is not None:
             self._drain_task.cancel()
             try:

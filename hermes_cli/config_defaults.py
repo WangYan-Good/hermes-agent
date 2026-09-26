@@ -1453,10 +1453,10 @@ DEFAULT_CONFIG = {
 
     # Web dashboard settings
     "dashboard": {
-        # Presentation preference only. UI-P1 falls back to Terminal while
-        # the Native Chat renderer is unavailable.
+        # Default for dashboard chat; explicit browser/profile preferences win.
+        # Terminal remains a supported compatibility interface.
         "chat": {
-            "default_mode": "terminal",
+            "default_mode": "native",
         },
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
         # Process-isolation rollout controls. Runtime reads these through the

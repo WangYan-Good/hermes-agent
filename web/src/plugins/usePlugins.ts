@@ -65,6 +65,9 @@ export function usePlugins() {
   const [manifests, setManifests] = useState<PluginManifest[]>(
     () => getCachedManifests() ?? [],
   );
+  const [manifestError, setManifestError] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [manifestConfirmed, setManifestConfirmed] = useState(false);
   const [plugins, setPlugins] = useState<RegisteredPlugin[]>([]);
   // Start loading=false when the cache has manifests so plugin routes are
   // registered synchronously on the first render after a refresh.
@@ -83,15 +86,19 @@ export function usePlugins() {
   // This handles: new plugins added, plugins removed, manifest changes.
   // setManifests(list) will update routes if the server list differs from cache.
   useEffect(() => {
+    let cancelled = false;
     api
       .getPlugins()
       .then((list) => {
+        if (cancelled) return;
+        setManifestConfirmed(true);
         cacheManifests(list);
         setManifests(list);
         if (list.length === 0) setLoading(false);
       })
-      .catch(() => setLoading(false));
-  }, []);
+      .catch(() => { if (!cancelled) { setManifestError(true); setLoading(false); } });
+    return () => { cancelled = true; };
+  }, [attempt]);
 
   // Load plugin assets when manifests arrive.
   useEffect(() => {
@@ -188,5 +195,5 @@ export function usePlugins() {
     return unsub;
   }, [manifests]);
 
-  return { plugins, manifests, loading };
+  return { plugins, manifests, loading, manifestConfirmed, manifestError, retryManifests: () => { setManifestError(false); setAttempt(n => n + 1); } };
 }

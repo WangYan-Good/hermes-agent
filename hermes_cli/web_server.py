@@ -1039,6 +1039,7 @@ def _timezone_options() -> List[str]:
 
 
 _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "dashboard.chat.default_mode": {"type": "select", "label": "Chat Interface — profile default", "description": "Native: browser chat. Terminal: classic TUI. Browser overrides take priority.", "options": ["native", "terminal"]},
     "timezone": {
         "type": "select",
         "description": "IANA timezone (e.g. America/New_York). Blank uses the system timezone.",
@@ -1286,12 +1287,6 @@ def _build_schema_from_config(
 
         # Skip internal / version keys
         if full_key in {"_config_version"}:
-            continue
-
-        # UI-P1 establishes a config contract, not a mode-switching Settings
-        # control. Keep it available through /api/config and raw YAML only
-        # until the presentation-switching UI is ready.
-        if full_key == "dashboard.chat.default_mode":
             continue
 
         # Category is the first path component for nested keys, or "general"
@@ -17146,7 +17141,9 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4408, reason=_ws_close_reason(client_reason))
         return
 
-    await ws.accept()
+    from hermes_cli.pty_control import PROTOCOL, PtyControl
+    negotiated = PROTOCOL in ws.headers.get("sec-websocket-protocol", "").split(", ")
+    await ws.accept(subprotocol=PROTOCOL if negotiated else None)
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
     # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
@@ -17206,12 +17203,26 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
     attach_token = ws.query_params.get("attach") or None
+    if negotiated and attach_token is None:
+        await ws.close(code=4400, reason="PTY control requires an attach identity")
+        return
     registry_resume = raw_resume
     if raw_resume and env:
         registry_resume = env.get("HERMES_TUI_RESUME") or raw_resume
     if attach_token is not None and (registry_resume or profile):
         # Key explicit resumes on their canonical target, never the active-session fallback.
         attach_token = f"{attach_token}\0{profile or ''}\0{registry_resume or ''}"
+
+    control = None
+    if negotiated:
+        existing = PTY_REGISTRY._sessions.get(attach_token)
+        control = getattr(existing, "presentation_control", None) if existing else None
+        if control is None:
+            control = PtyControl(profile or "", abortable=existing is None)
+        control.viewer = ws
+        control.viewer_generation = None
+        env = dict(env or os.environ)
+        env["HERMES_TUI_PRESENTATION_URL"] = (_build_sidecar_url(channel or "chat") or "") + "&presentation=" + control.instance
 
     def _spawn():
         return PtyBridge.spawn(argv, cwd=cwd, env=env)
@@ -17237,18 +17248,33 @@ async def pty_ws(ws: WebSocket) -> None:
             attach_token, spawn=_spawn
         )
     except PtyUnavailableError as exc:
+        if control:
+            control.forget()
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
     except (FileNotFoundError, OSError, RegistryFull) as exc:
+        if control:
+            control.forget()
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
         await ws.close(code=1011)
         return
+
+    if control:
+        session.presentation_control = control
 
     # A fresh xterm cannot reliably reconstruct the TUI from an arbitrary
     # bounded tail of alternate-screen, differential ANSI output. Reused PTYs
     # emit a complete frame after replay so reconnects never reopen blank.
     await session.attach(ws, force_redraw=not _created)
+
+    async def release_presentation():
+        PTY_REGISTRY._sessions.pop(attach_token, None)
+        # Detach before close: no process-exit frame can overtake the release ACK.
+        session.detach(ws)
+        await session.close()
+        if control:
+            control.forget()
 
     # --- writer loop: WebSocket → PTY master ----------------------------
     # No reader task here: the session's drain task (spawned once per PTY,
@@ -17266,6 +17292,14 @@ async def pty_ws(ws: WebSocket) -> None:
                 break
             if msg.get("type") == "websocket.disconnect":
                 break
+            if control and isinstance(msg.get("text"), str):
+                try:
+                    frame = json.loads(msg["text"])
+                    if isinstance(frame, dict) and frame.get("handoff"):
+                        await control.handle(ws, frame, release_presentation)
+                except (ValueError, TypeError):
+                    pass
+                continue
             raw = msg.get("bytes")
             if raw is None:
                 text = msg.get("text")
@@ -17279,13 +17313,18 @@ async def pty_ws(ws: WebSocket) -> None:
                 session.bridge.resize(cols=int(match.group(1)), rows=int(match.group(2)))
                 continue
 
-            session.bridge.write(raw)
+            if not control or not control.frozen:
+                session.bridge.write(raw)
+                if control:
+                    control.input_bytes += len(raw)
     except WebSocketDisconnect:
         pass
     finally:
         # Detach only — the PTY keeps running for a reattach; the registry
         # reaper closes it after the TTL (or immediately on process exit).
         PTY_REGISTRY.detach(attach_token, ws)
+        if control and control.viewer is ws:
+            control.viewer = None
 
 
 # ---------------------------------------------------------------------------
@@ -17355,6 +17394,19 @@ async def pub_ws(ws: WebSocket) -> None:
         return
 
     await ws.accept()
+
+    instance = ws.query_params.get("presentation")
+    if instance:
+        from hermes_cli.pty_control import CONTROLLERS
+        controller = CONTROLLERS.get(instance)
+        if controller is None:
+            await ws.close(code=4403)
+            return
+        try:
+            await controller.publish(ws)
+        except WebSocketDisconnect:
+            pass
+        return
 
     try:
         while True:
