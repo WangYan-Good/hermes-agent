@@ -627,6 +627,7 @@ function limitEntries(stream: OutputStream): OutputStream {
     if (!removed) {
       break
     }
+
     bytes -= entryBytes(removed)
     omitted = true
   }
@@ -650,6 +651,7 @@ function limitEntries(stream: OutputStream): OutputStream {
       if (!removed) {
         break
       }
+
       bytes -= entryBytes(removed)
     }
   }
@@ -730,6 +732,7 @@ function readSession(item: unknown): {
   if (!item || typeof item !== 'object') {
     return {}
   }
+
   const record = item as Record<string, unknown>
 
   return {

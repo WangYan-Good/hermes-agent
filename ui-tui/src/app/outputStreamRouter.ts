@@ -91,6 +91,7 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
     if (disposed) {
       return
     }
+
     clearTimer()
 
     for (const sessionId of [...pendingDeltas.keys()]) {
@@ -102,6 +103,7 @@ export function createOutputStreamRouter(options: OutputStreamRouterOptions = {}
     if (timer || disposed) {
       return
     }
+
     timer = setTimeout(flush, batchMs)
     timer.unref?.()
   }
