@@ -16,10 +16,12 @@ const text = (id: string, role: ChatMessage['role'], body: string): ChatMessage 
 
 /** Exercise the real shared runtime through its public consumer boundary. */
 const feedToRepository = (repository: ExportedRepository) => {
-  const { result } = renderHook(() => useIncrementalExternalStoreRuntime({
-    messageRepository: repository,
-    onNew: async () => {}
-  }))
+  const { result } = renderHook(() =>
+    useIncrementalExternalStoreRuntime({
+      messageRepository: repository,
+      onNew: async () => {}
+    })
+  )
 
   return result.current.thread.getState().messages
 }
@@ -86,11 +88,14 @@ describe('useRuntimeMessageRepository', () => {
     const user = text('user', 'user', 'question')
     const initial = [user, text('reply', 'assistant', 'partial')]
 
-    const { result, rerender } = renderHook((messages: ChatMessage[]) => {
-      const messageRepository = useRuntimeMessageRepository(messages)
+    const { result, rerender } = renderHook(
+      (messages: ChatMessage[]) => {
+        const messageRepository = useRuntimeMessageRepository(messages)
 
-      return useIncrementalExternalStoreRuntime({ messageRepository, onNew: async () => {} })
-    }, { initialProps: initial })
+        return useIncrementalExternalStoreRuntime({ messageRepository, onNew: async () => {} })
+      },
+      { initialProps: initial }
+    )
 
     const runtime = result.current
     const settled = runtime.thread.getState().messages[0]

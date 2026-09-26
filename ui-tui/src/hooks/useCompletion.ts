@@ -27,10 +27,7 @@ export function mergeWidgetAppItems(input: string, items: CompletionItem[]): Com
   return [...items, ...local]
 }
 
-export function mergeLocalTuiCommandItems(
-  input: string,
-  items: CompletionItem[]
-): CompletionItem[] {
+export function mergeLocalTuiCommandItems(input: string, items: CompletionItem[]): CompletionItem[] {
   if (input.includes(' ')) {
     return items
   }

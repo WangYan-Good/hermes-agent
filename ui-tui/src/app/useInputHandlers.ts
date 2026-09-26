@@ -18,12 +18,7 @@ import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
 import { completeControlPrompt } from './controlPromptQueue.js'
 import { getInputSelection } from './inputSelectionStore.js'
-import {
-  type GatewayRpc,
-  type InputHandlerContext,
-  type InputHandlerResult,
-  type OverlayState
-} from './interfaces.js'
+import { type GatewayRpc, type InputHandlerContext, type InputHandlerResult, type OverlayState } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
@@ -133,13 +128,15 @@ export function dismissApprovalPrompt(overlay: Pick<OverlayState, 'approval'>, r
     return
   }
 
-  return rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: approval.sessionId }).then(response => {
-    if (response?.resolved || response?.status === 'expired') {
-      completeControlPrompt('approval', undefined, approval.sessionId)
-    }
+  return rpc<ApprovalRespondResponse>('approval.respond', { choice: 'deny', session_id: approval.sessionId }).then(
+    response => {
+      if (response?.resolved || response?.status === 'expired') {
+        completeControlPrompt('approval', undefined, approval.sessionId)
+      }
 
-    return response
-  })
+      return response
+    }
+  )
 }
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value))
@@ -468,7 +465,6 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return
       }
     }
-
 
     if (cState.completions.length && cState.input && cState.historyIdx === null && (key.upArrow || key.downArrow)) {
       const len = cState.completions.length

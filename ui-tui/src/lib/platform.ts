@@ -39,12 +39,8 @@ export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean },
  * The latter is also the PTY bridge's platform-independent redraw signal
  * after a reconnect can no longer replay a complete terminal snapshot.
  */
-export const isRedrawShortcut = (
-  key: { ctrl: boolean; meta: boolean; super?: boolean },
-  ch: string
-): boolean =>
-  isAction(key, ch, 'l') ||
-  (key.ctrl && !key.meta && key.super !== true && ch.toLowerCase() === 'l')
+export const isRedrawShortcut = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string): boolean =>
+  isAction(key, ch, 'l') || (key.ctrl && !key.meta && key.super !== true && ch.toLowerCase() === 'l')
 
 export const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
   Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)

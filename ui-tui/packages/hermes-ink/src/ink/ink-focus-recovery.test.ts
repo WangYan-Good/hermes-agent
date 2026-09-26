@@ -108,11 +108,7 @@ async function mountInk(alternateScreen: boolean): Promise<Harness> {
 
   const child = React.createElement(RawModeConsumer)
 
-  ink.render(
-    alternateScreen
-      ? React.createElement(AlternateScreen, { mouseTracking: 'wheel' }, child)
-      : child
-  )
+  ink.render(alternateScreen ? React.createElement(AlternateScreen, { mouseTracking: 'wheel' }, child) : child)
   ink.onRender()
   await flushAsyncWork()
 

@@ -50,8 +50,7 @@ const MIN_GUTTER_BODY_COLS = 72
 
 export type AppScreenMode = 'alternate' | 'inline'
 
-export const appScreenMode = (inlineMode: boolean): AppScreenMode =>
-  inlineMode ? 'inline' : 'alternate'
+export const appScreenMode = (inlineMode: boolean): AppScreenMode => (inlineMode ? 'inline' : 'alternate')
 
 // Petdex mascot — a small floating overlay riding the bottom-right corner just
 // above the status bar, with a little top/left breathing room. It reserves no

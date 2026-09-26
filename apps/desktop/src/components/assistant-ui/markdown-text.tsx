@@ -60,7 +60,6 @@ const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 // `SyntaxHighlighter` override's plain path (same output Shiki's own
 // `delay` fallback shows), so nothing flashes or reflows unexpectedly.
 
-
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
 // flush) with a tail-bounded repair. Must stay module-scope so the prop
 // identity is stable across renders.
