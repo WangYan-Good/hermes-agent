@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as attachments from './native-attachments';
 
 beforeEach(() => window.sessionStorage.clear());
+afterEach(() => vi.unstubAllGlobals());
 
 describe('attachment occurrences', () => {
   it('rejects a late completion after removal and after a scope change', async () => {
@@ -45,6 +46,19 @@ function harness() {
   const client = new attachments.NativeAttachments(() => scope, rpc, http);
   return { client, ledger, rpc, http, scope };
 }
+it('adds attachments with distinct secure occurrence and request IDs on insecure HTTP', async () => {
+  vi.stubGlobal('isSecureContext', false);
+  vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
+  const { client, rpc } = harness();
+  await client.add([new File(['first'], 'first.txt'), new File(['second'], 'second.txt')]);
+  const items = client.getSnapshot().items;
+  expect(items).toHaveLength(2);
+  expect(items.every(item => item.state === 'uploaded')).toBe(true);
+  const ids = items.flatMap(item => [item.occurrence_id, item.request_id]);
+  for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  expect(new Set(ids).size).toBe(ids.length);
+  expect(rpc.mock.calls.some(([method]) => method === 'prompt.submit')).toBe(false);
+});
 it('uses the snapshot after a lost upload response, without uploading twice', async () => {
   const { client, http, ledger } = harness();
   const normal = http.getMockImplementation()!;

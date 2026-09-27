@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SWITCH = 'web/src/pages/chat/chat-switch.ts'
 NATIVE = 'web/src/pages/chat/native/native-session.ts'
 MUTATIONS = [
+    ('insecure-http-uuid', 'web/src/lib/browser-uuid.ts', '  const crypto = globalThis.crypto;', '  return globalThis.crypto.randomUUID();\n  const crypto = globalThis.crypto;', 'src/pages/ChatPage.test.tsx'),
     ('premature-preference', SWITCH, 'this.previous = this.state.mounted; this.commit = commit;', 'commit?.(); this.previous = this.state.mounted; this.commit = commit;', 'src/pages/chat/chat-switch.test.ts'),
     ('overlapping-owners', SWITCH, 'await surface.release();', 'void surface.release();', 'src/pages/chat/chat-switch.test.ts'),
     ('ambiguous-submit-replay', NATIVE, '      const storedId = this.state.storedId || this.target;', '      if (this.uncertainSubmit) void gateway.request("prompt.submit", { session_id: this.state.runtimeId, text: "replayed" });\n      const storedId = this.state.storedId || this.target;', 'src/pages/chat/native/native-session.test.ts'),

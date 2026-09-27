@@ -28,6 +28,29 @@ async function setup() {
   socket.frame({ type: 'attached', instance: 'instance', control_confirmed: true });
   return { lifecycle, socket, output, state };
 }
+it('creates distinct secure ownership and control IDs across insecure HTTP reconnects', async () => {
+  vi.stubGlobal('isSecureContext', false);
+  vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
+  const { lifecycle, socket } = await setup();
+  try {
+    const first = vi.mocked(buildWsUrl).mock.calls.at(-1)![1]!;
+    const status = lifecycle.command('status');
+    const request = JSON.parse(socket.sent.at(-1) as string);
+    socket.frame({ type: 'control', id: request.id, result: { ready: true, confirmed: true } });
+    expect(await status).toMatchObject({ ready: true });
+    socket.close(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    const second = vi.mocked(buildWsUrl).mock.calls.at(-1)![1]!;
+    expect(second.attach).toBe(first.attach);
+    expect(second.instance).toBe('instance');
+    const ids = [first.attach, first.generation, request.id, second.generation];
+    for (const id of ids) expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(Socket.instances[1].sent).toEqual([]);
+  } finally {
+    lifecycle.detach();
+  }
+});
 it('authenticates each connection, negotiates protocol, sends binary input and structured resize', async () => {
   const { lifecycle, socket, output } = await setup();
   expect(buildWsUrl).toHaveBeenCalledWith('/api/pty', expect.objectContaining({ profile: 'work' }));

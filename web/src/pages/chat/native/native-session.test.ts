@@ -12,6 +12,15 @@ async function start() { session.start(); await flushNative(); }
 const requests = (method: string) => FakeNativeSocket.requests.filter(r => r.method === method);
 
 describe("native session over shared JSON-RPC client", () => {
+  it("creates a presentation identity on insecure HTTP and proceeds to WS initialization", async () => {
+    vi.stubGlobal("isSecureContext", false);
+    vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
+    session = new NativeSession("work", null, undefined, true);
+    await start();
+    expect(session.getSnapshot().ready).toBe(true);
+    expect(requests("session.create")[0].params.presentation_generation).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    expect(requests("prompt.submit")).toHaveLength(0);
+  });
   it("refreshes settled queue metadata from normal session.info after a completion", async () => {
     await start();
     let settled = false;

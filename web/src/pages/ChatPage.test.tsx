@@ -64,6 +64,16 @@ function expectNativeOnly() {
 it('defaults to Native and exposes the live selector without replay', async () => {
   await render(); expectNativeOnly();
 });
+it('mounts Native through the surface boundary on insecure HTTP without randomUUID', async () => {
+  vi.stubGlobal('isSecureContext', false);
+  vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) });
+  await render();
+  expectNativeOnly();
+  expect(container.textContent).not.toContain('Interface failed to load');
+  expect(container.textContent).not.toContain('The chat interface could not load');
+  expect(container.querySelector('select')?.disabled).toBe(false);
+  expect(FakeNativeSocket.requests.some(r => r.method === 'session.create')).toBe(true);
+});
 it('ignores unknown mode values without deleting browser preferences', async () => {
   localStorage.setItem('hermes.dashboard.chat.mode', 'unknown');
   await render('/chat?chat_mode=unknown&other=keep#anchor'); expectNativeOnly();

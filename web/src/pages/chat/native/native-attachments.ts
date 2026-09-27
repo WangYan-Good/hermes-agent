@@ -1,4 +1,5 @@
 import { authedFetch } from '@/lib/api';
+import { createBrowserUuid } from '@/lib/browser-uuid';
 
 export interface AttachmentScope { runtimeId: string; profile: string; generation: number }
 export interface NativeAttachment {
@@ -110,10 +111,10 @@ export class NativeAttachments {
       if (!file.size || file.size > limit * 1024 * 1024 || active.length >= 10 || active.reduce((sum, a) => sum + a.size, 0) + file.size > 200 * 1024 * 1024 || ([...file.name].some(char => char.charCodeAt(0) < 32) || /[\\/]/.test(file.name))) {
         this.set({ error: 'Attachment rejected: check filename, nonempty content, size and count limits.' }); continue;
       }
-      const id = crypto.randomUUID();
+      const id = createBrowserUuid();
       this.sources.set(id, file);
       const preview = /^image\/(png|jpeg|gif|webp|bmp)$/.test(file.type) && typeof URL.createObjectURL === 'function' ? URL.createObjectURL(file) : undefined;
-      this.set({ items: [...this.state.items, { occurrence_id: id, request_id: crypto.randomUUID(), name: file.name, size: file.size, mime: file.type || 'application/octet-stream', state: 'local', preview }], error: '' });
+      this.set({ items: [...this.state.items, { occurrence_id: id, request_id: createBrowserUuid(), name: file.name, size: file.size, mime: file.type || 'application/octet-stream', state: 'local', preview }], error: '' });
       // Sequential upload stays below the server's concurrency cap and bounds memory.
       await this.retry(id);
     }
