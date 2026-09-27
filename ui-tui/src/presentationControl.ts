@@ -100,6 +100,7 @@ export function connectPresentationControl(
   if (!url) {
     return () => {}
   }
+
   const instance = new URL(url).searchParams.get('instance')!
   let observedBytes = 0
   let stopped = false
@@ -110,6 +111,7 @@ export function connectPresentationControl(
   const observe = (data: Buffer | string) => {
     observedBytes += Buffer.byteLength(data)
   }
+
   process.stdin.on('data', observe)
 
   const changed = () => {

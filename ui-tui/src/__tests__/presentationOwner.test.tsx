@@ -42,6 +42,7 @@ async function flush() {
     await new Promise<void>(resolve => setImmediate(resolve))
   }
 }
+
 beforeEach(() => {
   resetOutputStreams()
   resetOverlayState()
@@ -78,7 +79,9 @@ it('reads the actual composer refs, queue and prompt queue before allowing prepa
     stdin: stdin as NodeJS.ReadStream,
     patchConsole: false
   })
+
   const authority = vi.fn().mockResolvedValue({ confirmed: true, ready: true, ticket: 'ticket', cancelled: true })
+
   const invoke = (action: string) =>
     handlePresentationControl(
       { type: 'control', id: 'id', instance: 'instance', generation: 'generation', input_bytes: 0, action },
