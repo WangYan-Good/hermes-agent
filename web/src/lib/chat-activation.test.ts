@@ -24,3 +24,14 @@ describe("latchChatActivation", () => {
     expect(latchChatActivation(true, true)).toBe(true);
   });
 });
+
+import { chatHostDisposition } from './chat-activation';
+it('plugin override suppresses both surfaces even after activation', () => {
+  expect(chatHostDisposition(true, true, true, false, true)).toBe('suppressed');
+});
+it('fresh manifest confirmation gates both surfaces regardless of cache or activation', () => {
+  expect(chatHostDisposition(true, false, false, false, true)).toBe('waiting');
+  expect(chatHostDisposition(true, false, true, true, true)).toBe('waiting');
+  expect(chatHostDisposition(true, false, true, false, false)).toBe('inactive');
+  expect(chatHostDisposition(true, false, true, false, true)).toBe('mounted');
+});

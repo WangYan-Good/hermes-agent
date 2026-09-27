@@ -517,21 +517,37 @@ npm test          # vitest
 
 ### Native Chat in the Dashboard (`hermes dashboard` → `/chat`)
 
-Dashboard Chat remains user-facing Native-only in UI-C1: `ChatPage` hosts `NativeChatPage` over `/api/ws`
-using `tui_gateway`, AIAgent and SessionDB. App preserves the host across route
-hide/show, and fresh plugin manifest confirmation precedes any built-in mount.
-A plugin overriding `/chat` suppresses the built-in renderer and Agent socket.
+Dashboard Chat defaults to Native; Terminal remains selectable. `ChatPage`
+hosts `ChatSurfaceRouter`, which lazy-loads one active presentation at a time:
+Native over `/api/ws`, or the existing ui-tui over authenticated `/api/pty`.
+App retains the router across route hide/show. Fresh plugin manifest confirmation
+precedes either mount; a plugin overriding `/chat` suppresses both built-in
+presentations and their connections.
 
-UI-C1 restores authenticated `/api/pty`, POSIX/Windows PTY bridges and the
-unmounted `TerminalChatPage` infrastructure. It runs the existing ui-tui against
-this gateway with a fixed profile; binary terminal input is separate from the
-required `hermes.pty-control.v1` lifecycle protocol. Terminal-only
-`terminal.presentation` checks the actual owner before release. Native
-`session.handoff` remains unavailable, and active Native/Terminal ownership
-cannot be transferred. Settings, selectors and safe cross-surface switching
-belong to UI-C2. Legacy mode preferences are inert and cleaned best effort only
-after Native becomes ready; old YAML is accepted without rewriting. Recovery never repeats `prompt.submit`, and Native
-resume uses `allow_auto_continue=false` even with deferred history hydration.
+Mode precedence is valid `chat_mode` URL intent, browser preference
+(`hermes.dashboard.chat.mode`), profile `dashboard.chat.default_mode`, then
+Native. Config exposes Native/Terminal profile defaults and a separate browser
+Follow profile/Native/Terminal selector. Existing YAML is read without migration.
+Unknown values fall back; an unavailable profile default requires retry when
+following the profile. Storage failures affect persistence, not the page choice.
+
+`ChatSwitch` coordinates `ChatSurfaceLifecycle` adapters. `native.presentation`
+and `terminal.presentation` verify actual transport ownership, profile and
+generation. Prepare freezes new admission; release requires an authoritative
+ticket and cleanup ACK. A zero-owner transition precedes target mount; only
+confirmed target readiness commits browser preference. Unconfirmed cleanup
+blocks retry/revert from creating a second owner. PTY control remains separate
+from binary input and requires `hermes.pty-control.v1`; single-viewer,
+same-instance reconnect and POSIX/Windows bridge contracts remain intact.
+
+Switching transfers only the canonical durable storedId. Explicit switching
+persists an empty source session when necessary, without submitting a prompt.
+Busy turns, queues and interactions defer switching; users resolve interactions
+explicitly. Native drafts require explicit discard or cancel (attachment discard
+requires backend ACK). Terminal unfinished input must be finished/cleared in the
+TUI. Recovery never repeats `prompt.submit`; both resumes disable automatic
+continuation. Generic `session.handoff` stays unavailable. Native history,
+compression lineage and attachment/interaction ownership remain unchanged.
 
 Agent terminal tools/backends, standalone CLI/TUI and Desktop terminal panes
 remain supported. The separate Hermes Console uses `/api/console` and xterm;

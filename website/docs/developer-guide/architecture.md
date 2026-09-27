@@ -416,10 +416,10 @@ artifacts and generated images. Controlled workers verify the transport and
 persistence contracts; they do not validate an external model provider.
 
 
-## Dashboard Chat and Terminal transport foundation (UI-C1)
+## Dashboard Chat presentation switching (UI-C2)
 
-`ChatPage` hosts `NativeChatPage`, which connects through authenticated `/api/ws`
-to `tui_gateway`, AIAgent and SessionDB. The App mounts the host on the first
+`ChatPage` hosts `ChatSurfaceRouter`; its Native presentation connects through
+authenticated `/api/ws` to `tui_gateway`, AIAgent and SessionDB. The App mounts the host on the first
 `/chat` visit and preserves it when other routes are shown. Visibility is not a
 session restart. Profile changes replace the profile-scoped controller without
 carrying the previous profile's durable ID or draft into the new scope.
@@ -428,11 +428,20 @@ Plugin manifests must be freshly confirmed before built-in chat can mount.
 A plugin with `tab.override == "/chat"` owns that route even if its renderer is
 late or fails to load; there is no transient built-in Agent connection.
 
-Dashboard `/chat` remains Native-only at the user-facing level. UI-C1 restores
-`/api/pty` and an unmounted `TerminalChatPage` as transport infrastructure; there
-is no Terminal route, Settings selector, browser preference or mode URL behavior.
-Native/Terminal switching is reserved for UI-C2. The separate Hermes Console
-still uses `/api/console` and is not a chat presentation.
+Dashboard `/chat` defaults to Native and offers Terminal through
+`ChatSurfaceRouter`. Native and Terminal chunks load independently and share
+one canonical durable conversation through the existing gateway and SessionDB.
+The persistent host survives route changes. The separate Hermes Console uses
+`/api/console` and is not a chat presentation.
+
+`ChatSwitch` tracks requested/mounted modes, current owner, target, durable ID
+and generation. Both surfaces implement the same narrow lifecycle contract.
+Native uses opt-in `native.presentation`; Terminal reuses `terminal.presentation`.
+Prepare freezes new admission and checks real pending work; release removes the
+source owner and acknowledges cleanup before the target mounts. The transition
+may have zero owners but never two input owners. Target failure requires
+confirmed cleanup before retry/revert. Missing ACKs remain unknown; scoped
+release receipts allow read-only confirmation without prompt replay.
 
 The PTY endpoint uses the same token/ticket, Host, Origin and peer validation as
 other Dashboard WebSockets, validates profiles before spawning, and requires
@@ -455,9 +464,8 @@ prompts; `terminal.presentation` combines that state with authoritative gateway
 work. `prepare` freezes new input, `cancel` thaws only after owner confirmation,
 and `release` requires a valid prepare ticket plus persistence/resource cleanup
 before ACK. `abort` is rejected after any admitted input. A missing control
-channel or ACK never implies idle or successful release. Live cross-surface
-resume is rejected in UI-C1; after Terminal closes, its ordinary SessionDB
-history is readable through current resume APIs with auto-continuation disabled.
+channel or ACK never implies idle or successful release. Live ownership cannot be stolen by a resume request. After acknowledged source
+release, the target resumes the canonical storedId with auto-continuation disabled.
 No new history store or database migration is introduced.
 
 The browser component reuses the Console's installed xterm, fit, unicode11 and
@@ -465,21 +473,35 @@ web-links dependencies without WebGL. xterm owns streaming UTF-8/ANSI parsing
 and mobile textarea input; a tested IME fallback handles missing composition
 commits. Input guards also cover shortcuts and wheel reports. Output follows the
 bottom only while the viewer has not scrolled away. The Vite-only
-`web/e2e/terminal-foundation.html` entry exercises the component without adding
-it to production routes or build inputs.
+`web/e2e/terminal-foundation.html` entry continues to exercise the underlying component independently of the router.
 
 Agent terminal execution, terminal backends, standalone CLI/TUI and Desktop
 terminal panes remain separate supported surfaces. Ordinary `/api/pub` and
 `/api/events` retain their existing behavior; the old private presentation
 publisher and Native `session.handoff` remain rejected.
 
-Legacy `hermes.dashboard.chat.mode` browser values and `chat_mode` URL parameters
-have no selection function. After Native becomes ready, browser-key cleanup is
-attempted once per host, best effort. On active `/chat`, URL cleanup uses replace
-and preserves canonical `resume`, unrelated parameters and the hash. Blocked
-storage never prevents chat. The obsolete `dashboard.chat.default_mode` field is
-absent from generated defaults and Settings; old raw YAML remains accepted and
-inert, and config reads do not rewrite it.
+Mode precedence is valid URL `chat_mode=native|terminal`, browser override
+`hermes.dashboard.chat.mode`, profile `dashboard.chat.default_mode`, then Native.
+Unknown values are ignored. Defaults/schema expose the profile enum; old YAML
+works without rewriting. Config offers a separate browser preference with Follow
+profile. Without a mounted chat host, changing it opens no connections. With a
+host, both Settings and the live selector request the same safe switch; browser
+persistence occurs only after target readiness. Storage failure leaves the page
+choice effective and displays a notice. Following an unavailable profile requires
+configuration retry rather than silently writing Native.
+
+A successfully consumed URL override is removed with replace, preserving other
+parameters and the hash; it does not overwrite browser preference. Back/forward
+navigation is presentation intent only. Hidden route changes never submit or
+create another presentation. Profile changes invalidate outstanding callbacks and
+never carry the previous profile's storedId or PTY instance into the new scope.
+
+Busy turns, queues, pending interactions and attachment operations defer release.
+Native drafts need explicit discard or cancel, with authoritative attachment
+cancellation. Terminal composer state is checked in the actual TUI; users finish
+or clear it there. No draft, keystrokes or interaction responses cross surfaces.
+Explicitly switching an otherwise empty session persists its identity without
+creating a message. An ambiguous submission recovers without resending.
 
 `/chat?learn=<text>` prepares an unsent `/learn <text>` draft. An existing draft
 requires an explicit append/ignore decision. No URL handling submits a prompt.

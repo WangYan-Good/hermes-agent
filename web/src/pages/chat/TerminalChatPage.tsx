@@ -1,3 +1,4 @@
+import type { ChatSurfaceLifecycle } from './chat-surface-lifecycle';
 import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
@@ -10,13 +11,17 @@ import { TerminalLifecycle } from './terminal-lifecycle';
 
 export interface TerminalChatPageProps {
   profile: string;
+  isActive?: boolean;
+  onSurface?: (surface: ChatSurfaceLifecycle | null) => void;
   resume?: string;
   onLifecycle?: (lifecycle: TerminalLifecycle | null) => void;
 }
 
-/** Infrastructure component; deliberately absent from the production /chat route. */
-export default function TerminalChatPage({ profile, resume, onLifecycle }: TerminalChatPageProps) {
+/** Real TUI presentation. The router owns safe activation and release. */
+export default function TerminalChatPage({ profile, resume, onLifecycle, onSurface, isActive = true }: TerminalChatPageProps) {
   const host = useRef<HTMLDivElement>(null);
+  const visible = useRef(isActive);
+  useEffect(() => { visible.current = isActive; }, [isActive]);
   const [state, setState] = useState('connecting');
   useEffect(() => {
     if (!host.current) return;
@@ -29,7 +34,7 @@ export default function TerminalChatPage({ profile, resume, onLifecycle }: Termi
     term.open(host.current);
     let disposed = false;
     const lifecycle = new TerminalLifecycle({
-      profile, resume,
+      profile, resume, managed: !!onSurface,
       state: next => { if (!disposed) { setState(next); if (next === 'ready') lifecycle.resize(term.cols, term.rows); } },
       output: bytes => {
         if (disposed) return;
@@ -63,22 +68,24 @@ export default function TerminalChatPage({ profile, resume, onLifecycle }: Termi
       }
       return true;
     });
-    const resize = () => { if (!disposed) { fit.fit(); lifecycle.resize(term.cols, term.rows); } };
+    const resize = () => { if (!disposed && visible.current) { fit.fit(); lifecycle.resize(term.cols, term.rows); } };
     const observer = new ResizeObserver(resize);
     observer.observe(host.current);
     resize();
     onLifecycle?.(lifecycle);
-    void lifecycle.connect();
+    onSurface?.(lifecycle.surface);
+    queueMicrotask(() => { if (!disposed) void lifecycle.connect(); });
     return () => {
       disposed = true;
       observer.disconnect();
       term.textarea?.removeEventListener('compositionend', composed);
       composition.dispose(); data.dispose(); binary.dispose();
       onLifecycle?.(null);
-      void lifecycle.dispose();
+      onSurface?.(null);
+      void Promise.resolve(lifecycle.dispose()).catch(() => {});
       term.dispose();
     };
-  }, [profile, resume, onLifecycle]);
+  }, [profile, resume, onLifecycle, onSurface]);
   return <section aria-label="Terminal Chat" className="flex h-full min-h-0 flex-col">
     <output role="status">{state}</output>
     <div ref={host} className="min-h-0 flex-1" />

@@ -431,3 +431,36 @@ async def test_acknowledged_pre_input_disconnect_retains_same_process(monkeypatc
         assert bridge.closed and not reg.sessions
     finally:
         await reg.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_receipt_is_scoped_and_requires_finished_cleanup():
+    reg = PtySessionRegistry()
+    bridge = Bridge()
+    session = await reg.acquire('tab', 'alice', 'work', lambda _: bridge)
+    ws = Socket()
+    await session.attach(ws, 'generation')
+    with pytest.raises(PtyConflict):
+        reg.release_receipt('tab', 'alice', 'work', session.instance, 'generation')
+    await control(session, reg, ws, frame(session, 'abort'))
+    assert bridge.closed and not reg.sessions
+    assert reg.release_receipt('tab', 'alice', 'work', session.instance, 'generation')['released']
+    for principal, profile, instance, generation in [('other', 'work', session.instance, 'generation'), ('alice', 'other', session.instance, 'generation'), ('alice', 'work', 'stale', 'generation'), ('alice', 'work', session.instance, 'stale')]:
+        with pytest.raises(PtyConflict):
+            reg.release_receipt('tab', principal, profile, instance, generation)
+
+
+@pytest.mark.asyncio
+async def test_current_viewer_cannot_use_stale_generation():
+    reg = PtySessionRegistry()
+    session = await reg.acquire('tab', 'alice', '', lambda _: Bridge())
+    ws = Socket()
+    session.owner = Socket()
+    await session.attach(ws, 'current-generation')
+    try:
+        with pytest.raises(PtyConflict):
+            await session.input(ws, 'stale-generation', b'not accepted')
+        assert not session.accepted_input
+        assert not session.bridge.writes
+    finally:
+        await reg.close(session)

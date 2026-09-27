@@ -7,6 +7,10 @@ export class FakeNativeSocket extends EventTarget {
   static requests: RpcRequest[] = [];
   static responder: (request: RpcRequest, socket: FakeNativeSocket) => void = FakeNativeSocket.defaultResponse;
   static defaultResponse(request: RpcRequest, socket: FakeNativeSocket) {
+    if (request.method === 'native.presentation') {
+      socket.reply(request, { confirmed: true, ready: true, stored_id: 'stored', ticket: 'ticket', released: request.params.action === 'release', cancelled: request.params.action === 'cancel' });
+      return;
+    }
     const result = request.method === "session.create" ? { session_id: "runtime", stored_session_id: "stored", messages: [] } : request.method === "session.resume" || request.method === "session.activate" ? { session_id: "runtime", session_key: "stored", messages: [{ role: "user", text: "hello" }, { role: "assistant", text: "restored" }], running: false } : { status: request.method === "session.interrupt" ? "interrupted" : "streaming" };
     socket.reply(request, result);
   }

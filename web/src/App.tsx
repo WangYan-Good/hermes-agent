@@ -107,7 +107,7 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
-import { latchChatActivation } from "@/lib/chat-activation";
+import { chatHostDisposition, latchChatActivation } from "@/lib/chat-activation";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
@@ -146,12 +146,12 @@ const CHAT_NAV_ITEM: NavItem = {
 };
 
 /**
- * Built-in routes except /chat.  ChatPage wraps NativeChatPage, whose
+ * Built-in routes except /chat.  ChatPage wraps ChatSurfaceRouter, whose
  * built-in host stays mounted outside <Routes> after the first /chat visit
  * when embedded — see the persistent chat host block near the bottom of
- * this file.  Leaving /chat only hides this Native host without unmounting,
+ * this file.  Leaving /chat only hides this chat host without unmounting,
  * preserving its session, WebSocket, and controller state on return.
- * The host and Native Chat chunk remain deferred until the first /chat
+ * The host and selected Chat chunk remain deferred until the first /chat
  * visit.  Routing still owns the URL so /chat deep-links, browser
  * back/forward, and nav highlight keep working.
  */
@@ -410,12 +410,12 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
-  // Defer mounting the persistent chat host (and its Native chunk) until the
+  // Defer mounting the persistent chat host (and its active surface chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
-  // Native session survives later tab switches.
+  // active chat session survives later tab switches.
   const [chatHostMounted, setChatHostMounted] = useState(isChatRoute);
   useEffect(() => {
-    // This is a one-way activation latch: unmounting later would destroy Native session state.
+    // This is a one-way activation latch: unmounting later would destroy active chat session state.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setChatHostMounted((prev) => latchChatActivation(prev, isChatRoute));
   }, [isChatRoute]);
@@ -458,6 +458,7 @@ export default function App() {
     () => manifests.some((m) => m.tab.override === "/chat"),
     [manifests],
   );
+  const chatDisposition = chatHostDisposition(embeddedChat, chatOverriddenByPlugin, manifestConfirmed, pluginsLoading, chatHostMounted);
 
   const builtinRoutes = useMemo(
     () => ({
@@ -799,13 +800,12 @@ export default function App() {
                   </Suspense>
                 </ProfileKeyedRoutes>
 
-                {embeddedChat &&
-                  !chatOverriddenByPlugin &&
-                  (!manifestConfirmed || pluginsLoading ? (
+                {chatDisposition !== 'suppressed' &&
+                  (chatDisposition === 'waiting' ? (
                     isChatRoute ? (
                       <div role="status">{manifestError ? <><span>Could not confirm the chat provider. </span><button onClick={retryManifests}>Retry</button></> : <RouteFallback label="Loading chat…" />}</div>
                     ) : null
-                  ) : chatHostMounted ? (
+                  ) : chatDisposition === 'mounted' ? (
                     <div
                       data-chat-active={isChatRoute ? "true" : "false"}
                       className={cn(

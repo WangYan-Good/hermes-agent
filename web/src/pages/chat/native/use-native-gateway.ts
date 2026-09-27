@@ -2,8 +2,8 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { NativeSession } from "./native-session";
 
 /** Visibility is deliberately absent: the persistent host owns this lifetime. */
-export function useNativeGateway(profile: string, resume: string | null) {
-  const [session] = useState(() => new NativeSession(profile, resume));
+export function useNativeGateway(profile: string, resume: string | null, managed = false) {
+  const [session] = useState(() => new NativeSession(profile, resume, undefined, managed));
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
   useEffect(() => {
     let cancelled = false;

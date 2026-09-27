@@ -340,3 +340,65 @@ it("rejects old-generation, expired and cross-request MCP operation updates", as
   session.rememberMcpOperation(current, { ...op, id: "late-action" });
   expect(session.getSnapshot()).toBe(before);
 });
+
+it('prepare freezes admission without submitting or silently discarding the draft', async () => {
+  await start(); session.setDraft('keep this draft');
+  const prepared = await session.prepare();
+  expect(prepared.ready).toBe(false); expect(prepared.blocked).toContain('draft');
+  expect(session.draftText).toBe('keep this draft');
+  await session.submit('blocked'); await session.steer('blocked');
+  expect(requests('prompt.submit')).toHaveLength(0); expect(requests('session.steer')).toHaveLength(0);
+  await session.cancel(); expect(session.inputEnabled).toBe(true); expect(session.draftText).toBe('keep this draft');
+});
+it.each(['approval', 'clarify', 'secret', 'sudo', 'mcp.setup'])('prepare never answers %s', async kind => {
+  await start();
+  FakeNativeSocket.instances[0].event(`${kind}.request`, { request_id: 'pending', command: 'echo hi', question: 'Choose?', choices: ['once', 'deny'], prompt: 'Enter value', server: 'test' });
+  await session.prepare();
+  expect(FakeNativeSocket.requests.some(r => r.method === `${kind}.respond`)).toBe(false);
+  expect(requests('prompt.submit')).toHaveLength(0);
+});
+it('switch preparation during ambiguous submit does not replay', async () => {
+  await start();
+  FakeNativeSocket.responder = (request, socket) => request.method === 'prompt.submit' ? socket.close(1006) : FakeNativeSocket.defaultResponse(request, socket);
+  await session.submit('exactly once');
+  expect((await session.prepare()).ready).toBe(false);
+  await vi.advanceTimersByTimeAsync(1000); await flushNative();
+  await session.prepare();
+  expect(requests('prompt.submit')).toHaveLength(1);
+});
+
+it('recovers a release not accepted by the backend only after cancel ACK, then submits and switches again', async () => {
+  await start();
+  expect((await session.prepare()).ready).toBe(true);
+  const socket = FakeNativeSocket.instances[0];
+  const send = socket.send.bind(socket);
+  vi.spyOn(socket, 'send').mockImplementation(data => {
+    const request = JSON.parse(data);
+    if (request.method === 'native.presentation' && request.params.action === 'release') throw new Error('release not sent');
+    send(data);
+  });
+  await expect(session.release()).rejects.toThrow();
+  expect(requests('native.presentation').filter(r => r.params.action === 'release')).toHaveLength(0);
+  await session.submit('blocked before cancel');
+  expect(requests('prompt.submit')).toHaveLength(0);
+  await session.cancel();
+  expect(session.inputEnabled).toBe(true);
+  await session.submit('explicit after cancel');
+  expect(requests('prompt.submit')).toHaveLength(1);
+  socket.event('message.complete', { text: 'done' }); await flushNative();
+  vi.mocked(socket.send).mockRestore();
+  expect((await session.prepare()).ready).toBe(true);
+  await session.release();
+  expect(session.inputEnabled).toBe(false);
+  expect(requests('prompt.submit')).toHaveLength(1);
+});
+
+it('never opens Native input when cancel reports an already released owner', async () => {
+  await start(); await session.prepare(); await session.release();
+  FakeNativeSocket.responder = (request, socket) => request.method === 'native.presentation'
+    ? socket.reply(request, { released: true }) : FakeNativeSocket.defaultResponse(request, socket);
+  await expect(session.cancel()).rejects.toThrow('not acknowledged');
+  await session.submit('must not submit');
+  expect(session.inputEnabled).toBe(false);
+  expect(requests('prompt.submit')).toHaveLength(0);
+});

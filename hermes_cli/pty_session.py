@@ -97,6 +97,20 @@ class PtySessionRegistry:
         self.clock = clock
         self.sessions: dict[str, PtySession] = {}
         self.stopping = False
+        self.receipts = {}
+
+    def remember_release(self, session, result):
+        now = self.clock()
+        self.receipts = {key: value for key, value in self.receipts.items() if now - value[0] < 900}
+        if len(self.receipts) >= 2048:
+            self.receipts.pop(next(iter(self.receipts)))
+        self.receipts[session.key] = (now, session.principal, session.profile, session.instance, session.generation, result)
+
+    def release_receipt(self, key, principal, profile, instance, generation):
+        receipt = self.receipts.get(key)
+        if receipt is None or self.clock() - receipt[0] >= 900 or receipt[1:5] != (principal, profile, instance, generation):
+            raise PtyConflict('Terminal cleanup unconfirmed')
+        return receipt[5]
 
     async def acquire(self, key, principal, profile, spawn, *, instance=None):
         if self.stopping:

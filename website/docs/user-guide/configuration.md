@@ -2562,3 +2562,38 @@ dashboard:
 - `show_token_analytics` — off by default. The Analytics page and token/cost figures are a **local lower-bound estimate** (they exclude auxiliary calls, retries, fallbacks, and cache writes), so they can read far below the provider bill. Set `true` only if you understand they're not billing.
 - `public_url` — when set, this is the complete authority (scheme + host + optional path prefix) the OAuth `redirect_uri` is built from. Set it for deploys behind reverse proxies that don't reliably forward `X-Forwarded-*` headers. Leave empty to use proxy-header reconstruction.
 - `oauth` / `basic_auth` / `drain_auth` — auth provider config read by the bundled dashboard-auth plugins. The drain secret itself is **not** set here; it's provisioned via the `HERMES_DASHBOARD_DRAIN_SECRET` env var. See [Web Dashboard](/user-guide/features/web-dashboard) for full auth setup.
+
+
+## Dashboard Chat interface
+
+Native is the default Dashboard Chat interface. Terminal is also available from
+the **Chat Interface** selector on `/chat`.
+
+```yaml
+dashboard:
+  chat:
+    default_mode: native # native or terminal
+```
+
+In Config, **Profile default** applies to this profile after Save. **Browser
+preference** is separate: choose Follow profile default, Native, or Terminal.
+The browser preference wins over the profile. A link with `?chat_mode=native`
+or `?chat_mode=terminal` wins for that visit; after it succeeds the URL override
+is removed without changing your saved browser preference. Invalid values are
+ignored. Existing configuration files do not need migration.
+
+Switching preserves the same durable conversation. A busy turn or queue finishes
+first, and approval, clarification, secret/sudo and MCP requests still need your
+response. An unsent Native draft offers **Discard draft and switch** or **Cancel
+switch**; attached files must finish their acknowledged cancellation. Finish or
+clear unfinished Terminal input in Terminal itself. Nothing is sent automatically.
+
+If startup or cleanup cannot be confirmed, the switch stops and offers Retry or
+Return to previous interface. Another interface opens only after ownership is
+confirmed safe. A disconnected prompt is never sent again automatically. Browser
+storage failures display a notice while retaining your choice for the current
+page. If Follow profile cannot load configuration, retry instead of overwriting
+that unknown preference.
+
+Leaving Chat keeps the active interface and turn alive. The Dashboard Hermes
+Console is a separate feature and does not replace either chat interface.
