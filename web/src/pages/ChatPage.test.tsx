@@ -4,11 +4,13 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import ChatPage from './ChatPage';
+import './chat/native/NativeChatPage';
+import { $browserMode, $profileModes } from './chat/chat-preferences';
 import { FakeNativeSocket, flushNative } from './chat/native/fake-websocket.test-support';
 
 const profile = vi.hoisted(() => ({ profile: '' }));
 vi.mock('@/contexts/useProfileScope', () => ({ useProfileScope: () => profile }));
-vi.mock('@/lib/api', () => ({ authedFetch: vi.fn(), fetchJSON: vi.fn().mockRejectedValue(new Error('history unavailable')), HERMES_BASE_PATH: '', buildWsUrl: vi.fn(async () => 'ws://localhost/api/ws?ticket=fresh') }));
+vi.mock('@/lib/api', () => ({ api: { getConfig: vi.fn().mockResolvedValue({ dashboard: { chat: { default_mode: 'native' } } }) }, authedFetch: vi.fn(), fetchJSON: vi.fn().mockRejectedValue(new Error('history unavailable')), HERMES_BASE_PATH: '', buildWsUrl: vi.fn(async () => 'ws://localhost/api/ws?ticket=fresh') }));
 vi.mock('@/lib/dashboard-auth-reload', () => ({ clearDashboardTokenReloadAttempt: vi.fn(), maybeReloadForLoopbackWsAuthFailure: vi.fn() }));
 let container: HTMLDivElement;
 let root: Root;
@@ -17,7 +19,7 @@ function Harness() {
   return <><ChatPage isActive={location.pathname === '/chat'} />
     <button data-nav="away" onClick={() => navigate('/sessions?learn=hidden')} />
     <button data-nav="back" onClick={() => navigate('/chat')} />
-    <button data-nav="learn" onClick={() => navigate('/chat?learn=debugging&chat_mode=terminal&other=keep#anchor')} />
+    <button data-nav="learn" onClick={() => navigate('/chat?learn=debugging&chat_mode=native&other=keep#anchor')} />
     <button data-nav="history" onClick={() => navigate(-1)} />
     <output>{location.pathname}{location.search}{location.hash}</output></>;
 }
@@ -29,6 +31,7 @@ beforeEach(() => {
     removeItem: vi.fn((key: string) => values.delete(key)),
     clear: () => values.clear(),
   });
+  $browserMode.set(null); $profileModes.set({});
   profile.profile = ''; FakeNativeSocket.reset(); localStorage.clear(); sessionStorage.clear();
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('WebSocket', FakeNativeSocket);
@@ -39,8 +42,9 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 async function render(path = '/chat') {
   await act(async () => { root.render(<StrictMode><MemoryRouter initialEntries={[path]}><Harness /></MemoryRouter></StrictMode>); await flushNative(); });
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); await flushNative(); });
 }
-async function click(selector: string) { await act(async () => { (container.querySelector(selector) as HTMLElement).click(); await flushNative(); }); }
+async function click(selector: string) { await act(async () => { (container.querySelector(selector) as HTMLElement).click(); await flushNative(); }); await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); await flushNative(); }); }
 async function draft(text: string) {
   await act(async () => {
     const input = container.querySelector('textarea')!;
@@ -51,44 +55,28 @@ async function draft(text: string) {
 function expectNativeOnly() {
   expect(container.querySelector('[aria-label="Native Chat"]')).not.toBeNull();
   expect(container.querySelector('.xterm')).toBeNull();
-  expect(container.textContent).not.toContain('Chat Interface');
+  expect(container.textContent).toContain('Chat Interface');
   expect(FakeNativeSocket.instances).toHaveLength(1);
   expect(FakeNativeSocket.instances[0].url).toContain('/api/ws');
   expect(FakeNativeSocket.requests.filter(r => r.method === 'prompt.submit')).toHaveLength(0);
 }
-it.each(['terminal', 'native', 'garbage'])('ignores obsolete browser and URL value %s and cleans only the obsolete key', async value => {
-  localStorage.setItem('hermes.dashboard.chat.mode', value); localStorage.setItem('unrelated', 'keep');
-  const remove = vi.spyOn(localStorage, 'removeItem');
-  await render(`/chat?chat_mode=${value}&chat_mode=terminal&other=keep#anchor`);
-  expectNativeOnly();
-  expect(localStorage.getItem('hermes.dashboard.chat.mode')).toBeNull();
-  expect(localStorage.getItem('unrelated')).toBe('keep');
-  expect(remove.mock.calls.filter(([key]) => key === 'hermes.dashboard.chat.mode')).toHaveLength(1);
-  expect(container.querySelector('output')?.textContent).toBe('/chat?other=keep#anchor');
-  await click('[data-nav="away"]'); await click('[data-nav="back"]');
-  expectNativeOnly();
-  expect(remove.mock.calls.filter(([key]) => key === 'hermes.dashboard.chat.mode')).toHaveLength(1);
+it('defaults to Native and exposes the live selector without replay', async () => {
+  await render(); expectNativeOnly();
 });
-it('starts without reading profile preferences and tolerates blocked localStorage', async () => {
+it('ignores unknown mode values without deleting browser preferences', async () => {
+  localStorage.setItem('hermes.dashboard.chat.mode', 'unknown');
+  await render('/chat?chat_mode=unknown&other=keep#anchor'); expectNativeOnly();
+  expect(localStorage.getItem('hermes.dashboard.chat.mode')).toBe('unknown');
+  expect(container.querySelector('output')?.textContent).toBe('/chat?other=keep#anchor');
+});
+it('works when localStorage access is blocked', async () => {
   vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
   await render(); expectNativeOnly();
 });
-it('tolerates a failed obsolete-key removal', async () => {
-  vi.spyOn(localStorage, 'removeItem').mockImplementation(() => { throw new Error('blocked'); });
-  await render('/chat?chat_mode=terminal'); expectNativeOnly();
-});
-it('does not clean the key or URL when initialization fails', async () => {
-  localStorage.setItem('hermes.dashboard.chat.mode', 'terminal');
-  FakeNativeSocket.responder = (_request, socket) => socket.close(4401);
-  await render('/chat?chat_mode=terminal');
-  expect(localStorage.getItem('hermes.dashboard.chat.mode')).toBe('terminal');
-  expect(container.querySelector('output')?.textContent).toContain('chat_mode=terminal');
-  expect(FakeNativeSocket.requests.some(r => r.method === 'prompt.submit')).toBe(false);
-});
 it('preserves durable resume and seeds learn as an unsent draft', async () => {
-  await render('/chat?resume=saved&learn=debugging&chat_mode=terminal&other=keep#anchor');
+  await render('/chat?resume=stored&learn=debugging&chat_mode=native&other=keep#anchor');
   expectNativeOnly();
-  expect(FakeNativeSocket.requests[0]).toMatchObject({ method: 'session.resume', params: { session_id: 'saved', allow_auto_continue: false } });
+  expect(FakeNativeSocket.requests[0]).toMatchObject({ method: 'session.resume', params: { session_id: 'stored', allow_auto_continue: false } });
   expect(container.querySelector('textarea')?.value).toBe('/learn debugging');
   expect(container.querySelector('output')?.textContent).toBe('/chat?resume=stored&other=keep#anchor');
   await click('[data-nav="away"]'); await click('[data-nav="back"]'); await click('[data-nav="history"]');
@@ -99,7 +87,7 @@ it.each([true, false])('preserves an existing draft until an explicit learn deci
   expect(container.querySelector('textarea')?.value).toBe('unsent');
   expect(container.textContent).toContain('A learning request is waiting');
   const button = [...container.querySelectorAll('button')].find(b => b.textContent === (append ? 'Append to draft' : 'Ignore'))!;
-  await act(async () => { button.click(); await flushNative(); });
+  await act(async () => { button.click(); await new Promise(resolve => setTimeout(resolve, 20)); await flushNative(); });
   expect(container.querySelector('textarea')?.value).toBe(append ? 'unsent\n/learn debugging' : 'unsent');
   expect(container.querySelector('output')?.textContent).toBe('/chat?other=keep#anchor');
   expectNativeOnly();
@@ -116,4 +104,12 @@ it('isolates the Native host and draft across profile switches without resuming 
   expect(FakeNativeSocket.requests.filter(request => request.method === 'session.resume')).toHaveLength(0);
   expect(FakeNativeSocket.requests.filter(request => request.method === 'prompt.submit')).toHaveLength(0);
   expect(container.querySelector('textarea')?.value).toBe('');
+});
+
+vi.mock('./chat/TerminalChatPage', () => ({ default: () => <section aria-label="Terminal Chat" /> }));
+it('URL Terminal mounts only Terminal and opens no Native session', async () => {
+  await render('/chat?chat_mode=terminal');
+  expect(container.querySelector('[aria-label="Terminal Chat"]')).not.toBeNull();
+  expect(container.querySelector('[aria-label="Native Chat"]')).toBeNull();
+  expect(FakeNativeSocket.requests.filter(r => ['session.create', 'session.resume', 'prompt.submit'].includes(r.method))).toHaveLength(0);
 });

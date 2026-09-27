@@ -30,7 +30,7 @@ MUTATIONS = [
     ('double-viewer', 'hermes_cli/pty_session.py', 'if self.closing or self.viewer is not None:', 'if self.closing:', 'test_attach_reconnect_reap_and_input_are_single_owner'),
     ('reap-leak', 'hermes_cli/pty_session.py', 'await asyncio.to_thread(session.bridge.close)', 'pass  # mutant leaks process', 'test_attach_reconnect_reap_and_input_are_single_owner'),
     ('profile-attach', 'hermes_cli/pty_session.py', '(existing.principal, existing.profile) != (principal, profile)', 'existing.principal != principal', 'test_cross_scope_attachment_rejected'),
-    ('native-route', 'web/src/pages/ChatPage.tsx', 'return <NativeChatPage {...props} />;', 'return <section className="xterm" aria-label="Terminal Chat" />;', None),
+    ('native-route', 'web/src/pages/chat/chat-mode.ts', "DEFAULT_CHAT_MODE: ChatMode = 'native'", "DEFAULT_CHAT_MODE: ChatMode = 'terminal'", None),
 ]
 
 
@@ -40,17 +40,18 @@ def run():
         repo = Path(temp) / 'repo'
         shutil.copytree(ROOT, repo, ignore=shutil.ignore_patterns('.git', '.venv', 'node_modules', '__pycache__', '.pytest_cache', 'web_dist', 'dist'))
         (repo / 'node_modules').symlink_to(ROOT / 'node_modules', target_is_directory=True)
-        env = {**os.environ, 'PYTHONPATH': str(repo)}
+        env = {**os.environ, 'PYTHONPATH': str(repo), 'HERMES_PYTHON': sys.executable}
         for name, file, original, replacement, test in MUTATIONS:
             path = repo / file
-            source = path.read_text()
+            source = path.read_text(encoding='utf-8')
             assert source.count(original) == 1, (name, 'mutation site changed')
-            command = ([sys.executable, '-m', 'pytest', test if '::' in test else f'{PY_TEST}::{test}', '-q'] if test else ['npm', 'test', '--prefix', 'web', '--', 'src/pages/ChatPage.test.tsx'])
+            target, selection = test.split('::', 1) if test and '::' in test else (PY_TEST, test)
+            command = (['bash', 'scripts/run_tests.sh', '-j', '2', target, '-k', selection.split('[')[0], '-q'] if test else ['npm', 'test', '--prefix', 'web', '--', 'src/pages/ChatPage.test.tsx', 'src/pages/chat/chat-mode.test.ts'])
             baseline = subprocess.run(command, cwd=repo, env=env, capture_output=True, text=True)
             if baseline.returncode:
                 raise RuntimeError(f'{name} baseline failed:\n{baseline.stdout}\n{baseline.stderr}')
             try:
-                path.write_text(source.replace(original, replacement, 1))
+                path.write_text(source.replace(original, replacement, 1), encoding='utf-8')
                 mutant = subprocess.run(command, cwd=repo, env=env, capture_output=True, text=True)
                 detected = mutant.returncode == 1 and ('failed' in mutant.stdout.lower())
                 results.append({'mutation': name, 'detected': detected})
@@ -58,7 +59,7 @@ def run():
                 if not detected:
                     print(mutant.stdout, mutant.stderr)
             finally:
-                path.write_text(source)
+                path.write_text(source, encoding='utf-8')
             restored = subprocess.run(command, cwd=repo, env=env, capture_output=True, text=True)
             if restored.returncode:
                 raise RuntimeError(f'{name} restored source failed:\n{restored.stdout}\n{restored.stderr}')

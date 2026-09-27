@@ -45,6 +45,7 @@ async def control(session, registry, ws, frame):
         # Keep the browser socket alive until its cleanup ACK has been sent.
         session.viewer = None
         await registry.close(session)
+        registry.remember_release(session, {'released': True})
         await ws.send_json({'type': 'control', 'id': frame.get('id'), 'result': {'released': True}})
         await ws.close(code=1000)
         return
@@ -61,6 +62,7 @@ async def control(session, registry, ws, frame):
             raise PtyConflict('Release not acknowledged')
         session.viewer = None
         await registry.close(session)
+        registry.remember_release(session, result)
         await ws.send_json({'type': 'control', 'id': frame.get('id'), 'result': result})
         await ws.close(code=1000)
         return

@@ -1103,6 +1103,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "CLI visual theme",
         "options": ["default", "ares", "mono", "slate"],
     },
+    "dashboard.chat.default_mode": {
+        "type": "select",
+        "description": "Default Dashboard Chat interface (browser and URL choices take precedence)",
+        "options": ["native", "terminal"],
+    },
     "dashboard.theme": {
         "type": "select",
         "description": "Web dashboard visual theme",

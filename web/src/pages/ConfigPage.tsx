@@ -1,3 +1,5 @@
+import { ChatInterfaceSettings } from './chat/ChatInterfaceSettings';
+import { loadProfileMode } from './chat/chat-preferences';
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import {
@@ -299,6 +301,7 @@ function ProfileConfigPage({ profile }: { profile: string }) {
     setSaving(true);
     try {
       await api.saveConfig(config, profile);
+      void loadProfileMode(profile);
       if (generation.current !== requestGeneration) return;
 
       showToast(t.config.configSaved, "success");
@@ -314,6 +317,7 @@ function ProfileConfigPage({ profile }: { profile: string }) {
     setYamlSaving(true);
     try {
       await api.saveConfigRaw(yamlText, profile);
+      void loadProfileMode(profile);
       if (generation.current !== requestGeneration) return;
       showToast(t.config.yamlConfigSaved, "success");
       api
@@ -455,6 +459,7 @@ function ProfileConfigPage({ profile }: { profile: string }) {
   return (
     <div className="flex flex-col gap-4">
       <PluginSlot name="config:top" />
+      <ChatInterfaceSettings profile={profile} profileValue={getNestedValue(config, "dashboard.chat.default_mode")} onProfileChange={mode => setConfig(setNestedValue(config, "dashboard.chat.default_mode", mode))} />
       <Toast toast={toast} />
 
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">

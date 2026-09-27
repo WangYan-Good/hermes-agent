@@ -84,3 +84,20 @@ it('profile replacement/unmount during ticket acquisition cannot open a late soc
   await lifecycle.dispose(); finish('ws://late'); await connect;
   expect(Socket.instances).toHaveLength(0);
 });
+it('queries the releasing generation after a lost ACK and viewer reconnect', async () => {
+  const { lifecycle, socket } = await setup();
+  const release = lifecycle.surface.release();
+  const rejection = expect(release).rejects.toThrow('unconfirmed');
+  const generation = JSON.parse(socket.sent.at(-1) as string).generation;
+  socket.close(1006);
+  await vi.advanceTimersByTimeAsync(0);
+  Socket.instances[1].close(4409);
+  await rejection;
+  await vi.advanceTimersByTimeAsync(1000);
+  const recovered = lifecycle.surface.prepare();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(buildWsUrl).toHaveBeenLastCalledWith('/api/pty', expect.objectContaining({ receipt: '1', generation }));
+  Socket.instances.at(-1)!.frame({ type: 'receipt', result: { released: true, stored_id: 'durable' } });
+  expect(await recovered).toMatchObject({ released: true, storedId: 'durable' });
+  await lifecycle.surface.dispose();
+});

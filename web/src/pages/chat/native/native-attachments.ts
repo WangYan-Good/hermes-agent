@@ -166,6 +166,14 @@ export class NativeAttachments {
       finally { this.cancelling.delete(occurrence); if (this.current(scope, epoch)) this.set({}); }
     }
   };
+  switchBlocked(): string[] {
+    return this.controllers.size || this.cancelling.size || this.preparing || this.state.recovering || this.state.uncertain || this.state.items.some(a => !['submitted', 'cancelled'].includes(a.state)) ? ['attachments'] : [];
+  }
+  async discard() {
+    if (this.state.uncertain || this.state.recovering || this.preparing || this.controllers.size) throw new Error('Attachment operations must settle first');
+    for (const item of this.state.items) if (!['submitted', 'cancelled'].includes(item.state)) await this.remove(item.occurrence_id);
+    if (this.switchBlocked().length) throw new Error('Attachment discard not acknowledged');
+  }
   submitPayload(): Partial<DraftAuthority> & { attachment_ids?: string[] } {
     const selected = this.state.items.filter(a => !['cancelled', 'submitted'].includes(a.state));
     if (!selected.length) return {};

@@ -108,6 +108,16 @@ def handle(server, rid, params):
     action = params.get('action')
     if action not in {'status', 'prepare', 'cancel', 'release'}:
         return server._err(rid, 4000, 'Invalid Terminal lifecycle action')
+    # Preparing an untouched chat is an explicit request to preserve its identity.
+    # Persist outside ownership/global locks, then revalidate below.
+    if action == 'prepare':
+        with state.lock:
+            state.frozen = True
+            records, reasons = _snapshot(server, owner)
+            can_persist = not reasons and not state.active and len(records) == 1
+        if can_persist:
+            from tui_gateway.native_presentation import ensure_durable
+            ensure_durable(server, records[0][1])
     popped = []
     with state.lock:
         if state.released or owner.closing:

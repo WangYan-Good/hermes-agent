@@ -11,7 +11,11 @@ from tui_gateway.terminal_presentation import Authority, admit, check_rebind, ha
 
 
 @pytest.fixture
-def owned(monkeypatch):
+def owned(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+    db = SessionDB(tmp_path / "state.db")
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setattr(server, "_get_db", lambda: db)
     owner = PtySession('tab', 'alice', '')
     owner.gateway = Authority(owner)
     transport = SimpleNamespace(terminal_owner=owner)
@@ -121,3 +125,13 @@ def test_prepare_ticket_cannot_cross_owner_incarnation_or_viewer(owned, changed)
     setattr(owner, changed, object())
     assert call('release', ticket=ticket)['error']['code'] == 4090
     assert 'runtime' in server._sessions
+
+
+def test_abort_cleanup_of_real_owner_does_not_reinitialize_closed_authority(owned):
+    from tui_gateway.terminal_presentation import close_owner
+    owner, transport, session = owned
+    owner.gateway.access = server
+    owner.closing = True
+    close_owner(owner)
+    assert not server._sessions
+    assert owner.gateway.released

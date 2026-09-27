@@ -3217,7 +3217,15 @@ def _(rid, params: dict) -> dict:
     # reaper. Finalization may run arbitrary plugin/agent cleanup and must not
     # keep every unrelated session.resume waiting behind it.
     with _session_resume_lock:
-        session = _pop_session_by_id(sid)
+        with _sessions_lock:
+            current = _sessions.get(sid)
+            if current and current.get("native_presentation") is not None:
+                from tui_gateway.native_presentation import check_rebind
+                check_rebind(current, current_transport())
+            if current and current.get("terminal_owner") is not None:
+                from tui_gateway.terminal_presentation import check_rebind
+                check_rebind(current, current_transport())
+            session = _pop_session_by_id(sid)
     closed = _teardown_popped_session(session, end_reason="tui_close")
     return _ok(rid, {"closed": closed})
 

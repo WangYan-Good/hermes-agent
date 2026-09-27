@@ -7,9 +7,9 @@ import yaml
 @pytest.mark.parametrize(
     "dashboard, expected",
     [
-        ({}, None),
-        ({"theme": "midnight"}, None),
-        ({"chat": {}}, None),
+        ({}, "native"),
+        ({"theme": "midnight"}, "native"),
+        ({"chat": {}}, "native"),
         ({"chat": {"default_mode": "terminal"}}, "terminal"),
         ({"chat": {"default_mode": "native"}}, "native"),
         ({"chat": {"default_mode": "future-mode"}}, "future-mode"),
@@ -24,7 +24,7 @@ def test_chat_mode_config_contract(dashboard, expected, _isolate_hermes_home):
     original = yaml.safe_dump({"dashboard": dashboard} if dashboard else {})
     path.write_text(original, encoding="utf-8")
 
-    assert "chat" not in DEFAULT_CONFIG["dashboard"]
+    assert DEFAULT_CONFIG["dashboard"]["chat"]["default_mode"] == "native"
     loaded = load_config()
     assert loaded["dashboard"].get("chat", {}).get("default_mode") == expected
     if "theme" in dashboard:
@@ -37,8 +37,8 @@ def test_chat_mode_config_contract(dashboard, expected, _isolate_hermes_home):
     assert response.json()["dashboard"].get("chat", {}).get("default_mode") == expected
     defaults = client.get("/api/config/defaults")
     assert defaults.status_code == 200
-    assert "chat" not in defaults.json()["dashboard"]
+    assert defaults.json()["dashboard"]["chat"]["default_mode"] == "native"
     schema = client.get("/api/config/schema")
     assert schema.status_code == 200
-    assert "dashboard.chat.default_mode" not in schema.json()["fields"]
+    assert schema.json()["fields"]["dashboard.chat.default_mode"]["options"] == ["native", "terminal"]
     assert path.read_text(encoding="utf-8") == original

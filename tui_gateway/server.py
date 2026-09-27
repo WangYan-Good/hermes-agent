@@ -206,6 +206,7 @@ _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
 # response writes are safe.
 _LONG_HANDLERS = frozenset(
     {
+        "native.presentation",
         # Billing/usage reads each do a blocking portal HTTP fetch (state + usage
         # is two serial round-trips); keep them off the main stdin loop so a slow
         # portal can't stall approval.respond / session.interrupt / other RPCs.
@@ -1577,8 +1578,13 @@ def _prepare_output_session_record(
     """Attach process-local output identity before a Session is published."""
 
     from tui_gateway.terminal_presentation import owner_of
+    native = getattr(session.get("transport"), "native_presentation", None)
+    if native is not None and "native_presentation" not in session:
+        if native.released or native.releasing:
+            raise PermissionError("Native presentation already released")
+        session["native_presentation"] = native
     terminal_owner = owner_of(session.get("transport"))
-    if terminal_owner is not None:
+    if terminal_owner is not None and "terminal_owner" not in session:
         if terminal_owner.closing or terminal_owner.gateway.released:
             raise PermissionError("Terminal owner closed during session startup")
         session["terminal_owner"] = terminal_owner
@@ -2244,6 +2250,13 @@ class _TerminalGatewayAccess:
     def _session_has_active_delegations(self, sid, session):
         return _session_has_active_delegations(sid, session)
 
+    @property
+    def _hermes_home(self):
+        return _hermes_home
+
+    def _ensure_session_db_row(self, session):
+        return _ensure_session_db_row(session)
+
     def _session_lookup_key(self, session):
         return _session_lookup_key(session)
 
@@ -2263,21 +2276,38 @@ class _TerminalGatewayAccess:
 _terminal_gateway = _TerminalGatewayAccess()
 
 
+class _NativeGatewayAccess:
+    # Resolve live globals, including when test isolation replaces sys.modules.
+    def __getattr__(self, name):
+        return globals()[name]
+
+
+_native_gateway = _NativeGatewayAccess()
+
+
 def handle_request(req: dict) -> dict | None:
     normalized = _normalize_request(req)
     if isinstance(normalized, dict):
         return normalized
 
     rid, method, params = normalized
-    from tui_gateway import terminal_presentation
+    from tui_gateway import terminal_presentation, native_presentation
+    if method == "native.presentation":
+        try:
+            return native_presentation.handle(_native_gateway, rid, params)
+        except native_presentation.NativeOwnershipError as exc:
+            return _err(rid, 4031, str(exc))
     if method == "terminal.presentation":
         return terminal_presentation.handle(_terminal_gateway, rid, params)
     fn = _methods.get(method)
     if not fn:
         return _err(rid, -32601, f"unknown method: {method}")
     try:
-        with terminal_presentation.admit(_terminal_gateway, method, params) as scoped:
-            return fn(rid, scoped)
+        with native_presentation.admit(_native_gateway, method, params):
+            with terminal_presentation.admit(_terminal_gateway, method, params) as scoped:
+                return fn(rid, scoped)
+    except native_presentation.NativeOwnershipError as exc:
+        return _err(rid, 4031, str(exc))
     except terminal_presentation.TerminalOwnershipError as exc:
         return _err(rid, 4030, str(exc))
 
@@ -2717,6 +2747,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
 def _sess_nowait(params, rid):
     s = _sessions.get(params.get("session_id") or "")
+    if s and s.get("native_presentation") is not None:
+        from tui_gateway.native_presentation import check_rebind as native_check
+        native_check(s, current_transport())
     if s and s.get("terminal_owner") is not None:
         # Protect a Terminal-owned target at the existing session lookup, not
         # in the wrapper around unrelated Native/Desktop RPCs.
@@ -9016,6 +9049,8 @@ def _set_session_owner_transport(sid: str, session: dict, transport: Transport) 
             return False
         from tui_gateway.terminal_presentation import check_rebind
         check_rebind(session, transport)
+        from tui_gateway.native_presentation import check_rebind as native_check
+        native_check(session, transport)
         previous = session.get("transport")
         if previous is transport:
             return True

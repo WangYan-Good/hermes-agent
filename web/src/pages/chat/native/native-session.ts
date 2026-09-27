@@ -1,3 +1,4 @@
+import type { SurfaceStatus } from '../chat-surface-lifecycle';
 import { NativeAttachments, readDraftLocator } from "./native-attachments";
 import { readHistory } from "./native-history";
 import { hydrateDurableHistory } from "./native-messages";
@@ -14,6 +15,81 @@ const historyUnavailable = "History is unavailable. Use Load earlier messages to
 
 export class NativeSession {
   private state = initial();
+  inputEnabled = true;
+  private presentationGeneration = crypto.randomUUID();
+  private presentationTicket?: string;
+  private presentationReleased = false;
+  private releasing = false;
+  setInput = (enabled: boolean) => { if (this.inputEnabled !== enabled) { this.inputEnabled = enabled; this.set({ ...this.state }); } };
+  private localBlocked() {
+    return [
+      ...(!this.state.ready || this.hydrating ? ['connection recovery'] : []),
+      ...(this.uncertainSubmit || this.state.control.submitting ? ['uncertain submit'] : []),
+      ...(this.state.conversation.running ? ['turn'] : []),
+      ...(this.state.control.queued ? ['queue'] : []),
+      ...(hasInteraction(this.state.interactions) ? ['interaction'] : []),
+      ...(this.draftText ? ['draft'] : []),
+      ...this.attachments.switchBlocked(),
+    ];
+  }
+  private async presentation(action: string, cleanup = false) {
+    if (!this.gateway) throw new Error('Native connection unavailable; recover before switching.');
+    return this.gateway.request<{ ready?: boolean; confirmed?: boolean; blocked?: string[]; stored_id?: string; ticket?: string; released?: boolean; cancelled?: boolean }>('native.presentation', {
+      action, cleanup, session_id: this.state.runtimeId, generation: this.presentationGeneration,
+      profile: this.profile, ticket: this.presentationTicket,
+    });
+  }
+  status = async (): Promise<SurfaceStatus> => {
+    if (this.presentationReleased) return { ready: true, released: true, storedId: this.state.storedId, blocked: [] };
+    if (this.state.connection === 'error') throw new Error('Native initialization failed. Retry or return after cleanup.');
+    if (!this.state.ready || this.uncertainSubmit) return { ready: false, blocked: ['connection recovery'] };
+    const result = await this.presentation('status');
+    const blocked = (result.blocked || []).filter(reason => ['initializing', 'releasing'].includes(reason));
+    return { ready: result.confirmed === true && !blocked.length, blocked, storedId: result.stored_id };
+  };
+  prepare = async (): Promise<SurfaceStatus> => {
+    this.setInput(false);
+    const blocked = this.localBlocked();
+    if (!this.state.ready) return { ready: false, blocked };
+    const result = await this.presentation('prepare');
+    if (result.released) { this.presentationReleased = true; return { ready: true, released: true, storedId: result.stored_id, blocked: [] }; }
+    this.presentationTicket = result.ticket;
+    if (result.stored_id && result.ready) this.set({ ...this.state, storedId: result.stored_id, durable: true });
+    return { ready: result.ready === true && !blocked.length, blocked: [...blocked, ...(result.blocked || [])], storedId: result.stored_id };
+  };
+  cancel = async () => {
+    const result = await this.presentation('cancel');
+    if (!result.cancelled) throw new Error('Native cancellation not acknowledged.');
+    this.presentationTicket = undefined; this.setInput(true);
+  };
+  release = async () => {
+    if (this.presentationReleased) return;
+    this.releasing = true;
+    const result = await this.presentation('release');
+    if (!result.released) throw new Error('Native release not acknowledged.');
+    this.presentationReleased = true; this.setInput(false);
+  };
+  discard = async () => { await this.attachments.discard(); this.setDraft(''); };
+  dispose = async () => {
+    this.setInput(false);
+    if (!this.presentationReleased) {
+      if (this.localBlocked().some(reason => !['connection recovery'].includes(reason))) throw new Error('Native cleanup blocked.');
+      if (!this.gateway || this.state.connection !== 'open') {
+        this.generation++; clearTimeout(this.timer); this.gateway?.close();
+        const gateway = this.makeGateway(); this.gateway = gateway;
+        await bounded(gateway.open(), 20_000, 'Native cleanup connection unavailable');
+      }
+      const prepared = await this.presentation('prepare', true);
+      if (!prepared.released) {
+        if (!prepared.ready || !prepared.ticket) throw new Error('Native cleanup blocked.');
+        this.presentationTicket = prepared.ticket;
+        const result = await this.presentation('release', true);
+        if (!result.released) throw new Error('Native cleanup not acknowledged');
+      }
+      this.presentationReleased = true;
+    }
+    this.stop();
+  };
   draftText = "";
   setDraft = (text: string) => { this.draftText = text; this.set({ ...this.state }); };
   readonly attachments: NativeAttachments;
@@ -37,9 +113,11 @@ export class NativeSession {
   private eventRevision = 0;
   private acknowledged = new Set<string>();
   readonly profile: string;
+  private managed: boolean;
   private readonly makeGateway: () => NativeGateway;
 
-  constructor(profile: string, resume: string | null, makeGateway = () => new NativeGateway()) {
+  constructor(profile: string, resume: string | null, makeGateway = () => new NativeGateway(), managed = false) {
+    this.managed = managed;
     this.profile = profile;
     this.target = resume;
     this.makeGateway = makeGateway;
@@ -69,6 +147,7 @@ export class NativeSession {
   retry = () => { if (this.stopped) return; this.retries = 0; void this.connect(); };
 
   select = (storedId: string | null) => {
+    if (!this.inputEnabled || this.releasing || this.presentationReleased) return;
     if (storedId && (storedId === this.state.storedId || storedId === this.target)) return;
     this.attachments.reset(); this.invalidateHistory(null);
     this.target = storedId; this.uncertainSubmit = false;
@@ -101,12 +180,21 @@ export class NativeSession {
       // Observe ready before opening: servers may send it during the handshake.
       await bounded(Promise.all([gateway.open(), ready]), 20_000, "Gateway connection timed out. Retry to reconnect.");
       if (!current()) return;
+      const ownership = this.managed ? { presentation_generation: this.presentationGeneration, profile: this.profile } : {};
+      if (this.releasing) {
+        const receipt = await this.presentation('status');
+        if (receipt.released) {
+          this.presentationReleased = true;
+          this.set({ ...this.state, ready: true, connection: 'open' });
+          return;
+        }
+      }
       const storedId = this.state.storedId || this.target;
       let response: NativeSessionResponse;
       let resumed = false;
       if (storedId && (this.state.durable || this.target || this.uncertainSubmit)) {
         try {
-          response = await gateway.request("session.resume", { session_id: storedId, profile: this.profile, omit_messages: true, allow_auto_continue: false });
+          response = await gateway.request("session.resume", { session_id: storedId, profile: this.profile, omit_messages: true, allow_auto_continue: false, ...ownership });
           resumed = true;
         } catch (error) {
           if (!current()) return;
@@ -115,14 +203,14 @@ export class NativeSession {
           // Only inspect that uncertain draft; never mask a lost durable row.
           if (!this.uncertainSubmit || this.state.durable || !this.state.runtimeId ||
               !(error instanceof JsonRpcGatewayError) || error.code !== 4007) throw error;
-          response = await gateway.request("session.activate", { session_id: this.state.runtimeId, omit_messages: true });
+          response = await gateway.request("session.activate", { session_id: this.state.runtimeId, omit_messages: true, ...ownership });
         }
       } else if (this.state.runtimeId) {
         // Empty drafts have no DB row. Reattach their live runtime; never hide
         // an expired draft behind an automatic replacement session.
-        response = await gateway.request("session.activate", { session_id: this.state.runtimeId, omit_messages: true });
+        response = await gateway.request("session.activate", { session_id: this.state.runtimeId, omit_messages: true, ...ownership });
       } else {
-        response = await gateway.request("session.create", { profile: this.profile, source: "webui", close_on_disconnect: false });
+        response = await gateway.request("session.create", { profile: this.profile, source: "webui", close_on_disconnect: false, ...ownership });
       }
       if (!current()) return;
       let historyFailed = false;
@@ -309,6 +397,7 @@ export class NativeSession {
   };
 
   submit = async (text: string, queued = false) => {
+    if (!this.inputEnabled || this.presentationReleased || this.releasing) return;
     let attachmentPayload: Record<string, unknown>;
     try { attachmentPayload = this.attachments.submitPayload(); } catch { return; }
     const rich = Array.isArray(attachmentPayload.attachment_ids);
@@ -347,6 +436,7 @@ export class NativeSession {
     }
   };
   steer = async (text: string) => {
+    if (!this.inputEnabled || this.presentationReleased || this.releasing) return;
     if (this.attachments.getSnapshot().items.some(a => !["submitted", "cancelled"].includes(a.state))) return;
     if (!text.trim() || !this.gateway || !this.state.runtimeId || !this.state.ready || this.state.control.submitting || hasInteraction(this.state.interactions)) return;
     const generation = this.generation;

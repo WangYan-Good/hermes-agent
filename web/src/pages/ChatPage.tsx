@@ -1,10 +1,10 @@
-import NativeChatPage from "./chat/native/NativeChatPage";
+import ChatSurfaceRouter from "./chat/ChatSurfaceRouter";
 
 export interface ChatPageProps {
   isActive?: boolean;
 }
 
-/** App keeps this Native host mounted when another Dashboard route is visible. */
+/** App keeps this surface router mounted when another Dashboard route is visible. */
 export default function ChatPage(props: ChatPageProps) {
-  return <NativeChatPage {...props} />;
+  return <ChatSurfaceRouter {...props} />;
 }

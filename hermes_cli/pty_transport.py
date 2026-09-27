@@ -1,4 +1,4 @@
-"""Dashboard PTY endpoint. Deliberately not mounted by the /chat renderer."""
+"""Authenticated Dashboard Terminal Chat transport and cleanup receipts."""
 from __future__ import annotations
 
 import asyncio
@@ -76,6 +76,15 @@ async def endpoint(ws):
     principal = ws.scope.get('attachment_principal', ('loopback', 'dashboard'))
     resume = ws.query_params.get('resume') or None
     instance = ws.query_params.get('instance')
+    if ws.query_params.get('receipt') == '1':
+        try:
+            result = reg.release_receipt(key, principal, profile, instance, generation)
+            await ws.accept(subprotocol=PROTOCOL)
+            await ws.send_json({'type': 'receipt', 'result': result})
+            await ws.close(code=1000)
+        except PtyConflict:
+            await ws.close(code=4409, reason='Terminal cleanup unconfirmed')
+        return
     session = None
     attached = False
     from .dashboard_tui_env import launch
