@@ -73,6 +73,16 @@ it("renders a real shared runtime with text, separate reasoning, tools, and Stop
   expect(container.textContent).toContain("/workspace");
   expect(container.querySelector("output")?.textContent).toContain("resume=stored");
 });
+it("initializes Native on insecure HTTP without randomUUID or automatic submission", async () => {
+  vi.stubGlobal("isSecureContext", false);
+  vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
+  await render();
+  expect(container.querySelector('[aria-label="Native Chat"]')).not.toBeNull();
+  expect(FakeNativeSocket.instances).toHaveLength(1);
+  expect(FakeNativeSocket.instances[0].url).toContain("/api/ws");
+  expect(FakeNativeSocket.requests.some(r => r.method === "session.create")).toBe(true);
+  expect(FakeNativeSocket.requests.some(r => r.method === "prompt.submit")).toBe(false);
+});
 it("preserves the socket/session while hidden without manufacturing a mode override", async () => {
   await render(); await send("hello");
   await click('[data-nav="away"]');

@@ -1,4 +1,5 @@
 import type { SurfaceStatus } from '../chat-surface-lifecycle';
+import { createBrowserUuid } from '@/lib/browser-uuid';
 import { NativeAttachments, readDraftLocator } from "./native-attachments";
 import { readHistory } from "./native-history";
 import { hydrateDurableHistory } from "./native-messages";
@@ -16,7 +17,7 @@ const historyUnavailable = "History is unavailable. Use Load earlier messages to
 export class NativeSession {
   private state = initial();
   inputEnabled = true;
-  private presentationGeneration = crypto.randomUUID();
+  private presentationGeneration = createBrowserUuid();
   private presentationTicket?: string;
   private presentationReleased = false;
   private releasing = false;

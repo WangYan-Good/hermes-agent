@@ -1,5 +1,6 @@
 import type { ChatSurfaceLifecycle, SurfaceStatus } from './chat-surface-lifecycle';
 import { buildWsUrl } from '@/lib/api';
+import { createBrowserUuid } from '@/lib/browser-uuid';
 
 export const PTY_PROTOCOL = 'hermes.pty-control.v1';
 export interface TerminalStatus {
@@ -22,8 +23,8 @@ export interface TerminalOptions {
 /** Instance-scoped transport. Reconnect reattaches output, never replays input. */
 export class TerminalLifecycle {
   private socket: WebSocket | null = null;
-  private attach = crypto.randomUUID();
-  private generation = crypto.randomUUID();
+  private attach = createBrowserUuid();
+  private generation = createBrowserUuid();
   private instance: string | null = null;
   private pending = new Map<string, { resolve: (value: TerminalStatus) => void; reject: (reason: Error) => void; timer: ReturnType<typeof setTimeout> }>();
   private stopped = false;
@@ -127,7 +128,7 @@ export class TerminalLifecycle {
 
   async connect(): Promise<void> {
     if (this.stopped) return;
-    this.generation = crypto.randomUUID();
+    this.generation = createBrowserUuid();
     this.options.state('connecting');
     const params: Record<string, string> = { profile: this.options.profile, attach: this.attach, generation: this.generation };
     if (this.instance) params.instance = this.instance;
@@ -202,7 +203,7 @@ export class TerminalLifecycle {
   async command(action: 'status' | 'prepare' | 'cancel' | 'release' | 'abort', ticket?: string): Promise<TerminalStatus> {
     if ((this.stopped && this.options.managed) || !this.instance || this.socket?.readyState !== WebSocket.OPEN) throw new Error('Terminal owner unavailable');
     if (['prepare', 'release', 'abort'].includes(action)) this.frozen = true;
-    const id = crypto.randomUUID();
+    const id = createBrowserUuid();
     const result = await new Promise<TerminalStatus>((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('Terminal lifecycle ACK missing')); }, 16000);
       this.pending.set(id, { resolve, reject, timer });
