@@ -416,7 +416,7 @@ artifacts and generated images. Controlled workers verify the transport and
 persistence contracts; they do not validate an external model provider.
 
 
-## Native-only Dashboard Chat (UI-P7)
+## Dashboard Chat and Terminal transport foundation (UI-C1)
 
 `ChatPage` hosts `NativeChatPage`, which connects through authenticated `/api/ws`
 to `tui_gateway`, AIAgent and SessionDB. The App mounts the host on the first
@@ -428,13 +428,50 @@ Plugin manifests must be freshly confirmed before built-in chat can mount.
 A plugin with `tab.override == "/chat"` owns that route even if its renderer is
 late or fails to load; there is no transient built-in Agent connection.
 
-Dashboard Terminal Chat, `/api/pty`, and Native/Terminal presentation handoff have
-been removed. An old Terminal tab cannot reconnect its PTY after a server upgrade:
-the WebSocket handshake is rejected without starting a process or submitting a
-prompt. Reloading the tab opens Native. Ordinary Agent terminal execution,
-standalone `hermes --tui`, Desktop terminal panes and the separate Dashboard
-Hermes Console remain available. Console retains its xterm dependency and uses
-`/api/console`; it is not a chat presentation.
+Dashboard `/chat` remains Native-only at the user-facing level. UI-C1 restores
+`/api/pty` and an unmounted `TerminalChatPage` as transport infrastructure; there
+is no Terminal route, Settings selector, browser preference or mode URL behavior.
+Native/Terminal switching is reserved for UI-C2. The separate Hermes Console
+still uses `/api/console` and is not a chat presentation.
+
+The PTY endpoint uses the same token/ticket, Host, Origin and peer validation as
+other Dashboard WebSockets, validates profiles before spawning, and requires
+`hermes.pty-control.v1`. Binary frames carry terminal bytes; structured text
+frames carry resize or lifecycle operations. Unnegotiated legacy clients are
+rejected. Browser auth does not confer the internal owner capability.
+
+A registry reservation prevents concurrent spawn for the same attach identity.
+An attachment binds the authenticated principal, canonical profile, instance and
+viewer generation. Only one viewer admits input; reconnection requires a fresh
+WS credential and the existing instance, never input replay or silent respawn.
+Disconnected instances retain bounded output for 30 minutes, with at most 16
+instances and 1 MiB output each. Reaping and shutdown finalize gateway sessions,
+release leases and terminate the PTY process group. A truncated output buffer
+requires a full TUI repaint rather than replaying a partial ANSI tail.
+
+The existing standalone ui-tui attaches to the current gateway. Its internal
+control connection observes the actual composer, queue, overlays and pending
+prompts; `terminal.presentation` combines that state with authoritative gateway
+work. `prepare` freezes new input, `cancel` thaws only after owner confirmation,
+and `release` requires a valid prepare ticket plus persistence/resource cleanup
+before ACK. `abort` is rejected after any admitted input. A missing control
+channel or ACK never implies idle or successful release. Live cross-surface
+resume is rejected in UI-C1; after Terminal closes, its ordinary SessionDB
+history is readable through current resume APIs with auto-continuation disabled.
+No new history store or database migration is introduced.
+
+The browser component reuses the Console's installed xterm, fit, unicode11 and
+web-links dependencies without WebGL. xterm owns streaming UTF-8/ANSI parsing
+and mobile textarea input; a tested IME fallback handles missing composition
+commits. Input guards also cover shortcuts and wheel reports. Output follows the
+bottom only while the viewer has not scrolled away. The Vite-only
+`web/e2e/terminal-foundation.html` entry exercises the component without adding
+it to production routes or build inputs.
+
+Agent terminal execution, terminal backends, standalone CLI/TUI and Desktop
+terminal panes remain separate supported surfaces. Ordinary `/api/pub` and
+`/api/events` retain their existing behavior; the old private presentation
+publisher and Native `session.handoff` remain rejected.
 
 Legacy `hermes.dashboard.chat.mode` browser values and `chat_mode` URL parameters
 have no selection function. After Native becomes ready, browser-key cleanup is

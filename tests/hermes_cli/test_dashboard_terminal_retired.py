@@ -1,4 +1,4 @@
-"""Old Dashboard terminal clients cannot spawn a process or submit a turn."""
+"""Legacy clients and Native handoff remain unavailable during UI-C1."""
 
 from unittest.mock import Mock
 
@@ -20,12 +20,12 @@ def test_old_pty_websocket_is_unavailable_without_spawning(query, monkeypatch):
     before = set(server._sessions)
     client = TestClient(web_server.app)
     with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect(f'/api/pty?token={web_server._SESSION_TOKEN}{query}', subprotocols=['hermes.pty-control.v1']):
+        with client.websocket_connect(f'/api/pty?token={web_server._SESSION_TOKEN}{query}', subprotocols=['legacy-terminal']):
             pytest.fail('Retired PTY endpoint accepted a connection')
     assert not spawn.called
     assert not submit.called
     assert set(server._sessions) == before
-    assert all(getattr(route, 'path', None) != '/api/pty' for route in web_server.app.routes)
+    assert any(getattr(route, 'path', None) == '/api/pty' for route in web_server.app.routes)
 
 
 def test_retired_handoff_rpc_cannot_release_session():

@@ -39,6 +39,7 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
+import { $presentationFrozen, connectPresentationControl, setPresentationView } from '../presentationControl.js'
 import { onUserWidgets } from '../sdk/userWidgets.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
@@ -51,7 +52,7 @@ import { type GatewayRpc, type StateSetter, type TranscriptRow } from './interfa
 import { createOutputLifecycleCoordinator } from './outputLifecycleCoordinator.js'
 import { createOutputStreamRouter } from './outputStreamRouter.js'
 import { captureActiveOutputSnapshot, type SessionTransitionHooks } from './outputStreamStore.js'
-import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
@@ -306,6 +307,43 @@ export function useMainApp(gw: GatewayClient) {
   })
 
   const { actions: composerActions, refs: composerRefs, state: composerState } = composer
+  const presentationFrozen = useStore($presentationFrozen)
+
+  useEffect(() => connectPresentationControl((method, params) => gw.request(method, params)), [gw])
+  useEffect(() => {
+    setPresentationView(() => {
+      const blocked: string[] = []
+      const state = getUiState()
+      const prompts = $overlayState.get()
+
+      if (state.busy) {
+        blocked.push('turn')
+      }
+
+      if (composerRefs.queueRef.current.length || composerRefs.queueEditRef.current !== null) {
+        blocked.push('queue')
+      }
+
+      if (composerRefs.hasPendingInput?.() !== false) {
+        blocked.push('composer')
+      }
+
+      if (
+        prompts.approval ||
+        prompts.clarify ||
+        prompts.secret ||
+        prompts.sudo ||
+        prompts.controlQueue.length ||
+        $isBlocked.get()
+      ) {
+        blocked.push('interaction')
+      }
+
+      return { sid: state.sid, blocked }
+    })
+
+    return () => setPresentationView(null)
+  }, [composerRefs, composerState, ui.busy, ui.sid, overlay])
   const empty = !historyItems.some(msg => msg.kind !== 'intro')
 
   useEffect(() => {
@@ -788,6 +826,7 @@ export function useMainApp(gw: GatewayClient) {
   useEffect(() => {
     if (
       !ui.sid ||
+      presentationFrozen ||
       ui.busy ||
       composerRefs.queueEditRef.current !== null ||
       composerRefs.queueRef.current.length === 0
@@ -801,7 +840,7 @@ export function useMainApp(gw: GatewayClient) {
       patchUiState({ busy: true, status: 'running…' })
       sendQueued(next)
     }
-  }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued])
+  }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued, presentationFrozen])
 
   const { pagerPageSize } = useInputHandlers({
     actions: {

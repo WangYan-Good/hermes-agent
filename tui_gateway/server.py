@@ -1576,6 +1576,12 @@ def _prepare_output_session_record(
 ) -> dict:
     """Attach process-local output identity before a Session is published."""
 
+    from tui_gateway.terminal_presentation import owner_of
+    terminal_owner = owner_of(session.get("transport"))
+    if terminal_owner is not None:
+        if terminal_owner.closing or terminal_owner.gateway.released:
+            raise PermissionError("Terminal owner closed during session startup")
+        session["terminal_owner"] = terminal_owner
     if _OUTPUT_SESSION_INCARNATION_KEY not in session:
         session[_OUTPUT_SESSION_INCARNATION_KEY] = object()
     if _OUTPUT_SESSION_EMIT_LOCK_KEY not in session:
@@ -2212,10 +2218,17 @@ def handle_request(req: dict) -> dict | None:
         return normalized
 
     rid, method, params = normalized
+    from tui_gateway import terminal_presentation
+    if method == "terminal.presentation":
+        return terminal_presentation.handle(sys.modules[__name__], rid, params)
     fn = _methods.get(method)
     if not fn:
         return _err(rid, -32601, f"unknown method: {method}")
-    return fn(rid, params)
+    try:
+        with terminal_presentation.admit(sys.modules[__name__], method, params) as scoped:
+            return fn(rid, scoped)
+    except PermissionError as exc:
+        return _err(rid, 4030, str(exc))
 
 
 def _current_session_steer_authority(
@@ -8945,6 +8958,8 @@ def _set_session_owner_transport(sid: str, session: dict, transport: Transport) 
     with _sessions_lock:
         if _sessions.get(sid) is not session:
             return False
+        from tui_gateway.terminal_presentation import check_rebind
+        check_rebind(session, transport)
         previous = session.get("transport")
         if previous is transport:
             return True

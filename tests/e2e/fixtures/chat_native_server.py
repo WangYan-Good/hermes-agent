@@ -82,7 +82,7 @@ async def completion(request: Request):
     )
     if "P7-BUSY" in text:
         await asyncio.sleep(5)
-    answer = "P7 controlled answer."
+    answer = ("P7 controlled answer." if "P7-LONG" not in text else "\n".join(f"line {i}: 中文 terminal output" for i in range(300)))
     tool = (
         ("P7-TOOL" in text or "P7-TUI" in text or "P7-CLARIFY" in text)
         and body["messages"][-1]["role"] != "tool"
@@ -291,4 +291,5 @@ w.app.state.bound_port = port
 w.app.state.auth_required = False
 import uvicorn
 
-uvicorn.run(w.app, host="127.0.0.1", port=port, log_level="warning")
+if __name__ == "__main__":
+    uvicorn.run(w.app, host="127.0.0.1", port=port, log_level="warning")

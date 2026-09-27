@@ -397,6 +397,7 @@ export interface ComposerActions {
 }
 
 export interface ComposerRefs {
+  hasPendingInput?: () => boolean
   historyDraftRef: MutableRefObject<string>
   historyRef: MutableRefObject<string[]>
   queueEditRef: MutableRefObject<null | number>

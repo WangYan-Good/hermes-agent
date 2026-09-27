@@ -22,6 +22,11 @@ describe('shouldPreserveCtrlJNewline', () => {
 })
 
 describe('shouldPassThroughToGlobalHandler', () => {
+  it('keeps PTY redraw out of the composer', () => {
+    expect(shouldPassThroughToGlobalHandler('l', key({ ctrl: true }))).toBe(true)
+    expect(shouldPassThroughToGlobalHandler('l', key())).toBe(false)
+  })
+
   it('passes through the configured voice shortcut while composer is focused', () => {
     expect(shouldPassThroughToGlobalHandler('o', key({ ctrl: true }), parseVoiceRecordKey('ctrl+o'))).toBe(true)
     expect(shouldPassThroughToGlobalHandler('r', key({ meta: true }), parseVoiceRecordKey('alt+r'))).toBe(true)

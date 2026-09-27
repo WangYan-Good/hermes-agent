@@ -431,17 +431,23 @@ async def _lifespan(app: "FastAPI"):
 
     from tui_gateway.attachment_http import run_attachment_reaper
     attachment_reaper_task = asyncio.create_task(run_attachment_reaper())
+    from hermes_cli.pty_transport import registry as pty_registry
+    pty_reaper_task = asyncio.create_task(pty_registry(app).run_reaper())
 
     try:
         yield
     finally:
         if cron_stop is not None:
             cron_stop.set()
-        attachment_reaper_task.cancel()
-        selftest_task.cancel()
-        auto_archive_task.cancel()
-        if os.getenv("HERMES_DESKTOP") == "1":
-            _terminate_desktop_managed_gateway()
+        pty_reaper_task.cancel()
+        try:
+            await pty_registry(app).shutdown()
+        finally:
+            attachment_reaper_task.cancel()
+            selftest_task.cancel()
+            auto_archive_task.cancel()
+            if os.getenv("HERMES_DESKTOP") == "1":
+                _terminate_desktop_managed_gateway()
 
 
 def _get_event_state(app: "FastAPI"):
@@ -16651,6 +16657,12 @@ from tui_gateway.attachment_http import install as _install_attachment_http
 _install_attachment_http(app)
 
 
+@app.websocket("/api/pty")
+async def terminal_pty_ws(ws: WebSocket) -> None:
+    from hermes_cli.pty_transport import endpoint
+    await endpoint(ws)
+
+
 @app.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
@@ -16665,6 +16677,15 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4403)
         return
 
+    if "pty_instance" in ws.query_params:
+        from hermes_cli.pty_transport import resolve_owner
+        from hermes_cli.pty_session import PtyConflict
+        try:
+            owner = resolve_owner(ws.app, ws.query_params.get("pty_instance"), ws.query_params.get("capability"))
+        except PtyConflict:
+            await ws.close(code=4403)
+            return
+        ws.scope["terminal_owner"] = owner
     from tui_gateway.ws import handle_ws
 
     await handle_ws(ws)
