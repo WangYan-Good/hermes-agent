@@ -382,7 +382,7 @@ async def handle_ws(ws: Any) -> None:
         _log.info("ws accepted peer=%s", peer)
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
-        terminal_owner = ws.scope.get("terminal_owner")
+        terminal_owner = (getattr(ws, "scope", None) or {}).get("terminal_owner")
         if terminal_owner is not None:
             if terminal_owner.closing:
                 return

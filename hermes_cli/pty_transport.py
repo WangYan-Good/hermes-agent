@@ -120,12 +120,8 @@ async def endpoint(ws):
     finally:
         if session is not None:
             if attached:
-                async with session.admission:
-                    session.detach(ws, reg.clock())
-                    failed_target = session.viewer is None and not session.accepted_input
-                    if failed_target:
-                        session.closing = True
-                if failed_target:
-                    await reg.close(session)
+                # An attached instance is reconnectable even before first input.
+                # Only an explicit abort or incomplete startup is a failed target.
+                session.detach(ws, reg.clock())
             elif not instance:
                 await reg.close(session)

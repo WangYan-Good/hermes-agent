@@ -2212,6 +2212,57 @@ def _normalize_request(req: Any) -> tuple[Any, str, dict] | dict:
     return rid, method, params
 
 
+class _TerminalGatewayAccess:
+    """Live access to the gateway globals owned by this module's functions.
+
+    Explicitly limit the Terminal seam to its session/lifecycle dependencies.
+    Properties and forwarding methods resolve at call time: no state snapshots
+    and no reliance on this module's registration in sys.modules.
+    """
+
+    @property
+    def _sessions(self):
+        return _sessions
+
+    @property
+    def _sessions_lock(self):
+        return _sessions_lock
+
+    @property
+    def _session_resume_lock(self):
+        return _session_resume_lock
+
+    def current_transport(self):
+        return current_transport()
+
+    def _queued_prompt_snapshot(self, session):
+        return _queued_prompt_snapshot(session)
+
+    def _session_pending_kind(self, sid):
+        return _session_pending_kind(sid)
+
+    def _session_has_active_delegations(self, sid, session):
+        return _session_has_active_delegations(sid, session)
+
+    def _session_lookup_key(self, session):
+        return _session_lookup_key(session)
+
+    def _pop_session_by_id(self, sid, *, expected_session):
+        return _pop_session_by_id(sid, expected_session=expected_session)
+
+    def _teardown_popped_session(self, session):
+        return _teardown_popped_session(session)
+
+    def _ok(self, rid, result):
+        return _ok(rid, result)
+
+    def _err(self, rid, code, message):
+        return _err(rid, code, message)
+
+
+_terminal_gateway = _TerminalGatewayAccess()
+
+
 def handle_request(req: dict) -> dict | None:
     normalized = _normalize_request(req)
     if isinstance(normalized, dict):
@@ -2220,14 +2271,14 @@ def handle_request(req: dict) -> dict | None:
     rid, method, params = normalized
     from tui_gateway import terminal_presentation
     if method == "terminal.presentation":
-        return terminal_presentation.handle(sys.modules[__name__], rid, params)
+        return terminal_presentation.handle(_terminal_gateway, rid, params)
     fn = _methods.get(method)
     if not fn:
         return _err(rid, -32601, f"unknown method: {method}")
     try:
-        with terminal_presentation.admit(sys.modules[__name__], method, params) as scoped:
+        with terminal_presentation.admit(_terminal_gateway, method, params) as scoped:
             return fn(rid, scoped)
-    except PermissionError as exc:
+    except terminal_presentation.TerminalOwnershipError as exc:
         return _err(rid, 4030, str(exc))
 
 
@@ -2666,6 +2717,11 @@ def _start_agent_build(sid: str, session: dict) -> None:
 
 def _sess_nowait(params, rid):
     s = _sessions.get(params.get("session_id") or "")
+    if s and s.get("terminal_owner") is not None:
+        # Protect a Terminal-owned target at the existing session lookup, not
+        # in the wrapper around unrelated Native/Desktop RPCs.
+        from tui_gateway.terminal_presentation import check_rebind
+        check_rebind(s, current_transport())
     return (s, None) if s else (None, _err(rid, 4001, "session not found"))
 
 

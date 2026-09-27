@@ -382,3 +382,52 @@ def test_authenticated_handshake_reaches_spawn_and_abort_cleans_registry(dashboa
         assert ws.receive_json()['result']['released']
     spawn.assert_called_once()
     assert bridge.closed and not web.app.state.pty_registry.sessions
+
+
+@pytest.mark.asyncio
+async def test_acknowledged_pre_input_disconnect_retains_same_process(monkeypatch):
+    from hermes_cli import web_server as web, dashboard_tui_env
+    from hermes_cli.pty_transport import endpoint
+    reg = PtySessionRegistry()
+    bridge = Bridge()
+    spawn = Mock(return_value=bridge)
+    monkeypatch.setattr(web.app.state, 'pty_registry', reg, raising=False)
+    monkeypatch.setattr(web, '_ws_auth_ok', lambda ws: True)
+    monkeypatch.setattr(web, '_ws_request_is_allowed', lambda ws: True)
+    monkeypatch.setattr(dashboard_tui_env, 'launch', spawn)
+    class Viewer(Socket):
+        app = web.app
+        headers = {'sec-websocket-protocol': PROTOCOL}
+        scope = {}
+        def __init__(self, instance=None, abort=False):
+            super().__init__()
+            self.query_params = {'attach': 'abcdefghijklmnop', 'generation': 'newgeneration1234'}
+            if instance:
+                self.query_params['instance'] = instance
+            self.abort = abort
+        async def accept(self, **kwargs):
+            pass
+        async def receive(self):
+            if self.abort:
+                self.abort = False
+                session = reg.sessions['abcdefghijklmnop']
+                return {'type': 'websocket.receive', 'text': __import__('json').dumps({'type': 'control', **frame(session, 'abort')})}
+            return {'type': 'websocket.disconnect', 'code': 1006}
+    first = Viewer()
+    try:
+        await endpoint(first)
+        attached = first.frames[0]
+        assert attached['type'] == 'attached'
+        session = reg.sessions['abcdefghijklmnop']
+        assert not session.accepted_input and not bridge.writes
+        assert session.viewer is None and not bridge.closed
+        second = Viewer(attached['instance'])
+        await endpoint(second)
+        assert reg.sessions['abcdefghijklmnop'] is session
+        assert session.bridge is bridge and not session.accepted_input
+        assert spawn.call_count == 1
+        assert bridge.writes == [b'\x0c']  # repaint only, no input/prompt replay
+        await endpoint(Viewer(attached['instance'], abort=True))
+        assert bridge.closed and not reg.sessions
+    finally:
+        await reg.shutdown()

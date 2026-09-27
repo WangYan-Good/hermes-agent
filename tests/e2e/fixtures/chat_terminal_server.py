@@ -30,7 +30,7 @@ async def evidence():
         'pty': [{'instance': s.instance, 'pid': s.bridge.pid if s.bridge else None,
                  'input_bytes': s.input_bytes, 'accepted': s.accepted_input,
                  'frozen': s.frozen, 'closing': s.closing, 'profile': s.profile,
-                 'owner': s.owner is not None} for s in sessions.values()],
+                 'viewer': s.viewer is not None, 'owner': s.owner is not None} for s in sessions.values()],
         'live': [{'runtime': sid, 'stored': server._session_lookup_key(s),
                   'terminal': s.get('terminal_owner') is not None,
                   'running': s.get('running')} for sid, s in server._sessions.items()],

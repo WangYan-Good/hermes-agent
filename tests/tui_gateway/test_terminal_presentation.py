@@ -101,9 +101,10 @@ def test_native_cannot_acquire_terminal_or_call_terminal_lifecycle(owned, monkey
         check_rebind({'transport': native}, SimpleNamespace(terminal_owner=owner))
     monkeypatch.setattr(server, 'current_transport', lambda: native)
     assert 'error' in call('status')
-    with pytest.raises(PermissionError):
-        with admit(server, 'prompt.submit', {'session_id': 'runtime'}):
-            pytest.fail('Native admitted input to Terminal')
+    # Ordinary transports bypass the Terminal wrapper; the real session input
+    # handler must still reject a foreign Terminal target.
+    rejected = server.handle_request({'id': 1, 'method': 'prompt.submit', 'params': {'session_id': 'runtime', 'text': 'intruder'}})
+    assert rejected['error']['code'] == 4030
     assert server.handle_request({'id': 1, 'method': 'session.handoff', 'params': {}})['error']['code'] == -32601
 
 

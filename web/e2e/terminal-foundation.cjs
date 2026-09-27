@@ -36,6 +36,50 @@ async function gateway() {
     }),
   };
 }
+async function preInputReconnect() {
+  const attach = crypto.randomUUID();
+  const connect = async instance => {
+    const generation = crypto.randomUUID();
+    const query = new URLSearchParams({ token: 'p7-local', attach, generation });
+    if (instance) query.set('instance', instance);
+    const socket = new WebSocket(base.replace('http', 'ws') + '/api/pty?' + query, 'hermes.pty-control.v1');
+    const attached = await new Promise((resolve, reject) => {
+      socket.addEventListener('error', reject, { once: true });
+      socket.addEventListener('message', event => {
+        if (typeof event.data === 'string') {
+          const frame = JSON.parse(event.data);
+          if (frame.type === 'attached') resolve(frame);
+        }
+      });
+    });
+    return { socket, attached, generation };
+  };
+  const first = await connect();
+  const initial = await waitFor(evidence, e => e.pty.length === 1 && e.pty[0].owner, 'pre-input owner');
+  assert.equal(initial.pty[0].accepted, false);
+  const detached = new Promise(resolve => first.socket.addEventListener('close', resolve, { once: true }));
+  await fetch(`${base}/c1-drop-viewer`, { method: 'POST' });
+  await detached;
+  await waitFor(evidence, e => e.pty.length === 1 && !e.pty[0].viewer, 'pre-input retention');
+  const second = await connect(first.attached.instance);
+  const reattached = await evidence();
+  assert.equal(second.attached.instance, first.attached.instance);
+  assert.equal(reattached.pty[0].pid, initial.pty[0].pid);
+  assert.equal(reattached.pty[0].accepted, false);
+  assert.equal(reattached.submissions.length, 0);
+  const aborted = new Promise(resolve => second.socket.addEventListener('message', event => {
+    if (typeof event.data === 'string') {
+      const frame = JSON.parse(event.data);
+      if (frame.id === 'pre-input-abort') resolve(frame);
+    }
+  }));
+  second.socket.send(JSON.stringify({ type: 'control', id: 'pre-input-abort', action: 'abort',
+    instance: second.attached.instance, generation: second.generation }));
+  assert.equal((await aborted).result.released, true);
+  await waitFor(evidence, e => e.pty.length === 0 && e.live.length === 0, 'pre-input abort cleanup');
+  assert.equal((await (await fetch(`${base}/c1-process/${initial.pty[0].pid}`)).json()).alive, false);
+  console.log('PASS acknowledged zero-input reconnect: same instance/process, no prompt, explicit abort cleanup');
+}
 (async () => {
   const browser = await chromium.launch({ headless: true, executablePath: process.env.CHAT_E2E_BROWSER || '/usr/bin/chromium', args: ['--no-sandbox'] });
   const page = await browser.newPage();
@@ -44,6 +88,7 @@ async function gateway() {
   page.on('pageerror', error => errors.push(error.message));
   try {
     await waitFor(evidence, e => Array.isArray(e.pty), 'Dashboard readiness');
+    await preInputReconnect();
     await page.goto(`${frontend}/e2e/terminal-foundation.html`);
     await page.waitForFunction(() => window.terminal);
     const initial = await waitFor(evidence, e => e.pty.length === 1 && e.pty[0].owner && e.live.length > 0, 'real owner');
