@@ -10,6 +10,7 @@ import {
   isActionMod,
   isMac,
   isMacActionFallback,
+  isRedrawShortcut,
   isVoiceToggleKey,
   type ParsedVoiceRecordKey
 } from '../lib/platform.js'
@@ -1725,6 +1726,7 @@ export const shouldPassThroughToGlobalHandler = (
   key: Key,
   voiceRecordKey: ParsedVoiceRecordKey = DEFAULT_VOICE_RECORD_KEY
 ): boolean =>
+  isRedrawShortcut(key, input) ||
   (key.ctrl && input === 'c') ||
   (key.ctrl && input === 'x') ||
   (key.ctrl && input === 'o') ||

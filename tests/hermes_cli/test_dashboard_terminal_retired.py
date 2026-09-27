@@ -1,4 +1,4 @@
-"""Old Dashboard terminal clients cannot spawn a process or submit a turn."""
+"""Legacy clients and Native handoff remain unavailable during UI-C1."""
 
 from unittest.mock import Mock
 
@@ -8,24 +8,24 @@ from starlette.websockets import WebSocketDisconnect
 
 
 @pytest.mark.parametrize('query', ['', '&attach=old-tab&resume=durable', '&chat_mode=terminal'])
-def test_old_pty_websocket_is_unavailable_without_spawning(query, monkeypatch):
-    from hermes_cli import web_server
+def test_legacy_pty_protocol_is_rejected_without_terminal_launch(query, monkeypatch):
+    from hermes_cli import dashboard_tui_env, web_server
     from tui_gateway import server
-    import subprocess
 
-    spawn = Mock(side_effect=AssertionError('Retired endpoint spawned a process'))
-    submit = Mock(side_effect=AssertionError('Retired endpoint submitted a prompt'))
-    monkeypatch.setattr(subprocess, 'Popen', spawn)
+    launch = Mock(side_effect=AssertionError('Legacy PTY handshake launched Terminal'))
+    submit = Mock(side_effect=AssertionError('Legacy PTY handshake submitted a prompt'))
+    monkeypatch.setattr(dashboard_tui_env, 'launch', launch)
     monkeypatch.setattr(server, '_run_prompt_submit', submit)
     before = set(server._sessions)
     client = TestClient(web_server.app)
-    with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect(f'/api/pty?token={web_server._SESSION_TOKEN}{query}', subprotocols=['hermes.pty-control.v1']):
-            pytest.fail('Retired PTY endpoint accepted a connection')
-    assert not spawn.called
+    with pytest.raises(WebSocketDisconnect) as rejected:
+        with client.websocket_connect(f'/api/pty?token={web_server._SESSION_TOKEN}{query}', subprotocols=['legacy-terminal']):
+            pytest.fail('Legacy PTY protocol accepted a connection')
+    assert rejected.value.code == 4400
+    assert not launch.called
     assert not submit.called
     assert set(server._sessions) == before
-    assert all(getattr(route, 'path', None) != '/api/pty' for route in web_server.app.routes)
+    assert any(getattr(route, 'path', None) == '/api/pty' for route in web_server.app.routes)
 
 
 def test_retired_handoff_rpc_cannot_release_session():

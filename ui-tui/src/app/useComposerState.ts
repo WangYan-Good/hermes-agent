@@ -107,7 +107,14 @@ export function looksLikeDroppedPath(text: string): boolean {
 
 export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions): UseComposerStateResult {
   const [input, setInputState] = useState('')
-  const [inputBuf, setInputBuf] = useState<string[]>([])
+  const [inputBuf, setInputBufState] = useState<string[]>([])
+  const inputBufRef = useRef<string[]>([])
+
+  const setInputBuf = useCallback<StateSetter<string[]>>(next => {
+    inputBufRef.current = typeof next === 'function' ? next(inputBufRef.current) : next
+    setInputBufState(inputBufRef.current)
+  }, [])
+
   const [tokens, setTokens] = useState<ComposerToken[]>([])
   // Tokens and the input line are read from keystroke handlers that run several
   // times before React re-renders, so the refs — not the state — are the source
@@ -151,7 +158,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     setQueueEdit(null)
     setHistoryIdx(null)
     historyDraftRef.current = ''
-  }, [historyDraftRef, setComposerTokens, setHistoryIdx, setInput, setQueueEdit])
+  }, [historyDraftRef, setComposerTokens, setHistoryIdx, setInput, setInputBuf, setQueueEdit])
 
   /**
    * Deleting an `[[ Image N ]]` token IS how you unattach the image — there is
@@ -418,7 +425,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
     } finally {
       rmSync(dir, { force: true, recursive: true })
     }
-  }, [input, inputBuf, setInput, submitRef])
+  }, [input, inputBuf, setInput, setInputBuf, submitRef])
 
   const actions = useMemo(
     () => ({
@@ -456,6 +463,7 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       setComposerTokens,
       setHistoryIdx,
       setInput,
+      setInputBuf,
       setQueueEdit,
       takeQ,
       syncTokens
@@ -469,7 +477,8 @@ export function useComposerState({ gw, submitRef, sys }: UseComposerStateOptions
       queueEditRef,
       queueRef,
       submitRef,
-      tokensRef
+      tokensRef,
+      hasPendingInput: () => Boolean(inputRef.current || inputBufRef.current.length || tokensRef.current.length)
     }),
     [historyDraftRef, historyRef, queueEditRef, queueRef, submitRef]
   )

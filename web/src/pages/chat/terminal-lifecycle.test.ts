@@ -1,0 +1,86 @@
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { buildWsUrl } from '@/lib/api';
+import { PTY_PROTOCOL, TerminalLifecycle } from './terminal-lifecycle';
+vi.mock('@/lib/api', () => ({ buildWsUrl: vi.fn(async () => 'ws://local/api/pty?ticket=fresh') }));
+class Socket {
+  static OPEN = 1;
+  static instances: Socket[] = [];
+  readyState = 1;
+  binaryType = '';
+  onmessage: ((event: { data: unknown }) => void) | null = null;
+  onclose: ((event: { code: number }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  sent: (string | Uint8Array)[] = [];
+  url: string;
+  protocol: string;
+  constructor(url: string, protocol: string) { this.url = url; this.protocol = protocol; Socket.instances.push(this); }
+  send(data: string | Uint8Array) { this.sent.push(data); }
+  frame(frame: unknown) { this.onmessage?.({ data: JSON.stringify(frame) }); }
+  close(code = 1000) { this.readyState = 3; this.onclose?.({ code }); }
+}
+beforeEach(() => { Socket.instances = []; vi.stubGlobal('WebSocket', Socket); vi.useFakeTimers(); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.clearAllMocks(); });
+async function setup() {
+  const output = vi.fn(), state = vi.fn();
+  const lifecycle = new TerminalLifecycle({ profile: 'work', output, state });
+  await lifecycle.connect();
+  const socket = Socket.instances[0];
+  socket.frame({ type: 'attached', instance: 'instance', control_confirmed: true });
+  return { lifecycle, socket, output, state };
+}
+it('authenticates each connection, negotiates protocol, sends binary input and structured resize', async () => {
+  const { lifecycle, socket, output } = await setup();
+  expect(buildWsUrl).toHaveBeenCalledWith('/api/pty', expect.objectContaining({ profile: 'work' }));
+  expect(socket.protocol).toBe(PTY_PROTOCOL);
+  expect(lifecycle.input('{"action":"release"}')).toBe(true);
+  expect(socket.sent[0]).toBeInstanceOf(Uint8Array);
+  lifecycle.resize(100, 35);
+  expect(JSON.parse(socket.sent[1] as string)).toEqual({ type: 'resize', cols: 100, rows: 35 });
+  socket.onmessage?.({ data: new Uint8Array([65]).buffer });
+  expect(output).toHaveBeenCalledWith(new Uint8Array([65]));
+  socket.close(); await lifecycle.dispose();
+});
+it('freezes prepare input until cancel ACK and rejects release without ACK', async () => {
+  const { lifecycle, socket } = await setup();
+  const pending = lifecycle.command('prepare');
+  expect(lifecycle.input('new input')).toBe(false);
+  const req = JSON.parse(socket.sent.at(-1) as string);
+  socket.frame({ type: 'control', id: req.id, result: { ready: true, ticket: 'ticket' } });
+  await pending;
+  const cancel = lifecycle.command('cancel');
+  expect(lifecycle.input('still blocked')).toBe(false);
+  const c = JSON.parse(socket.sent.at(-1) as string);
+  socket.frame({ type: 'control', id: c.id, result: { cancelled: true } });
+  await cancel;
+  expect(lifecycle.input('accepted')).toBe(true);
+  const release = lifecycle.command('release', 'ticket');
+  const assertion = expect(release).rejects.toThrow('ACK missing');
+  await vi.advanceTimersByTimeAsync(16000);
+  await assertion;
+  expect(lifecycle.input('uncertain')).toBe(false);
+  socket.close(); await lifecycle.dispose();
+});
+it('reconnects only the acknowledged instance, gets fresh auth and never repeats input', async () => {
+  const { lifecycle, socket } = await setup();
+  lifecycle.input('once'); socket.close(1006);
+  expect(lifecycle.input('lost')).toBe(false);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(buildWsUrl).toHaveBeenLastCalledWith('/api/pty', expect.objectContaining({ instance: 'instance', profile: 'work' }));
+  expect(Socket.instances[1].sent).toEqual([]);
+  Socket.instances[1].close(); await lifecycle.dispose();
+});
+it('does not restart an ambiguous startup or intentionally closed connection', async () => {
+  const lifecycle = new TerminalLifecycle({ profile: '', output: vi.fn(), state: vi.fn() });
+  await lifecycle.connect(); Socket.instances[0].close(1006);
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(Socket.instances).toHaveLength(1);
+  await lifecycle.dispose();
+});
+it('profile replacement/unmount during ticket acquisition cannot open a late socket', async () => {
+  let finish!: (url: string) => void;
+  vi.mocked(buildWsUrl).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+  const lifecycle = new TerminalLifecycle({ profile: 'old', output: vi.fn(), state: vi.fn() });
+  const connect = lifecycle.connect();
+  await lifecycle.dispose(); finish('ws://late'); await connect;
+  expect(Socket.instances).toHaveLength(0);
+});

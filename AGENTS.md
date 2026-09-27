@@ -517,14 +517,20 @@ npm test          # vitest
 
 ### Native Chat in the Dashboard (`hermes dashboard` → `/chat`)
 
-Dashboard Chat is Native-only: `ChatPage` hosts `NativeChatPage` over `/api/ws`
+Dashboard Chat remains user-facing Native-only in UI-C1: `ChatPage` hosts `NativeChatPage` over `/api/ws`
 using `tui_gateway`, AIAgent and SessionDB. App preserves the host across route
 hide/show, and fresh plugin manifest confirmation precedes any built-in mount.
 A plugin overriding `/chat` suppresses the built-in renderer and Agent socket.
 
-Dashboard `/api/pty` and presentation handoff are retired. Legacy mode preferences
-are inert and cleaned best effort only after Native becomes ready; old YAML is
-accepted without rewriting. Recovery never repeats `prompt.submit`, and Native
+UI-C1 restores authenticated `/api/pty`, POSIX/Windows PTY bridges and the
+unmounted `TerminalChatPage` infrastructure. It runs the existing ui-tui against
+this gateway with a fixed profile; binary terminal input is separate from the
+required `hermes.pty-control.v1` lifecycle protocol. Terminal-only
+`terminal.presentation` checks the actual owner before release. Native
+`session.handoff` remains unavailable, and active Native/Terminal ownership
+cannot be transferred. Settings, selectors and safe cross-surface switching
+belong to UI-C2. Legacy mode preferences are inert and cleaned best effort only
+after Native becomes ready; old YAML is accepted without rewriting. Recovery never repeats `prompt.submit`, and Native
 resume uses `allow_auto_continue=false` even with deferred history hydration.
 
 Agent terminal tools/backends, standalone CLI/TUI and Desktop terminal panes

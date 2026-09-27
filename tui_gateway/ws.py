@@ -382,6 +382,19 @@ async def handle_ws(ws: Any) -> None:
         _log.info("ws accepted peer=%s", peer)
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+        terminal_owner = (getattr(ws, "scope", None) or {}).get("terminal_owner")
+        if terminal_owner is not None:
+            if terminal_owner.closing:
+                return
+            with terminal_owner.gateway.lock:
+                previous = terminal_owner.gateway.transport
+                conflict = previous is not None and not previous._closed
+                if not conflict:
+                    terminal_owner.gateway.transport = transport
+                    transport.terminal_owner = terminal_owner
+            if conflict:
+                await ws.close(code=4409, reason="Terminal gateway already connected")
+                return
 
         # resolve_skin() reads config + initializes the skin engine —
         # synchronous I/O + CPU work that should not block the event loop
