@@ -36,6 +36,7 @@ class Authority:
         self.sid = None
         self.stored_id = None
         self.completed = 0.0
+        self.retirement_pending = False
 
 
 _registry = {}
@@ -68,6 +69,34 @@ def attach(transport, generation, profile):
         state.transport = transport
         transport.native_presentation = state
     return state
+
+
+def _retire_if_unreferenced(server, state):
+    # Called with the authority lock, only after teardown or a lifecycle RPC.
+    # Do not infer release from disconnect or from a session merely being popped.
+    if state.active or state.releasing:
+        return
+    with server._sessions_lock:
+        if any(s.get('native_presentation') is state for s in server._sessions.values()):
+            return
+    state.completed = time.monotonic()
+    state.retirement_pending = False
+    state.session = state.ticket_session = None
+    state.ticket = None
+
+
+def session_finalized(server, session):
+    """Retain a bounded reconnect grace after the normal server teardown finishes.
+
+    Retirement does not manufacture a release receipt. A transient disconnect
+    alone never reaches this hook, and another live session keeps its authority.
+    """
+    state = session.get('native_presentation')
+    if state is None:
+        return
+    with state.lock:
+        state.retirement_pending = True
+        _retire_if_unreferenced(server, state)
 
 
 def check_rebind(session, transport):
@@ -104,6 +133,8 @@ def admit(server, method, params):
             raise NativeOwnershipError('Native input frozen for switching')
         if method in _START and state.frozen and state.stored_id and params.get('session_id') not in {state.stored_id, state.sid}:
             raise NativeOwnershipError('Cannot change prepared session')
+        if method in _START:
+            state.completed = 0.0
         if method == 'prompt.submit':
             state.accepted = True
         state.active += 1
@@ -112,6 +143,8 @@ def admit(server, method, params):
     finally:
         with state.lock:
             state.active -= 1
+            if state.retirement_pending or method in _START:
+                _retire_if_unreferenced(server, state)
 
 
 def blocked(server, sid, session):

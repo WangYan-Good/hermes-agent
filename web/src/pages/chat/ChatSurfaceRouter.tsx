@@ -53,7 +53,7 @@ function SurfaceHost({ initialMode, profile, initialResume, initialLearn, isActi
   }, [machine, state.phase, state.generation]);
   const notice = useStore($preferenceNotice);
   const profiles = useStore($profileModes);
-  const visited = useRef(new Set<string>());
+  const urlAttempt = useRef<string | null>(null);
   const lastProfileDefault = useRef(profiles[profile]?.mode);
   useEffect(() => {
     const publish = () => $chatHost.set({ profile, machine, state: machine.getSnapshot() });
@@ -68,12 +68,22 @@ function SurfaceHost({ initialMode, profile, initialResume, initialLearn, isActi
     return () => { clearTimeout(cleanupTimer.current); queueMicrotask(stopIfUnmounted); };
   }, [machine]);
   useEffect(() => {
-    if (!isActive || visited.current.has(location.key)) return;
+    // Observation is not consumption. An intent still present in a returning
+    // history entry must be honored, even if its earlier switch finished hidden.
+    if (!isActive) { urlAttempt.current = null; return; }
     const url = normalizeChatMode(new URLSearchParams(location.search).get('chat_mode'));
-    if (!url) { visited.current.add(location.key); return; }
+    if (!url) { urlAttempt.current = null; return; }
     if (state.phase !== 'stable') return;
-    visited.current.add(location.key);
-    if (machine.request(url)) { if (url === state.mounted) canonicalize(); }
+    const attempt = `${location.key}:${url}`;
+    if (urlAttempt.current === attempt) {
+      // A visible attempt either completed or was explicitly cancelled/returned.
+      // Consume its URL now, rather than silently ignoring a visited key.
+      canonicalize(); return;
+    }
+    if (machine.request(url)) {
+      urlAttempt.current = attempt;
+      if (url === state.mounted) canonicalize();
+    }
   }, [isActive, location.key, location.search, state.phase, state.mounted, machine, canonicalize]);
   useEffect(() => {
     const mode = profiles[profile]?.mode;

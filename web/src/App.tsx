@@ -410,12 +410,12 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
-  // Defer mounting the persistent chat host (and its Native chunk) until the
+  // Defer mounting the persistent chat host (and its active surface chunk) until the
   // user has actually opened /chat at least once. Sticky after that so the
-  // Native session survives later tab switches.
+  // active chat session survives later tab switches.
   const [chatHostMounted, setChatHostMounted] = useState(isChatRoute);
   useEffect(() => {
-    // This is a one-way activation latch: unmounting later would destroy Native session state.
+    // This is a one-way activation latch: unmounting later would destroy active chat session state.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setChatHostMounted((prev) => latchChatActivation(prev, isChatRoute));
   }, [isChatRoute]);

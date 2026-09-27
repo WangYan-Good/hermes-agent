@@ -40,10 +40,11 @@ export class TerminalLifecycle {
   private releaseReceipt?: TerminalStatus;
   private ticket?: string;
   private listeners = new Set<() => void>();
+  private receiptSockets = new Set<WebSocket>();
   private notify = () => this.listeners.forEach(fn => fn());
   readonly surface: ChatSurfaceLifecycle = {
     subscribe: listener => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; },
-    setInput: enabled => { this.inputEnabled = enabled; },
+    setInput: enabled => { this.inputEnabled = enabled && !this.stopped; },
     status: async () => {
       if (!this.controlReady || !this.instance || !this.socket || this.socket.readyState !== WebSocket.OPEN) return { ready: false, blocked: ['connection recovery'] };
       try { return this.surfaceStatus(await this.command('status')); }
@@ -66,7 +67,10 @@ export class TerminalLifecycle {
     },
     cancel: async () => {
       const result = await this.command('cancel');
-      if (!result.cancelled) throw new Error('Terminal cancellation not acknowledged');
+      if (!result.cancelled || result.released || this.released) throw new Error('Terminal cancellation not acknowledged');
+      this.releaseStarted = false;
+      this.releaseGeneration = undefined;
+      this.releaseReceipt = undefined;
       this.ticket = undefined;
     },
     release: async () => {
@@ -78,6 +82,7 @@ export class TerminalLifecycle {
       this.released = true;
     },
     discard: async () => { throw new Error('Finish or clear input in Terminal, or cancel switching.'); },
+    detach: () => this.detach(),
     dispose: async () => {
       this.inputEnabled = false;
       if (!this.instance && !this.socket) { this.stopped = true; return; }
@@ -104,17 +109,19 @@ export class TerminalLifecycle {
   private async readReceipt(): Promise<TerminalStatus> {
     if (!this.instance) throw new Error('Terminal instance was not acknowledged');
     const url = await buildWsUrl('/api/pty', { profile: this.options.profile, attach: this.attach, instance: this.instance, generation: this.releaseGeneration || this.generation, receipt: '1' });
+    if (this.stopped) throw new Error('Terminal host detached');
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(url, PTY_PROTOCOL);
+      this.receiptSockets.add(socket);
       const timer = setTimeout(() => { socket.close(); reject(new Error('Terminal cleanup receipt unavailable')); }, 16000);
       socket.onmessage = event => {
         const frame = JSON.parse(String(event.data));
         if (frame.type === 'receipt' && frame.result?.released === true) {
-          clearTimeout(timer); socket.onclose = null; socket.close(); resolve(frame.result as TerminalStatus);
+          clearTimeout(timer); this.receiptSockets.delete(socket); socket.onclose = null; socket.close(); resolve(frame.result as TerminalStatus);
         }
       };
-      socket.onclose = () => { clearTimeout(timer); reject(new Error('Terminal cleanup unconfirmed')); };
-      socket.onerror = () => { clearTimeout(timer); socket.close(); reject(new Error('Terminal receipt connection failed')); };
+      socket.onclose = () => { this.receiptSockets.delete(socket); clearTimeout(timer); reject(new Error('Terminal cleanup unconfirmed')); };
+      socket.onerror = () => { this.receiptSockets.delete(socket); clearTimeout(timer); socket.close(); reject(new Error('Terminal receipt connection failed')); };
     });
   }
 
@@ -193,7 +200,7 @@ export class TerminalLifecycle {
   }
 
   async command(action: 'status' | 'prepare' | 'cancel' | 'release' | 'abort', ticket?: string): Promise<TerminalStatus> {
-    if (!this.instance || this.socket?.readyState !== WebSocket.OPEN) throw new Error('Terminal owner unavailable');
+    if ((this.stopped && this.options.managed) || !this.instance || this.socket?.readyState !== WebSocket.OPEN) throw new Error('Terminal owner unavailable');
     if (['prepare', 'release', 'abort'].includes(action)) this.frozen = true;
     const id = crypto.randomUUID();
     const result = await new Promise<TerminalStatus>((resolve, reject) => {
@@ -201,6 +208,7 @@ export class TerminalLifecycle {
       this.pending.set(id, { resolve, reject, timer });
       this.socket!.send(JSON.stringify({ type: 'control', id, action, ticket, instance: this.instance, generation: this.generation }));
     });
+    if (this.stopped && this.options.managed) throw new Error('Terminal host detached');
     if (action === 'cancel' && result.cancelled) this.frozen = false;
     if (action === 'release' && !result.released) throw new Error('Terminal release unconfirmed');
     return result;
@@ -211,8 +219,19 @@ export class TerminalLifecycle {
     this.pending.clear();
   }
 
+  /** Host teardown is local abandonment, never an authoritative release ACK. */
+  detach() {
+    this.inputEnabled = false; this.frozen = true; this.stopped = true;
+    clearTimeout(this.retry);
+    const socket = this.socket; this.socket = null; this.controlReady = false;
+    socket?.close();
+    for (const receipt of this.receiptSockets) receipt.close();
+    this.receiptSockets.clear();
+    this.rejectPending('Terminal host detached; ownership remains unconfirmed');
+  }
+
   async dispose() {
-    if (this.options.managed) { await this.surface.dispose(); return; }
+    if (this.options.managed) { this.detach(); return; }
     if (this.stopped) return;
     this.stopped = true;
     clearTimeout(this.retry);

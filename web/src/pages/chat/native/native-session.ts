@@ -59,7 +59,8 @@ export class NativeSession {
   };
   cancel = async () => {
     const result = await this.presentation('cancel');
-    if (!result.cancelled) throw new Error('Native cancellation not acknowledged.');
+    if (!result.cancelled || result.released || this.presentationReleased) throw new Error('Native cancellation not acknowledged.');
+    this.releasing = false;
     this.presentationTicket = undefined; this.setInput(true);
   };
   release = async () => {
@@ -90,6 +91,7 @@ export class NativeSession {
     }
     this.stop();
   };
+  detach = () => { this.setInput(false); this.stop(); };
   draftText = "";
   setDraft = (text: string) => { this.draftText = text; this.set({ ...this.state }); };
   readonly attachments: NativeAttachments;

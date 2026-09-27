@@ -956,6 +956,8 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     # _finalized-guarded chokepoint that main folded it into), exactly once.
     # We deliberately do NOT re-close it here — _teardown_session's job beyond
     # finalize is unregistering the notifier and closing the in-process agent.
+    from tui_gateway.native_presentation import session_finalized
+    session_finalized(_native_gateway, session)
 
 
 def _attach_worker(sid: str, session: dict, worker) -> None:

@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
-import { StrictMode, act } from 'react';
+import { StrictMode, act, useEffect } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import ChatPage from './ChatPage';
 import './chat/native/NativeChatPage';
-import { $browserMode, $profileModes } from './chat/chat-preferences';
+import { $browserMode, $profileModes, requestBrowserMode } from './chat/chat-preferences';
 import { FakeNativeSocket, flushNative } from './chat/native/fake-websocket.test-support';
 
 const profile = vi.hoisted(() => ({ profile: '' }));
@@ -20,6 +20,7 @@ function Harness() {
     <button data-nav="away" onClick={() => navigate('/sessions?learn=hidden')} />
     <button data-nav="back" onClick={() => navigate('/chat')} />
     <button data-nav="learn" onClick={() => navigate('/chat?learn=debugging&chat_mode=native&other=keep#anchor')} />
+    <button data-nav="terminal" onClick={() => navigate('/chat?resume=stored&chat_mode=terminal&other=keep#anchor')} />
     <button data-nav="history" onClick={() => navigate(-1)} />
     <output>{location.pathname}{location.search}{location.hash}</output></>;
 }
@@ -106,10 +107,35 @@ it('isolates the Native host and draft across profile switches without resuming 
   expect(container.querySelector('textarea')?.value).toBe('');
 });
 
-vi.mock('./chat/TerminalChatPage', () => ({ default: () => <section aria-label="Terminal Chat" /> }));
+vi.mock('./chat/TerminalChatPage', () => ({ default: function TerminalStub({ onSurface }: { onSurface?: (value: import('./chat/chat-surface-lifecycle').ChatSurfaceLifecycle | null) => void }) {
+  useEffect(() => {
+    const status = async () => ({ ready: true, blocked: [], storedId: 'stored' });
+    onSurface?.({ status, prepare: status, cancel: async () => {}, release: async () => {}, discard: async () => {}, dispose: async () => {}, detach: () => {}, setInput: () => {}, subscribe: () => () => {} });
+    return () => onSurface?.(null);
+  }, [onSurface]);
+  return <section aria-label="Terminal Chat" />;
+} }));
 it('URL Terminal mounts only Terminal and opens no Native session', async () => {
   await render('/chat?chat_mode=terminal');
   expect(container.querySelector('[aria-label="Terminal Chat"]')).not.toBeNull();
   expect(container.querySelector('[aria-label="Native Chat"]')).toBeNull();
   expect(FakeNativeSocket.requests.filter(r => ['session.create', 'session.resume', 'prompt.submit'].includes(r.method))).toHaveLength(0);
+});
+
+it('re-evaluates an unconsumed URL after hidden completion, preference change and browser Back', async () => {
+  await render('/chat?resume=stored'); await draft('blocks URL switching'); await click('[data-nav="terminal"]');
+  expect(container.querySelector('[aria-label="Native Chat"]')).not.toBeNull();
+  await click('[data-nav="away"]');
+  const discard = [...container.querySelectorAll('button')].find(b => b.textContent === 'Discard draft and switch')!;
+  await act(async () => { discard.click(); await flushNative(); });
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 550)); await flushNative(); });
+  expect(container.querySelector('[aria-label="Terminal Chat"]')).not.toBeNull();
+  await act(async () => { await requestBrowserMode('', 'native'); await flushNative(); });
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 550)); await flushNative(); });
+  expect(container.querySelector('[aria-label="Native Chat"]')).not.toBeNull();
+  await click('[data-nav="history"]');
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 550)); await flushNative(); });
+  expect(container.querySelector('[aria-label="Terminal Chat"]')).not.toBeNull();
+  expect(container.querySelector('output')?.textContent).toBe('/chat?resume=stored&other=keep#anchor');
+  expect(FakeNativeSocket.requests.filter(r => r.method === 'prompt.submit')).toHaveLength(0);
 });

@@ -21,6 +21,11 @@ MUTATIONS = [
     ('unconfirmed-cleanup-reopens', SWITCH, 'if (this.surface) await this.surface.dispose();', 'if (this.surface) await this.surface.dispose().catch(() => {});', 'src/pages/chat/chat-switch.test.ts'),
     ('url-double-surface', 'web/src/pages/chat/ChatSurfaceRouter.tsx', "{state.mounted === 'native' ? <Native", "{state.mounted === 'terminal' ? <><Native isActive={isActive} /><Terminal profile={profile} /></> : state.mounted === 'native' ? <Native", 'src/pages/ChatPage.test.tsx'),
     ('plugin-mounts-builtin', 'web/src/lib/chat-activation.ts', "if (!embedded || overridden) return 'suppressed';", "if (!embedded) return 'suppressed';", 'src/lib/chat-activation.test.ts'),
+    ('native-cancel-release-latch', NATIVE, '    this.releasing = false;', '    // mutant: release latch remains set', 'src/pages/chat/native/native-session.test.ts'),
+    ('terminal-cancel-release-latch', 'web/src/pages/chat/terminal-lifecycle.ts', '      this.releaseStarted = false;', '      // mutant: release latch remains set', 'src/pages/chat/terminal-lifecycle.test.ts'),
+    ('host-keeps-pty-viewer', 'web/src/pages/chat/terminal-lifecycle.ts', 'if (this.options.managed) { this.detach(); return; }', 'if (this.options.managed) { return; }', 'src/pages/chat/terminal-lifecycle.test.ts'),
+    ('native-orphan-never-retires', 'tui_gateway/native_presentation.py', '    state.completed = time.monotonic()\n    state.retirement_pending = False', '    state.completed = 0.0\n    state.retirement_pending = False', 'tests/tui_gateway/test_native_presentation.py'),
+    ('url-consumed-before-return', 'web/src/pages/chat/ChatSurfaceRouter.tsx', 'if (!isActive) { urlAttempt.current = null; return; }', 'if (!isActive) return;', 'src/pages/ChatPage.test.tsx'),
 ]
 
 

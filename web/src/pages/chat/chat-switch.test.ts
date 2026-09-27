@@ -10,6 +10,7 @@ class Surface implements ChatSurfaceLifecycle {
   cancel = vi.fn(async () => {});
   release = vi.fn(async () => { this.input = false; });
   discard = vi.fn(async () => { this.view = { ...this.view, ready: true, blocked: [] }; });
+  detach = vi.fn(() => { this.input = false; });
   dispose = vi.fn(async () => { this.input = false; });
   setInput = (enabled: boolean) => { this.input = enabled; };
   subscribe = (fn: () => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
@@ -90,4 +91,14 @@ it('explicit draft discard is the only path that calls discard', async () => {
   const { machine, source } = await setup(); source.view = { ready: false, blocked: ['draft'], storedId: 'canonical' };
   machine.request('terminal'); await flush(); expect(source.discard).not.toHaveBeenCalled();
   await machine.discard(); await flush(); expect(source.discard).toHaveBeenCalledOnce();
+});
+
+it('permanent host stop detaches without assuming a blocked authoritative release', async () => {
+  const { machine, source } = await setup();
+  source.dispose.mockRejectedValue(new Error('busy'));
+  machine.stop();
+  expect(source.detach).toHaveBeenCalledOnce();
+  expect(source.dispose).not.toHaveBeenCalled();
+  expect(source.input).toBe(false);
+  expect(machine.getSnapshot().owner).toBe('native');
 });

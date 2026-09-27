@@ -37,6 +37,25 @@ async def reset():
     return {'ok': True}
 
 
+@w.app.get('/c2-review-evidence')
+async def review_evidence():
+    from tui_gateway import native_presentation
+    from tui_gateway.attachments import store
+    evidence = await foundation['evidence']()
+    evidence['authorities'] = [
+        {'generation': a.generation, 'stored': a.stored_id, 'completed': a.completed,
+         'released': a.released, 'closed': getattr(a.transport, '_closed', False)}
+        for a in list(native_presentation._registry.values())
+    ]
+    evidence['viewers'] = [
+        {'instance': s.instance, 'profile': s.profile, 'viewer': s.viewer is not None,
+         'detached_at': s.detached_at, 'pid': s.bridge.pid if s.bridge else None}
+        for s in foundation['registry'](w.app).sessions.values()
+    ]
+    evidence['attachment_states'] = [a.state for d in store.drafts.values() for a in d.items.values()]
+    return evidence
+
+
 w.app.router.routes.sort(key=lambda route: 0 if getattr(route, 'path', '').startswith(('/c1-', '/c2-', '/p7-', '/v1/')) else 1)
 if __name__ == '__main__':
     import uvicorn

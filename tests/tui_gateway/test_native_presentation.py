@@ -154,3 +154,41 @@ def test_ticket_is_bound_to_the_prepared_session_incarnation(owner):
     server._sessions['runtime'] = replacement
     assert 'error' in call(owner, 'release', ticket=ticket)
     assert server._sessions['runtime'] is replacement
+
+
+def test_busy_orphan_finalization_retires_authority_after_receipt_grace(owner, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(native.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(server, '_finalize_session', lambda s, **kw: s.update(_finalized=True))
+    monkeypatch.setattr(server, '_announce_session_reclaimed', lambda *a: None)
+    for _ in range(6):
+        transport = SimpleNamespace(_closed=False)
+        state = native.attach(transport, uuid.uuid4().hex, '')
+        monkeypatch.setattr(server, 'current_transport', lambda: transport)
+        session = server._prepare_output_session_record({'transport': transport, 'session_key': 'durable', 'running': True})
+        server._sessions['runtime'] = session
+        assert 'turn' in call((transport, state, session), 'prepare')['result']['blocked']
+        transport._closed = True
+        # A disconnect itself cannot retire a still-running authority.
+        assert not state.completed and native.attach(SimpleNamespace(_closed=False), state.generation, '') is state
+        state.transport._closed = True
+        session['running'] = False
+        server._sessions.pop('runtime')
+        server._teardown_session(session, end_reason='ws_orphan_reap')
+        assert state.completed and not state.released  # Retirement is not a release receipt.
+        assert state.generation in native._registry
+        clock[0] += 901
+        # Normal subsequent admission prunes only authorities past their grace.
+        native.attach(owner[0], owner[1].generation, '')
+        assert state.generation not in native._registry
+        assert len(native._registry) <= 2
+
+
+def test_finalizing_old_session_does_not_retire_another_live_session(owner, monkeypatch):
+    monkeypatch.setattr(server, '_finalize_session', lambda s, **kw: s.update(_finalized=True))
+    monkeypatch.setattr(server, '_announce_session_reclaimed', lambda *a: None)
+    other = dict(owner[2]); server._sessions['other'] = other
+    server._sessions.pop('runtime')
+    server._teardown_session(owner[2])
+    assert not owner[1].completed and not owner[1].released
+    native.check_rebind(other, owner[0])

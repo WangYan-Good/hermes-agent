@@ -101,3 +101,51 @@ it('queries the releasing generation after a lost ACK and viewer reconnect', asy
   expect(await recovered).toMatchObject({ released: true, storedId: 'durable' });
   await lifecycle.surface.dispose();
 });
+
+it('cancel resets an unaccepted release attempt so the next prepare uses the owner, retaining accepted input history', async () => {
+  const { lifecycle, socket } = await setup();
+  lifecycle.input('explicit input');
+  const reply = (result: object) => socket.frame({ type: 'control', id: JSON.parse(socket.sent.at(-1) as string).id, result });
+  const first = lifecycle.surface.prepare(); reply({ confirmed: true, ready: true, ticket: 'first', stored_id: 'durable' }); await first;
+  const send = socket.send.bind(socket);
+  vi.spyOn(socket, 'send').mockImplementation(data => {
+    if (typeof data === 'string' && JSON.parse(data).action === 'release') throw new Error('not sent');
+    send(data);
+  });
+  const release = lifecycle.surface.release();
+  const failed = expect(release).rejects.toThrow('unconfirmed');
+  await vi.advanceTimersByTimeAsync(0); Socket.instances.at(-1)!.close(4409); await failed;
+  vi.mocked(socket.send).mockRestore();
+  const cancel = lifecycle.surface.cancel(); reply({ cancelled: true }); await cancel;
+  lifecycle.surface.setInput(true); expect(lifecycle.input('explicit after cancel')).toBe(true);
+  const second = lifecycle.surface.prepare();
+  expect(typeof socket.sent.at(-1)).toBe('string');
+  expect(JSON.parse(socket.sent.at(-1) as string).action).toBe('prepare');
+  reply({ confirmed: true, ready: true, ticket: 'second', stored_id: 'durable' }); await second;
+  // Accepted input history must still rule out the pre-input abort path.
+  const cleanup = lifecycle.surface.dispose();
+  expect(JSON.parse(socket.sent.at(-1) as string).action).toBe('prepare');
+  reply({ confirmed: true, ready: true, ticket: 'cleanup', stored_id: 'durable' });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(JSON.parse(socket.sent.at(-1) as string).action).toBe('release');
+  reply({ released: true }); await cleanup;
+});
+
+it('busy managed host unmount detaches locally without claiming release or reconnecting', async () => {
+  const lifecycle = new TerminalLifecycle({ profile: '', managed: true, output: vi.fn(), state: vi.fn() });
+  await lifecycle.connect(); const socket = Socket.instances[0];
+  socket.frame({ type: 'attached', instance: 'busy', control_confirmed: true });
+  lifecycle.surface.setInput(true); expect(lifecycle.input('explicit input')).toBe(true);
+  const reply = (result: object) => socket.frame({ type: 'control', id: JSON.parse(socket.sent.at(-1) as string).id, result });
+  const cleanup = lifecycle.surface.dispose(); const blocked = expect(cleanup).rejects.toThrow('blocked');
+  reply({ confirmed: true, ready: false, blocked: ['turn'] }); await vi.advanceTimersByTimeAsync(0);
+  reply({ cancelled: true }); await blocked;
+  await lifecycle.dispose();
+  expect(socket.readyState).toBe(3);
+  expect(lifecycle.input('after unmount')).toBe(false);
+  await expect(lifecycle.command('status')).rejects.toThrow();
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(Socket.instances).toHaveLength(1);
+  const commands = socket.sent.filter(value => typeof value === 'string').map(value => JSON.parse(value as string).action);
+  expect(commands).not.toContain('release'); expect(commands).not.toContain('abort');
+});

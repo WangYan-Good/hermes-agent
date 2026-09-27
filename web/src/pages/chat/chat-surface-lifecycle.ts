@@ -12,5 +12,7 @@ export interface ChatSurfaceLifecycle {
   release(): Promise<void>;
   discard(): Promise<void>;
   dispose(): Promise<void>;
+  /** Permanent host departure; revoke local input without claiming backend release. */
+  detach(): void;
   setInput(enabled: boolean): void;
 }

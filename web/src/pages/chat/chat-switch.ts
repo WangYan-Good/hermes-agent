@@ -135,6 +135,6 @@ export class ChatSwitch {
     this.stopped = true; clearTimeout(this.timer); this.unsubscribe?.(); this.commit = undefined;
     this.surface?.setInput(false);
     // Teardown must never be mistaken for a successful handoff.
-    void this.surface?.dispose().catch(() => {});
+    this.surface?.detach();
   };
 }
