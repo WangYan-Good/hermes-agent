@@ -128,7 +128,12 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
     """Fetch available models from the Codex API. Returns visible models sorted by priority."""
     try:
         import httpx
-        headers = {"Authorization": f"Bearer {access_token}"}
+        # Catalog responses are small. Avoid optional compression decoders:
+        # a Brotli decoding failure otherwise silently falls back to stale models.
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept-Encoding": "identity",
+        }
         acct_id = _extract_chatgpt_account_id(access_token)
         if acct_id:
             headers["ChatGPT-Account-Id"] = acct_id
