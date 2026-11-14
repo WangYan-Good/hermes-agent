@@ -8913,10 +8913,22 @@ def main(
             info = get_toolset_info(name)
             if info:
                 entry = (name, info)
+                ##
+                ## <= code note =>
+                ## basic toolsets: web, terminal, vision, creative, reasoning
+                ##
                 if name in {"web", "terminal", "vision", "creative", "reasoning"}:
                     basic_toolsets.append(entry)
+                ##
+                ## <= code note =>
+                ## composite toolsets: research, development, analysis, content_creation, full_stack
+                ##
                 elif name in {"research", "development", "analysis", "content_creation", "full_stack"}:
                     composite_toolsets.append(entry)
+                ##
+                ## <= code note =>
+                ## scrnario toolsets
+                ##
                 else:
                     scenario_toolsets.append(entry)
         
@@ -9039,14 +9051,14 @@ def main(
     if save_sample:
         sample_id = str(uuid.uuid4())[:8]
         sample_filename = f"sample_{sample_id}.json"
-        
+
         # Convert messages to trajectory format (same as batch_runner)
         trajectory = agent._convert_to_trajectory_format(
             result['messages'], 
             user_query, 
             result['completed']
         )
-        
+
         entry = {
             "conversations": trajectory,
             "timestamp": datetime.now().isoformat(),
@@ -9054,7 +9066,7 @@ def main(
             "completed": result['completed'],
             "query": user_query
         }
-        
+
         try:
             with open(sample_filename, "w", encoding="utf-8") as f:
                 # Pretty-print JSON with indent for readability
@@ -9068,4 +9080,9 @@ def main(
 
 if __name__ == "__main__":
     import fire
+    """
+    fire 是一个自动将函数变成命令行接口的第三方库
+    此处将 main 函数的入参自动转为函数的 CLI 入参，根据 main 函数的入参定义，可以在命令行中按照如下格式调用：
+    python run_agent.py --query "..." --model "..." --max_turns 10
+    """
     fire.Fire(main)

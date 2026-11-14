@@ -282,6 +282,7 @@ TOOLSETS = {
         ],
         "includes": []
     },
+
     "gui_interactions": {
         "description": "GUI consent interactions supported by Desktop and Web Native Chat",
         "tools": ["setup_mcp"],
